@@ -31,6 +31,7 @@ A python application for remotely viewing and controlling a **Korg Kronos** synt
 | Requirement | Minimum |
 |---|---|
 | Python Runtime | Python 3.12 or higher|
+| PySide6 Runtime | PySide6 |
 
 ### Build
 
@@ -45,7 +46,14 @@ TBD
 | Package | Version | Purpose |
 |---|---|---|
 TBD
-Dependencies are restored automatically by NuGet during build.
+
+The application requires PySide6. If you have pip installed, simply run "pip install pyside6", however for Mac you may need to do the following: 
+
+First, create and activate a virtual environment using 
+`python3 -m venv .venv && source .venv/bin/activate` 
+
+then 
+`run pip install pyside6`
 
 ---
 
