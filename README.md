@@ -65,10 +65,12 @@ git clone https://github.com/Enigmahack/KronosScreenRemotePy.git
 cd KronosScreenRemotePy
 
 # Run the main.py:
+python -m venv .venv && source .venv/bin/activate
 python ./main.py
 
 or
 
+python3 -m venv .venv && source .venv/bin/activate
 python3 ./main.py
 
 ```
