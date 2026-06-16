@@ -1,0 +1,22 @@
+{
+  "kronos_host": "192.168.100.15",
+  "stream_port": 7373,
+  "ctrl_port": 7374,
+  "ftp_username": "kronos",
+  "ftp_password": "kronos",
+  "ftp_port": 21,
+  "pull_mode": false,
+  "max_fps": 15,
+  "prompt_before_quitting": false,
+  "hide_controls": false,
+  "screenshot_dir": "",
+  "vga_mirror_enabled": true,
+  "screensaver_timeout": 300,
+  "layout_preset": "Full",
+  "zoom_default_level": 2.5,
+  "zoom_window_size": 1.0,
+  "debug_logging": false,
+  "keybinds": {},
+  "macros": [],
+  "raw_key_maps": []
+}
