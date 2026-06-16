@@ -7,7 +7,7 @@ A python application for remotely viewing and controlling a **Korg Kronos** synt
 
 | Repository | Description |
 |---|---|
-| [KronosScreenRemotePy](https://github.com/Enigmahack/KronosScreenRemotePy) | This repo — Windows desktop client |
+| [KronosScreenRemotePy](https://github.com/Enigmahack/KronosScreenRemotePy) | This repo — Python Desktop Client |
 | [KronosScreenRemoteDaemon](https://github.com/Enigmahack/KronosScreenRemoteDaemon) | Kronos-side daemon (required) |
 
 ---
