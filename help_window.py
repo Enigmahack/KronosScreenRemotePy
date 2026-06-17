@@ -144,11 +144,13 @@ def _build_html() -> str:
         _h1("Touch Calibration"),
         _p("If touch events land at the wrong position, enable calibration mode with "
            + _key("C") + " or <b>Tools → Calibration</b>."),
-        _p("In calibration mode, drag the grid nodes to correct systematic offsets. "
-           "Enable <b>Warp Mode</b> for per-node correction of non-linear distortion. "
-           "Right-click to place bias dots that attract touch points toward the cursor."),
-        _p(_key("Ctrl+Z") + " / " + _key("Ctrl+Y") + " undo/redo edits. "
-           + _key("R") + " resets the mesh. Calibration is saved automatically on exit."),
+        _p("In calibration mode, left-click passes through as touch input. "
+           "Drag grid intersections to correct per-node distortion. "
+           "Right-click to place or remove bias dots."),
+        _p(_key("S") + " save, " + _key("X") + " clear all, "
+           + _key("R") + " reset mesh, "
+           + _key("Ctrl+Z") + " / " + _key("Ctrl+Y") + " undo/redo, "
+           + _key("Esc") + " exit calibration."),
 
         _h1("VGA Mirror"),
         _p("When connected, toggle VGA mirror with " + _key("M") + " or "

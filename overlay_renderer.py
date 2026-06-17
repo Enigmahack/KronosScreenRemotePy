@@ -290,7 +290,6 @@ class OverlayRenderer:
 
     def draw_cal_overlay(self, p: QPainter, frame_rect: QRectF,
                          mesh: CalMesh, bias_dots: list[CalBiasDot],
-                         warp_mode: bool,
                          hover_node: Optional[Tuple[int, int]],
                          dragging_node: Optional[Tuple[int, int]],
                          cal_dirty: bool):
@@ -303,11 +302,7 @@ class OverlayRenderer:
             return QPointF(frame_rect.x() + nx * scale_x,
                            frame_rect.y() + ny * scale_y)
 
-        # Grid lines — barely visible in observe mode, thicker/darker in warp mode
-        if warp_mode:
-            pen_grid = QPen(QColor(0x00, 0xBB, 0x50, 210), 1.8)
-        else:
-            pen_grid = QPen(QColor(0x00, 0xBB, 0x50, 90), 1.2)
+        pen_grid = QPen(QColor(0x00, 0xBB, 0x50, 210), 1.8)
         p.setPen(pen_grid)
         for c in range(mesh.cols):
             for r in range(mesh.rows - 1):
@@ -320,21 +315,20 @@ class OverlayRenderer:
                 x2, y2 = mesh.node_dst(c + 1, r, fw, fh)
                 p.drawLine(to_screen(x1, y1), to_screen(x2, y2))
 
-        # Nodes — only visible in warp mode
-        if warp_mode:
-            for c in range(mesh.cols):
-                for r in range(mesh.rows):
-                    nx, ny = mesh.node_dst(c, r, fw, fh)
-                    sp = to_screen(nx, ny)
-                    if dragging_node == (c, r):
-                        col = _COL_NODE_DRAG
-                    elif hover_node == (c, r):
-                        col = _COL_NODE_HOVER
-                    else:
-                        col = _COL_NODE_IDLE
-                    p.setPen(Qt.NoPen)
-                    p.setBrush(col)
-                    p.drawEllipse(sp, 5, 5)
+        # Nodes
+        for c in range(mesh.cols):
+            for r in range(mesh.rows):
+                nx, ny = mesh.node_dst(c, r, fw, fh)
+                sp = to_screen(nx, ny)
+                if dragging_node == (c, r):
+                    col = _COL_NODE_DRAG
+                elif hover_node == (c, r):
+                    col = _COL_NODE_HOVER
+                else:
+                    col = _COL_NODE_IDLE
+                p.setPen(Qt.NoPen)
+                p.setBrush(col)
+                p.drawEllipse(sp, 5, 5)
 
         # Bias dots — displayed at their mesh-warped position so they follow the mesh
         p.setPen(QPen(_COL_BIAS_DOT, 1.5))
@@ -343,15 +337,14 @@ class OverlayRenderer:
             disp_x, disp_y = mesh.apply(d.nx, d.ny, fw, fh)
             sp = to_screen(disp_x, disp_y)
             p.drawEllipse(sp, 5, 5)
-            # Cross-hair inside the circle
             p.drawLine(QPointF(sp.x() - 3, sp.y()), QPointF(sp.x() + 3, sp.y()))
             p.drawLine(QPointF(sp.x(), sp.y() - 3), QPointF(sp.x(), sp.y() + 3))
 
         # Status bar
-        mode = "WARP (edit nodes)" if warp_mode else "OBSERVE"
         dirty_flag = " [unsaved]" if cal_dirty else ""
-        status_text = (f"Calibration: {mode}{dirty_flag}  |  "
-                       f"Ctrl+Z/Y: undo/redo  R: reset  RClick: place/remove dot")
+        status_text = (f"Calibration{dirty_flag}  |  "
+                       f"S: save  X: clear all  R: reset  Ctrl+Z/Y: undo/redo  "
+                       f"RClick: dot  Esc: exit")
         bar_h = 18
         bar_rect = QRectF(frame_rect.x(), frame_rect.bottom() - bar_h,
                           frame_rect.width(), bar_h)

@@ -240,7 +240,6 @@ class FrameWidget(QWidget):
 
         self._ed_open     = False
         self._cal_mode    = False
-        self._warp_mode   = False
         self._help_open   = False
         self._kbd_capture = False
         self._boot_phase  = True
@@ -338,6 +337,9 @@ class FrameWidget(QWidget):
         elif not self._is_connected:
             self._renderer.draw_disconnected(p, fr, self._disconnect_msg or "Not connected")
 
+        if self._cal_mode:
+            p.fillRect(fr, QColor(0, 0, 0, 100))
+
         # Touch marker
         if self._touch_marker_pos:
             elapsed = time.monotonic() - self._touch_marker_time
@@ -361,7 +363,7 @@ class FrameWidget(QWidget):
         if self._cal_mode and self._frame_pixmap:
             self._renderer.draw_cal_overlay(
                 p, fr, self._cal_mesh, self._cal_bias_dots,
-                self._warp_mode, self._cal_hover, self._cal_dragging,
+                self._cal_hover, self._cal_dragging,
                 self._cal_dirty)
 
         # Palette editor
@@ -435,8 +437,8 @@ class FrameWidget(QWidget):
                 self._ed_mouse_down(pos)
                 return
 
-        # Calibration warp-mode node drag
-        if self._cal_mode and self._warp_mode:
+        # Calibration node drag — hit node starts drag, miss falls through to touch
+        if self._cal_mode:
             node = self._cal_hit_node(fp)
             if node:
                 self._cal_dragging = node
@@ -444,12 +446,12 @@ class FrameWidget(QWidget):
                 self._cal_drag_start = (ox, oy)
                 return
 
-        # Click inside frame → capture keyboard
-        if fp and self._frame_rect.contains(pos):
+        # Click inside frame → capture keyboard (not in cal mode)
+        if fp and self._frame_rect.contains(pos) and not self._cal_mode:
             self.frame_clicked_for_kbd.emit()
 
         # Track click for visual feedback (always) and touch injection (when connected)
-        if fp and not (self._cal_mode and self._warp_mode):
+        if fp:
             self._drag_pending      = True
             self._drag_pending_pos  = QPoint(fp.x(), fp.y())
             self._drag_active       = False
@@ -467,15 +469,20 @@ class FrameWidget(QWidget):
         if self._ed_open and self._grid_origin and fp:
             self._ed_hover(pos)
 
-        # Cal node drag
-        if self._cal_mode and self._warp_mode and self._cal_dragging and fp:
-            col, row = self._cal_dragging
-            nat_x = self._cal_mesh.nat_x(col, _FRAME_W)
-            nat_y = self._cal_mesh.nat_y(row, _FRAME_H)
-            self._cal_mesh.set_offset(col, row, fp.x() - nat_x, fp.y() - nat_y)
-            self._cal_dirty = True
-            self.update()
-            return
+        # Cal node drag / hover
+        if self._cal_mode and fp:
+            if self._cal_dragging:
+                col, row = self._cal_dragging
+                nat_x = self._cal_mesh.nat_x(col, _FRAME_W)
+                nat_y = self._cal_mesh.nat_y(row, _FRAME_H)
+                self._cal_mesh.set_offset(col, row, fp.x() - nat_x, fp.y() - nat_y)
+                self._cal_dirty = True
+                self.update()
+                return
+            old_hover = self._cal_hover
+            self._cal_hover = self._cal_hit_node(fp)
+            if self._cal_hover != old_hover:
+                self.update()
 
         # Touch drag
         if not self._drag_pending and not self._drag_active:
@@ -508,7 +515,7 @@ class FrameWidget(QWidget):
         pos = event.position()
         fp  = self._widget_to_frame(pos)
 
-        if self._cal_mode and self._warp_mode and self._cal_dragging:
+        if self._cal_mode and self._cal_dragging:
             col, row = self._cal_dragging
             self._cal_dragging = None
             # Record undo entry
@@ -1087,8 +1094,6 @@ class MainWindow(QMainWindow):
         self._act_palette.setVisible(False)  # palette editor disabled — matches C# version
         self._act_cal     = tools_menu.addAction("&Calibration")
         self._act_cal.setCheckable(True)
-        self._act_warp    = tools_menu.addAction("Enable &Warp Mode")
-        self._act_warp.setCheckable(True)
         cal_grid_menu = tools_menu.addMenu("Calibration &Grid Size")
         self._act_grid = {}
         for n in (3, 4, 5):
@@ -1167,7 +1172,6 @@ class MainWindow(QMainWindow):
 
         self._act_palette.toggled.connect(self._on_palette_toggled)
         self._act_cal.toggled.connect(self._on_cal_toggled)
-        self._act_warp.toggled.connect(self._on_warp_toggled)
         for n, act in self._act_grid.items():
             act.triggered.connect(lambda checked, s=n: self._set_cal_grid(s))
         self._act_quick_save.triggered.connect(self._quick_save_screenshot)
@@ -1634,6 +1638,36 @@ class MainWindow(QMainWindow):
         if self._frame_w.palette_key(event):
             return
 
+        # Calibration mode — all keys stay local, nothing reaches Kronos
+        if self._frame_w._cal_mode:
+            if key == Qt.Key_Escape:
+                self._act_cal.setChecked(False)
+                return
+            if mods & Qt.ControlModifier and key == Qt.Key_Z:
+                self._frame_w.cal_undo()
+                return
+            if mods & Qt.ControlModifier and key == Qt.Key_Y:
+                self._frame_w.cal_redo()
+                return
+            if key == Qt.Key_S and not mods:
+                storage.save_cal(self._frame_w._cal_mesh,
+                                 self._frame_w._cal_bias_dots)
+                self._frame_w._cal_dirty = False
+                self._frame_w.update()
+                return
+            if key == Qt.Key_X and not mods:
+                self._frame_w._cal_mesh.reset()
+                self._frame_w._cal_bias_dots.clear()
+                self._frame_w._cal_dirty = True
+                self._frame_w.update()
+                return
+            if key == Qt.Key_R and not mods:
+                self._frame_w._cal_mesh.reset()
+                self._frame_w._cal_dirty = True
+                self._frame_w.update()
+                return
+            return
+
         # Escape: close help overlay → exit fullscreen → send BUTTON EXIT
         if key == Qt.Key_Escape:
             if self._frame_w._help_open:
@@ -1644,20 +1678,6 @@ class MainWindow(QMainWindow):
                 return
             self._ctrl_send("BUTTON EXIT")
             return
-
-        # Cal undo/redo
-        if self._frame_w._cal_mode:
-            if mods & Qt.ControlModifier and key == Qt.Key_Z:
-                self._frame_w.cal_undo()
-                return
-            if mods & Qt.ControlModifier and key == Qt.Key_Y:
-                self._frame_w.cal_redo()
-                return
-            if key == Qt.Key_R and not mods:
-                self._frame_w._cal_mesh.reset()
-                self._frame_w._cal_dirty = True
-                self._frame_w.update()
-                return
 
         # Ctrl shortcuts
         if mods & Qt.ControlModifier:
@@ -1928,19 +1948,14 @@ class MainWindow(QMainWindow):
 
     def _on_cal_toggled(self, checked: bool):
         self._frame_w._cal_mode = checked
+        self._release_kbd_capture()
         if not checked:
-            self._frame_w._warp_mode = False
-            self._act_warp.setChecked(False)
             self._frame_w._cal_dragging = None
             self._frame_w._cal_hover    = None
             if self._frame_w._cal_dirty:
                 storage.save_cal(self._frame_w._cal_mesh,
                                  self._frame_w._cal_bias_dots)
                 self._frame_w._cal_dirty = False
-        self._frame_w.update()
-
-    def _on_warp_toggled(self, checked: bool):
-        self._frame_w._warp_mode = checked
         self._frame_w.update()
 
     def _set_cal_grid(self, n: int):
