@@ -886,6 +886,7 @@ class MainWindow(QMainWindow):
         self._zoom_level   = settings.zoom_default_level
         self._mirror_state = False
         self._perf_window  = None   # PerformanceWindow singleton (lazy)
+        self._file_manager_win = None
         self._shutting_down = False
 
         # Ping
@@ -1044,6 +1045,8 @@ class MainWindow(QMainWindow):
         self._rebuild_recent_menu()
         self._act_copy_ip = conn_menu.addAction("Copy &IP Address")
         conn_menu.addSeparator()
+        self._act_file_mgr   = conn_menu.addAction("File &Manager…")
+        conn_menu.addSeparator()
         self._act_quit       = conn_menu.addAction("&Quit")
         self._act_disconnect.setEnabled(False)
 
@@ -1144,6 +1147,7 @@ class MainWindow(QMainWindow):
 
     def _wire_actions(self):
         self._act_copy_ip.triggered.connect(self._copy_ip_address)
+        self._act_file_mgr.triggered.connect(self._open_file_manager)
         self._act_connect.triggered.connect(self._trigger_reconnect)
         self._act_refresh.triggered.connect(lambda: self._ctrl_send("REFRESH"))
         self._act_disconnect.triggered.connect(self._disconnect)
@@ -2078,6 +2082,28 @@ class MainWindow(QMainWindow):
         dlg = AboutDialog(self._host, self._ctrl_port, self)
         dlg.exec()
 
+    # ── File Manager ──────────────────────────────────────────────────────────
+
+    def _open_file_manager(self):
+        if self._file_manager_win is not None:
+            self._file_manager_win.raise_()
+            self._file_manager_win.activateWindow()
+            return
+        if not self._ensure_ftp_credentials():
+            return
+        host = self._host or self._settings.kronos_host
+        if not host:
+            QMessageBox.warning(self, "File Manager",
+                                "No Kronos host configured. Set it in Settings first.")
+            return
+        from file_manager import FileManagerWindow
+        self._file_manager_win = FileManagerWindow(
+            host, self._settings.ftp_port,
+            self._settings.ftp_username, self._settings.ftp_password, self)
+        self._file_manager_win.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self._file_manager_win.destroyed.connect(lambda: setattr(self, '_file_manager_win', None))
+        self._file_manager_win.show()
+
     # ── Keyboard Info (Performance Meter) ─────────────────────────────────────
 
     def _open_keyboard_info(self):
@@ -2129,6 +2155,7 @@ class MainWindow(QMainWindow):
         menu.addSeparator()
 
         menu.addAction("Keyboard Info…", self._open_keyboard_info)
+        menu.addAction("File Manager…", self._open_file_manager)
         menu.addSeparator()
 
         a_rec = menu.addAction("Reconnect")
@@ -2374,6 +2401,8 @@ class MainWindow(QMainWindow):
             self._combi_flash_timer.stop()
         if self._perf_window:
             self._perf_window.close()
+        if self._file_manager_win:
+            self._file_manager_win.close()
 
         receiver = self._receiver
         audio = self._audio_capture
