@@ -16,15 +16,30 @@ A Python application for remotely viewing and controlling a **Korg Kronos** synt
 
 - **Live Screen Streaming** — 800x600 8-bit indexed color at up to 15 FPS via TCP; supports full-frame (pull) and change-only modes for bandwidth efficiency
 - **Remote Control** — Virtual button panel (mode keys, number pad, data wheel, bank selects) with drag, scroll, and keyboard-shortcut support
-- **FTP File Manager** — Dual-pane file browser (local and Kronos) with upload, download, rename, delete, new folder, cut/copy/paste, column sorting, drag-and-drop between panes and within the same pane, and keyboard shortcuts (Ctrl+C/X/V/A, Del, F2, F5, Backspace, Enter)
-- **Touch Calibration** — 5x5 warp mesh with bilinear interpolation for accurate touch-to-screen mapping
 - **Mode Detection** — Reference-image OCR to identify the active Kronos operating mode automatically
 - **Audio VU Meter** — WASAPI real-time level monitoring (L/R peak + RMS) with device selection
+<img width="1195" height="511" alt="image" src="https://github.com/user-attachments/assets/7f2c35e1-3593-4f15-b74f-42a787b9129c" />
+
+- **FTP File Manager** — Dual-pane file browser (local and Kronos) with upload, download, rename, delete, new folder, cut/copy/paste, column sorting, drag-and-drop between panes and within the same pane, and keyboard shortcuts (Ctrl+C/X/V/A, Del, F2, F5, Backspace, Enter)
+<img width="1195" height="512" alt="image" src="https://github.com/user-attachments/assets/f6344389-3f26-4e9f-bc53-8a714a329b7e" />
+
+- **Touch Calibration** — 3x3 - 5x5 warp mesh with bilinear interpolation for accurate touch-to-screen mapping
+<img width="1195" height="512" alt="image" src="https://github.com/user-attachments/assets/fce56b18-3374-43d0-8308-1df7da011355" />
+
 - **Macro System** — Record and play back sequences of button presses with configurable trigger keys and step delays
+<img width="1195" height="512" alt="image" src="https://github.com/user-attachments/assets/7e1d022a-0244-4dac-aa9e-8c64287ca3db" />
+
+
 - **Command Palette** — Searchable keyboard-driven command interface (Ctrl+K)
-- **Zoom & Layout Presets** — Configurable window sizes (75%--200%), fullscreen, always-on-top, and collapsible control rail
+<img width="1195" height="512" alt="image" src="https://github.com/user-attachments/assets/171d7c31-f696-4844-b56c-1a2aefd517ed" />
+
+
+- **Zoom Window** — Configurable window sizes (75%--200%), fullscreen, always-on-top, and collapsible control rail
+<img width="1195" height="512" alt="image" src="https://github.com/user-attachments/assets/293f1098-9522-465f-8b33-08e215c9a11e" />
+
+
 - **Performance Monitor** — Real-time network latency and frame-rate diagnostics
-- **Settings Import/Export** — Full configuration backup and restore via JSON
+<img width="1195" height="511" alt="image" src="https://github.com/user-attachments/assets/f972e0d2-7ae2-4836-a478-6f01a434eb59" />
 
 ---
 
