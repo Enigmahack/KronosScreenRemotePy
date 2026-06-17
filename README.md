@@ -1,6 +1,6 @@
 # KronosScreenRemotePy
 
-A python application for remotely viewing and controlling a **Korg Kronos** synthesizer over Ethernet. It streams the Kronos display in real time, forwards touch/button input back to the device, and provides supplementary tools for audio monitoring,  and local display calibration.
+A Python application for remotely viewing and controlling a **Korg Kronos** synthesizer over Ethernet. It streams the Kronos display in real time, forwards touch/button input back to the device, and provides supplementary tools for file management, audio monitoring, and local display calibration.
 
 > **Note:** This application requires the companion daemon running on the Kronos hardware.
 > See [KronosScreenRemoteDaemon](https://github.com/Enigmahack/KronosScreenRemoteDaemon) for setup instructions.
@@ -14,84 +14,112 @@ A python application for remotely viewing and controlling a **Korg Kronos** synt
 
 ## Features
 
-- **Live Screen Streaming** — 800×600 8-bit indexed color at up to 15 FPS via TCP; supports full-frame (pull) and change-only modes for bandwidth efficiency
+- **Live Screen Streaming** — 800x600 8-bit indexed color at up to 15 FPS via TCP; supports full-frame (pull) and change-only modes for bandwidth efficiency
 - **Remote Control** — Virtual button panel (mode keys, number pad, data wheel, bank selects) with drag, scroll, and keyboard-shortcut support
-- **Touch Calibration** — 5×5 warp mesh with bilinear interpolation for accurate touch-to-screen mapping
+- **FTP File Manager** — Dual-pane file browser (local and Kronos) with upload, download, rename, delete, new folder, cut/copy/paste, column sorting, drag-and-drop between panes and within the same pane, and keyboard shortcuts (Ctrl+C/X/V/A, Del, F2, F5, Backspace, Enter)
+- **Touch Calibration** — 5x5 warp mesh with bilinear interpolation for accurate touch-to-screen mapping
 - **Mode Detection** — Reference-image OCR to identify the active Kronos operating mode automatically
 - **Audio VU Meter** — WASAPI real-time level monitoring (L/R peak + RMS) with device selection
+- **Macro System** — Record and play back sequences of button presses with configurable trigger keys and step delays
 - **Command Palette** — Searchable keyboard-driven command interface (Ctrl+K)
-- **Zoom & Layout Presets** — Configurable window sizes (75–200%), fullscreen, always-on-top, and collapsible control rail
+- **Zoom & Layout Presets** — Configurable window sizes (75%--200%), fullscreen, always-on-top, and collapsible control rail
+- **Performance Monitor** — Real-time network latency and frame-rate diagnostics
+- **Settings Import/Export** — Full configuration backup and restore via JSON
 
 ---
 
 ## Requirements
 
-### Runtime
-
 | Requirement | Minimum |
 |---|---|
-| Python Runtime | Python 3.12 or higher|
-| PySide6 Runtime | PySide6 |
-
-### Build
-
-| Requirement | Version |
-|---|---|
-TBD
+| Python | 3.12+ |
+| OS | Windows 10/11, macOS, or Linux (Windows recommended) |
+| Network | Ethernet connection to a Korg Kronos with the companion daemon installed |
 
 ---
 
 ## Dependencies
 
-| Package | Version | Purpose |
-|---|---|---|
-TBD
+| Package | Purpose |
+|---|---|
+| [PySide6](https://pypi.org/project/PySide6/) | Qt 6 GUI framework (widgets, threading, signals) |
+| [numpy](https://pypi.org/project/numpy/) | Audio buffer processing for the VU meter |
+| [sounddevice](https://pypi.org/project/sounddevice/) | WASAPI audio capture for the VU meter |
 
-The application requires PySide6. If you have pip installed, simply run "pip install pyside6", however for Mac you may need to do the following: 
+> **numpy** and **sounddevice** are only required for the audio VU meter feature. The application launches and operates without them; the VU meter will simply be unavailable.
 
-First, create and activate a virtual environment using 
-`python3 -m venv .venv && source .venv/bin/activate` 
+### Installation
 
-then 
-`run pip install pyside6`
-
----
-
-## Building
-
-``` Provided git is installed on your OS, with Python 3.12 or better
+```bash
 # Clone the repository
 git clone https://github.com/Enigmahack/KronosScreenRemotePy.git
 cd KronosScreenRemotePy
 
-# Run the main.py:
-python -m venv .venv && source .venv/bin/activate
-python ./main.py
+# Create and activate a virtual environment
+python -m venv .venv
 
-or
+# Windows (PowerShell)
+.venv\Scripts\Activate.ps1
 
-python3 -m venv .venv && source .venv/bin/activate
-python3 ./main.py
+# macOS / Linux
+source .venv/bin/activate
 
+# Install dependencies
+pip install PySide6 numpy sounddevice
+
+# Run
+python main.py
 ```
+
+On **macOS**, if `pip install pyside6` fails with a wheel error, ensure you are inside an activated virtual environment before installing.
 
 ---
 
 ## Project Structure
 
 ```
-TBD
+KronosScreenRemotePy/
+  main.py               Application entry point
+  main_window.py        Primary window — frame rendering, input, menus
+  control_surface.py    Virtual button panel / data wheel widget
+  stream_receiver.py    TCP stream client — handshake, frame decoding
+  ctrl_client.py        UDP control command sender
+  file_manager.py       Dual-pane FTP file manager window
+  settings_window.py    Settings dialog (7 tabs)
+  app_settings.py       AppSettings dataclass and keybind definitions
+  storage.py            JSON persistence for settings, calibration, palette
+  overlay_renderer.py   Paint helpers for zoom, calibration, palette editor
+  mode_detector.py      Frame-based Kronos mode/help detection
+  models.py             Shared data models (Keybind, PaletteEntry, CalMesh)
+  key_map.py            Qt key → Linux keycode mapping tables
+  vu_meter.py           WASAPI audio capture and VU meter widget
+  perf_window.py        Performance / keyboard info window
+  help_window.py        Help overlay content
+  about_dialog.py       About dialog
 ```
-
 
 ---
 
 ## Connecting to a Kronos
 
 1. Ensure the Kronos is connected to your local network and its **Global > Ethernet** settings have a valid IP address.
-2. Launch **KronosScreenRemotePy** and enter the Kronos IP in the connection bar.
+2. Launch **KronosScreenRemotePy** and enter the Kronos IP in the connection dialog.
 3. The application connects on **TCP 7373** (screen stream) and **TCP 7374** (control commands).
-4. Access uses the standard FTP port **21** with the credentials configured on the Kronos.
+4. FTP access uses port **21** (configurable in Settings) with the credentials configured on the Kronos.
+5. On first connect you will be prompted for FTP credentials; these are saved for subsequent sessions.
+
+---
+
+## File Manager
+
+Open via **Connection > File Manager** or right-click the frame and select **File Manager**.
+
+- **Left pane** — local filesystem with drive selector (Windows) or root/home (Linux/macOS)
+- **Right pane** — Kronos filesystem via FTP
+- **Transfer files** — select files and click the toolbar buttons, use the right-click context menu, or drag files between panes
+- **Move files** — drag files onto a folder within the same pane, or onto the Up button to move to the parent directory; cut/paste also moves within the same host
+- **Keyboard shortcuts** — Ctrl+C/X/V (copy/cut/paste), Ctrl+A (select all), Del (delete), F2 (rename), F5 (refresh), Backspace (navigate up), Enter (open folder)
+- **Column sorting** — click column headers to sort by name, size, or date
 
 ---
 
@@ -100,13 +128,19 @@ TBD
 | Shortcut | Action |
 |---|---|
 | Ctrl+K | Open command palette |
-| F1–F8 | Switch Kronos operating mode |
-| Ctrl+1–5 | Window size preset (75%–200%) |
-| C | Toggle calibration grid overlay |
-| W | Enter warp/mesh editing mode |
+| Ctrl+S | Quick save screenshot |
+| Ctrl+Shift+S | Save screenshot as |
+| F1 | Help |
+| F2--F8 | Switch Kronos operating mode (Setlist through Disk) |
+| Q | Quit |
 | F | Toggle fullscreen |
+| Z | Toggle zoom window |
+| A | Toggle aspect lock |
+| M | Toggle VGA mirror |
+| C | Toggle calibration grid overlay |
+| Ctrl+Scroll | Adjust zoom level |
 
-Shortcuts are rebindable via **Settings → Keybinds**.
+All shortcuts are rebindable via **Settings > Key Bindings**. Click in the frame to capture keyboard input for forwarding to the Kronos.
 
 ---
 
