@@ -76,8 +76,8 @@ def _build_html() -> str:
         _p("Click anywhere on the Kronos screen to interact with it via touch injection. "
            "A brief marker appears at the touch point."),
         _p("Click inside the screen area once to activate <b>keyboard capture</b> — "
-           "further key presses are forwarded to the Kronos until you click outside or "
-           "press Escape."),
+           "further key presses are forwarded to the Kronos until you click outside "
+           "the screen or switch to another application."),
         _h2("Zoom Tool"),
         _p("Toggle the zoom loupe with the Zoom Window key (default " + _key("Z") + ") "
            "or via <b>View → Zoom Window</b>. Scroll the mouse wheel while holding "
@@ -101,12 +101,13 @@ def _build_html() -> str:
             _kb_row("Z",           "Toggle Zoom Window"),
             _kb_row("A",           "Toggle Aspect Lock"),
             _kb_row("M",           "Toggle VGA Mirror"),
-            _kb_row("F1",          "Toggle Help Window"),
+            _kb_row("F1",          "Open Help Window"),
             _kb_row("C",           "Toggle Calibration Mode"),
             _kb_row("F2 – F8",     "Mode Select (Setlist through Disk)"),
-            _kb_row("Ctrl+S",      "Save Screenshot"),
+            _kb_row("Ctrl+S",      "Quick Save Screenshot"),
+            _kb_row("Ctrl+Shift+S", "Save Screenshot As…"),
             _kb_row("Ctrl+K",      "Open Command Palette"),
-            _kb_row("Escape",      "Close Help / Exit Fullscreen / Send EXIT"),
+            _kb_row("Escape",      "Exit Fullscreen / Send EXIT"),
         ),
         _p("All shortcuts are rebindable in <b>Settings → Key Bindings</b>."),
 
@@ -115,9 +116,9 @@ def _build_html() -> str:
            "all key presses are forwarded to the Kronos instead of triggering local "
            "shortcuts."),
         _p("Activate by clicking on the screen panel. Deactivate by clicking outside "
-           "the screen, pressing Escape, or switching to another application."),
-        _p("Disable keyboard forwarding entirely with " +
-           _key("Keyboard Send") + " in Tools or the right-click menu on the keyboard indicator. "
+           "the screen or switching to another application."),
+        _p("Disable keyboard forwarding entirely with "
+           "<b>Tools → Disable Keyboard Send</b> or the right-click menu on the keyboard indicator. "
            "Numpad keys always route to the Kronos."),
 
         _h1("Layout Presets"),
@@ -143,19 +144,27 @@ def _build_html() -> str:
 
         _h1("Touch Calibration"),
         _p("If touch events land at the wrong position, enable calibration mode with "
-           + _key("C") + " or <b>Tools → Calibration</b>."),
-        _p("In calibration mode, left-click passes through as touch input. "
+           + _key("C") + " or <b>Tools → Calibration</b>. "
+           "The screen is dimmed while calibration is active."),
+        _p("Left-click passes through as touch input. "
            "Drag grid intersections to correct per-node distortion. "
            "Right-click to place or remove bias dots."),
-        _p(_key("S") + " save, " + _key("X") + " clear all, "
-           + _key("R") + " reset mesh, "
-           + _key("Ctrl+Z") + " / " + _key("Ctrl+Y") + " undo/redo, "
-           + _key("Esc") + " exit calibration."),
+        _p("While in calibration mode, all keyboard input stays local — "
+           "no keys are forwarded to the Kronos."),
+        _kbd_table(
+            _kb_row("S",         "Save calibration"),
+            _kb_row("X",         "Clear all (reset mesh and remove dots)"),
+            _kb_row("R",         "Reset mesh"),
+            _kb_row("Ctrl+Z",    "Undo"),
+            _kb_row("Ctrl+Y",    "Redo"),
+            _kb_row("Escape",    "Exit calibration mode"),
+        ),
 
         _h1("VGA Mirror"),
         _p("When connected, toggle VGA mirror with " + _key("M") + " or "
-           "<b>Tools → Toggle VGA Mirror</b>. "
-           "The mirror state is pushed to the daemon on every reconnect."),
+           "via the command palette (" + _key("Ctrl+K") + "). "
+           "The mirror state is pushed to the daemon on every reconnect. "
+           "The default mirror setting can be changed in <b>Settings → General</b>."),
 
         _h1("Bank Select"),
         _p("Change the Kronos bank from the <b>Bank Select</b> menu. "
@@ -183,9 +192,10 @@ def _build_html() -> str:
            "open a searchable list of all actions and their current key bindings."),
 
         _h1("Screenshot"),
-        _p("Save a screenshot with " + _key("Ctrl+S") + " or <b>Tools → Save Screenshot…</b>. "
-           "Quick-save (no dialog) saves directly to the configured screenshot folder "
-           "with a timestamped filename. Right-click the screen for both options."),
+        _p(_key("Ctrl+S") + " quick-saves a screenshot (no dialog) to the configured "
+           "folder with a timestamped filename. " + _key("Ctrl+Shift+S") + " or "
+           "<b>Tools → Save Screenshot As…</b> lets you choose the location. "
+           "Right-click the screen for both options."),
         _p("Configure the output folder in <b>Settings → General → Output folder</b>. "
            "Leave empty to save next to the app executable."),
 
