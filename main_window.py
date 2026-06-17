@@ -49,6 +49,80 @@ from models import CalBiasDot, CalHistEntry, CalHistKind, CalMesh, HistEntry, Pa
 from overlay_renderer import OverlayRenderer
 from stream_receiver import StreamReceiver
 
+
+# ── ICMP ping (matches C# System.Net.NetworkInformation.Ping) ─────────────────
+
+def _icmp_ping(host: str, timeout_ms: int = 2000) -> float:
+    """Return round-trip ms via ICMP echo, or -1 on failure."""
+    if sys.platform == "win32":
+        return _icmp_ping_win32(host, timeout_ms)
+    return _icmp_ping_subprocess(host, timeout_ms)
+
+
+def _icmp_ping_win32(host: str, timeout_ms: int) -> float:
+    import ctypes
+    import ctypes.wintypes
+    import socket
+    import struct
+    try:
+        addr = socket.gethostbyname(host)
+    except socket.gaierror:
+        return -1.0
+    iphlpapi = ctypes.windll.iphlpapi
+    iphlpapi.IcmpCreateFile.restype = ctypes.wintypes.HANDLE
+    iphlpapi.IcmpCloseHandle.argtypes = [ctypes.wintypes.HANDLE]
+    iphlpapi.IcmpCloseHandle.restype = ctypes.wintypes.BOOL
+    iphlpapi.IcmpSendEcho.argtypes = [
+        ctypes.wintypes.HANDLE, ctypes.wintypes.DWORD,
+        ctypes.c_void_p, ctypes.wintypes.WORD,
+        ctypes.c_void_p,
+        ctypes.c_void_p, ctypes.wintypes.DWORD,
+        ctypes.wintypes.DWORD,
+    ]
+    iphlpapi.IcmpSendEcho.restype = ctypes.wintypes.DWORD
+    handle = iphlpapi.IcmpCreateFile()
+    if handle is None or handle == ctypes.wintypes.HANDLE(-1).value:
+        return -1.0
+    try:
+        addr_int = struct.unpack("<I", socket.inet_aton(addr))[0]
+        send_data = b"\x00" * 8
+        reply_size = 28 + len(send_data) + 8 + 256
+        reply_buf = ctypes.create_string_buffer(reply_size)
+        ret = iphlpapi.IcmpSendEcho(
+            handle, addr_int,
+            send_data, len(send_data),
+            None,
+            reply_buf, reply_size,
+            timeout_ms,
+        )
+        if ret > 0:
+            status = struct.unpack_from("<I", reply_buf, 4)[0]
+            rtt = struct.unpack_from("<I", reply_buf, 8)[0]
+            if status == 0:
+                return float(rtt)
+        return -1.0
+    except Exception:
+        return -1.0
+    finally:
+        iphlpapi.IcmpCloseHandle(handle)
+
+
+def _icmp_ping_subprocess(host: str, timeout_ms: int) -> float:
+    import re
+    try:
+        result = subprocess.run(
+            ["ping", "-c", "1", "-W", str(max(1, timeout_ms // 1000)), host],
+            capture_output=True, text=True, timeout=timeout_ms / 1000 + 2,
+        )
+        if result.returncode == 0:
+            m = re.search(r"time[=<](\d+\.?\d*)", result.stdout)
+            if m:
+                return float(m.group(1))
+    except Exception:
+        pass
+    return -1.0
+
+
 def _mods_to_int(mods) -> int:
     result = 0
     if mods & Qt.ControlModifier:
@@ -695,6 +769,59 @@ class _StatusDot(QWidget):
         p.end()
 
 
+class _CollapseBar(QWidget):
+    """Thin vertical bar between frame and controls with a clickable arrow."""
+    clicked = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedWidth(14)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip("Show/hide Data Controls")
+        self._expanded = True
+
+    def set_expanded(self, expanded: bool):
+        self._expanded = expanded
+        self.update()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.fillRect(self.rect(), QColor("#1A1A1A"))
+        p.setPen(QColor("#888"))
+        p.drawLine(0, 0, 0, self.height())
+        arrow = "◀" if self._expanded else "▶"
+        p.setPen(QColor("#AAA"))
+        f = p.font()
+        f.setPixelSize(12)
+        p.setFont(f)
+        p.drawText(self.rect(), Qt.AlignCenter, arrow)
+        p.end()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+
+
+class _ShutdownOverlay(QWidget):
+    """Translucent overlay covering the entire window during teardown."""
+
+    def __init__(self, parent: QWidget):
+        super().__init__(parent)
+        self.setGeometry(parent.rect())
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+    def paintEvent(self, _event):
+        p = QPainter(self)
+        p.fillRect(self.rect(), QColor(0, 0, 0, 180))
+        p.setPen(QColor(200, 200, 200))
+        f = p.font()
+        f.setPixelSize(20)
+        p.setFont(f)
+        p.drawText(self.rect(), Qt.AlignCenter, "Shutting down…")
+        p.end()
+
+
 def _setup_logging(debug: bool):
     level = logging.DEBUG if debug else logging.INFO
     logging.basicConfig(
@@ -759,6 +886,7 @@ class MainWindow(QMainWindow):
         self._zoom_level   = settings.zoom_default_level
         self._mirror_state = False
         self._perf_window  = None   # PerformanceWindow singleton (lazy)
+        self._shutting_down = False
 
         # Ping
         self._ping_inflight = False
@@ -794,6 +922,8 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(_APP_TITLE)
         self.resize(1590, 650)
         self.setStyleSheet("QMainWindow { background: black; }")
+        if self._settings.always_on_top:
+            self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
 
         # Central widget with horizontal layout
         central = QWidget()
@@ -805,6 +935,11 @@ class MainWindow(QMainWindow):
         # Frame widget (left, 2/3 of width)
         self._frame_w = FrameWidget()
         layout.addWidget(self._frame_w, 1)
+
+        # Collapse bar between frame and control surface
+        self._collapse_bar = _CollapseBar()
+        self._collapse_bar.clicked.connect(self._toggle_controls_from_bar)
+        layout.addWidget(self._collapse_bar)
 
         # Control surface (right — same design-space width as the frame: 800 units)
         self._ctrl_surface = KronosControlSurface()
@@ -831,7 +966,7 @@ class MainWindow(QMainWindow):
         self._status_label = QLabel("Not connected")
         self._status_label.setStyleSheet("color: #888; padding-left: 4px;")
         self._status_bar.addWidget(self._conn_dot)
-        self._status_bar.addWidget(self._status_label, 1)
+        self._status_bar.addWidget(self._status_label)
 
         def _sep():
             s = QFrame()
@@ -840,8 +975,8 @@ class MainWindow(QMainWindow):
             return s
 
         # Permanent widgets (left → right)
-        self._kbd_label = QLabel("⌨✗")
-        self._kbd_label.setStyleSheet("color: #555;")
+        self._kbd_label = QLabel("⌨")
+        self._kbd_label.setStyleSheet("color: #888;")
         self._kbd_label.setToolTip("Keyboard capture — click in frame to capture")
 
         self._fps_label = QLabel("")
@@ -881,13 +1016,15 @@ class MainWindow(QMainWindow):
         self._mode_label = QLabel("")
         self._mode_label.setStyleSheet("color: #88AADD;")
 
-        for w in (self._kbd_label, _sep(),
+        for w in (_sep(), self._kbd_label, _sep(),
                   self._fps_label, _sep(),
                   self._ping_label, _sep(),
                   self._notify_label, _sep(),
-                  self._kbd_info_btn, _sep(),
+                  self._kbd_info_btn):
+            self._status_bar.addWidget(w)
+
+        for w in (_vu_box, _sep(),
                   self._conn_mode_label, _sep(),
-                  _vu_box, _sep(),
                   self._mode_label):
             self._status_bar.addPermanentWidget(w)
 
@@ -903,6 +1040,10 @@ class MainWindow(QMainWindow):
         conn_menu.addSeparator()
         self._act_disconnect = conn_menu.addAction("&Disconnect")
         conn_menu.addSeparator()
+        self._recent_menu = conn_menu.addMenu("Recent C&onnections")
+        self._rebuild_recent_menu()
+        self._act_copy_ip = conn_menu.addAction("Copy &IP Address")
+        conn_menu.addSeparator()
         self._act_quit       = conn_menu.addAction("&Quit")
         self._act_disconnect.setEnabled(False)
 
@@ -915,6 +1056,9 @@ class MainWindow(QMainWindow):
         self._act_zoom.setCheckable(True)
         view_menu.addSeparator()
         self._act_full     = view_menu.addAction("&Fullscreen")
+        self._act_on_top   = view_menu.addAction("Always on &Top")
+        self._act_on_top.setCheckable(True)
+        self._act_on_top.setChecked(self._settings.always_on_top)
         self._act_hide_ctrl = view_menu.addAction("&Hide Controls")
         self._act_hide_ctrl.setCheckable(True)
         view_menu.addSeparator()
@@ -999,6 +1143,7 @@ class MainWindow(QMainWindow):
     # ── Action wiring ──────────────────────────────────────────────────────────
 
     def _wire_actions(self):
+        self._act_copy_ip.triggered.connect(self._copy_ip_address)
         self._act_connect.triggered.connect(self._trigger_reconnect)
         self._act_refresh.triggered.connect(lambda: self._ctrl_send("REFRESH"))
         self._act_disconnect.triggered.connect(self._disconnect)
@@ -1007,6 +1152,7 @@ class MainWindow(QMainWindow):
         self._act_aspect.toggled.connect(self._on_aspect_toggled)
         self._act_zoom.toggled.connect(self._on_zoom_toggled)
         self._act_full.triggered.connect(self._toggle_fullscreen)
+        self._act_on_top.toggled.connect(self._on_always_on_top_toggled)
         self._act_hide_ctrl.toggled.connect(self._on_hide_controls_toggled)
 
         self._act_preset_full.triggered.connect(lambda: self._apply_layout("Full"))
@@ -1057,10 +1203,14 @@ class MainWindow(QMainWindow):
     def _apply_settings_to_ui(self):
         self._act_aspect.setChecked(self._aspect_lock)
         self._frame_w._aspect_lock = self._aspect_lock
-        self._act_preset_full.setChecked(self._layout_preset == "Full")
-        self._act_preset_focused.setChecked(self._layout_preset == "Focused")
-        self._act_hide_ctrl.setChecked(self._settings.hide_controls)
-        self._ctrl_surface.setVisible(not self._settings.hide_controls)
+        focused = self._layout_preset == "Focused"
+        self._act_preset_full.setChecked(not focused)
+        self._act_preset_focused.setChecked(focused)
+        self._collapse_bar.setVisible(focused)
+        ctrl_hidden = focused and self._settings.hide_controls
+        self._ctrl_surface.setVisible(not ctrl_hidden)
+        self._collapse_bar.set_expanded(not ctrl_hidden)
+        self._act_hide_ctrl.setChecked(ctrl_hidden)
 
     # ── Connection ─────────────────────────────────────────────────────────────
 
@@ -1308,6 +1458,7 @@ class MainWindow(QMainWindow):
         self._act_disconnect.setEnabled(True)
         self._set_conn_state("connected", f"Connected — {self._host}")
         self.setWindowTitle(f"{_APP_TITLE} — {self._host}")
+        self._add_recent_host(self._host)
         self._frame_w._is_connected  = True
         self._frame_w._boot_phase    = True
         self._frame_w._disconnect_msg = ""
@@ -1441,13 +1592,22 @@ class MainWindow(QMainWindow):
     @Slot()
     def _set_kbd_capture(self):
         self._kbd_capture = True
-        self._kbd_label.setText("⌨")
-        self._kbd_label.setStyleSheet("color: #88AADD;")
+        self._update_kbd_indicator()
 
     def _release_kbd_capture(self):
         self._kbd_capture = False
-        self._kbd_label.setText("⌨✗")
-        self._kbd_label.setStyleSheet("color: #555;")
+        self._update_kbd_indicator()
+
+    def _update_kbd_indicator(self):
+        if not self._kbd_send_en:
+            self._kbd_label.setStyleSheet("color: #CC4444;")
+            self._kbd_label.setToolTip("Keyboard send disabled")
+        elif self._kbd_capture:
+            self._kbd_label.setStyleSheet("color: #44BB44;")
+            self._kbd_label.setToolTip("Keyboard captured — keys forwarded to Kronos")
+        else:
+            self._kbd_label.setStyleSheet("color: #888;")
+            self._kbd_label.setToolTip("Keyboard capture — click in frame to capture")
 
     def keyPressEvent(self, event: QKeyEvent):
         key  = event.key()
@@ -1659,16 +1819,93 @@ class MainWindow(QMainWindow):
         self._is_fullscreen = not self._is_fullscreen
 
     def _on_hide_controls_toggled(self, checked: bool):
-        self._ctrl_surface.setVisible(not checked)
-        self._settings.hide_controls = checked
-        storage.save_settings(self._settings)
+        if self._layout_preset != "Focused":
+            self._act_hide_ctrl.blockSignals(True)
+            self._act_hide_ctrl.setChecked(False)
+            self._act_hide_ctrl.blockSignals(False)
+            return
+        self._set_controls_hidden(checked)
 
     def _apply_layout(self, preset: str):
         self._layout_preset = preset
         self._settings.layout_preset = preset
-        self._act_preset_full.setChecked(preset == "Full")
-        self._act_preset_focused.setChecked(preset == "Focused")
-        self._ctrl_surface.setVisible(preset == "Full")
+        focused = preset == "Focused"
+        self._act_preset_full.setChecked(not focused)
+        self._act_preset_focused.setChecked(focused)
+        self._collapse_bar.setVisible(focused)
+        if not focused:
+            self._ctrl_surface.setVisible(True)
+            self._collapse_bar.set_expanded(True)
+            self._settings.hide_controls = False
+            self._act_hide_ctrl.blockSignals(True)
+            self._act_hide_ctrl.setChecked(False)
+            self._act_hide_ctrl.blockSignals(False)
+        else:
+            ctrl_hidden = self._settings.hide_controls
+            self._ctrl_surface.setVisible(not ctrl_hidden)
+            self._collapse_bar.set_expanded(not ctrl_hidden)
+            self._act_hide_ctrl.blockSignals(True)
+            self._act_hide_ctrl.setChecked(ctrl_hidden)
+            self._act_hide_ctrl.blockSignals(False)
+        storage.save_settings(self._settings)
+
+    def _toggle_controls_from_bar(self):
+        self._set_controls_hidden(self._ctrl_surface.isVisible())
+
+    def _set_controls_hidden(self, hidden: bool):
+        self._ctrl_surface.setVisible(not hidden)
+        self._collapse_bar.set_expanded(not hidden)
+        self._settings.hide_controls = hidden
+        self._act_hide_ctrl.blockSignals(True)
+        self._act_hide_ctrl.setChecked(hidden)
+        self._act_hide_ctrl.blockSignals(False)
+        storage.save_settings(self._settings)
+
+    def _on_always_on_top_toggled(self, checked: bool):
+        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, checked)
+        self.show()
+        self._settings.always_on_top = checked
+        storage.save_settings(self._settings)
+
+    def _copy_ip_address(self):
+        ip = self._host or self._settings.kronos_host
+        if ip:
+            QApplication.clipboard().setText(ip)
+            self._status_label.setText(f"Copied: {ip}")
+            QTimer.singleShot(2000, lambda: self._restore_conn_status())
+
+    def _add_recent_host(self, host: str):
+        hosts = self._settings.recent_hosts
+        if host in hosts:
+            hosts.remove(host)
+        hosts.insert(0, host)
+        self._settings.recent_hosts = hosts[:10]
+        storage.save_settings(self._settings)
+        self._rebuild_recent_menu()
+
+    def _rebuild_recent_menu(self):
+        self._recent_menu.clear()
+        hosts = self._settings.recent_hosts
+        if hosts:
+            for h in hosts:
+                a = self._recent_menu.addAction(h)
+                a.triggered.connect(lambda checked, host=h: self._connect_to_recent(host))
+            self._recent_menu.addSeparator()
+            self._recent_menu.addAction("Clear All", self._clear_recent_hosts)
+        else:
+            a = self._recent_menu.addAction("(none)")
+            a.setEnabled(False)
+
+    def _connect_to_recent(self, host: str):
+        self._settings.kronos_host = host
+        self._host = host
+        storage.save_settings(self._settings)
+        self._connect_async()
+
+    def _clear_recent_hosts(self):
+        self._settings.recent_hosts.clear()
+        storage.save_settings(self._settings)
+        self._rebuild_recent_menu()
 
     def _set_window_size(self, scale: float):
         base_w = int(1600 * scale)
@@ -1755,6 +1992,7 @@ class MainWindow(QMainWindow):
 
     def _on_disable_kbd_toggled(self, checked: bool):
         self._kbd_send_en = not checked
+        self._update_kbd_indicator()
         self._frame_w.update()
 
     # ── Mirror ─────────────────────────────────────────────────────────────────
@@ -1909,6 +2147,7 @@ class MainWindow(QMainWindow):
 
     def _zoom_reset(self):
         self._frame_w._zoom_level = self._settings.zoom_default_level
+        self._act_zoom.setChecked(False)
         self._frame_w.update()
 
     def _show_status_context_menu(self, local_pos):
@@ -2008,16 +2247,8 @@ class MainWindow(QMainWindow):
                          daemon=True, name="Ping").start()
 
     def _ping_bg(self, host: str, port: int):
-        import socket as _socket
-        try:
-            t0 = time.monotonic()
-            s  = _socket.create_connection((host, port), timeout=2.0)
-            s.close()
-            ms = (time.monotonic() - t0) * 1000.0
-        except Exception:
-            ms = -1.0
-        finally:
-            self._ping_inflight = False
+        ms = _icmp_ping(host)
+        self._ping_inflight = False
         QTimer.singleShot(0, self, lambda m=ms: self._ping_result(m))
 
     def _ping_result(self, ms: float):
@@ -2118,20 +2349,53 @@ class MainWindow(QMainWindow):
         self.close()
 
     def closeEvent(self, event):
+        if self._shutting_down:
+            event.accept()
+            return
         if self._settings.prompt_before_quitting:
             r = QMessageBox.question(self, "Quit?", "Disconnect and quit?",
                                      QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
             if r != QMessageBox.Yes:
                 event.ignore()
                 return
-        self._stop_audio_capture()
-        self._disconnect(quiet=True)
+        event.ignore()
+        self._shutting_down = True
+        overlay = _ShutdownOverlay(self)
+        overlay.show()
+        overlay.raise_()
+        overlay.repaint()
+        QApplication.processEvents()
+        QTimer.singleShot(0, self._do_shutdown)
+
+    def _do_shutdown(self):
+        self._stop_ping()
+        self._mode_poll_timer.stop()
+        if self._combi_prog_edit_active:
+            self._combi_flash_timer.stop()
+        if self._perf_window:
+            self._perf_window.close()
+
+        receiver = self._receiver
+        audio = self._audio_capture
+
+        if receiver:
+            receiver.stop()
+        if audio:
+            audio._running = False
+            audio.quit()
+
+        if receiver:
+            receiver.wait(800)
+            self._receiver = None
+        if audio:
+            audio.wait(500)
+            self._audio_capture = None
+
+        self._ctrl.reset()
         storage.save_settings(self._settings)
         if self._frame_w._cal_dirty:
             storage.save_cal(self._frame_w._cal_mesh, self._frame_w._cal_bias_dots)
-        if self._perf_window:
-            self._perf_window.close()
-        event.accept()
+        self.close()
 
     def eventFilter(self, watched, event):
         # Clickable status-bar widgets

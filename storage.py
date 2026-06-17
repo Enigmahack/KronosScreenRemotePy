@@ -54,6 +54,8 @@ def load_settings() -> AppSettings:
         s.zoom_default_level     = float(root.get("zoom_default_level", s.zoom_default_level))
         s.zoom_window_size       = float(root.get("zoom_window_size",   s.zoom_window_size))
         s.debug_logging          = root.get("debug_logging",          s.debug_logging)
+        s.always_on_top          = root.get("always_on_top",          s.always_on_top)
+        s.recent_hosts           = list(root.get("recent_hosts",      []))
         s.keybinds               = root.get("keybinds",               {})
 
         for m in root.get("macros", []):
@@ -105,6 +107,8 @@ def save_settings(s: AppSettings):
             "zoom_default_level":     s.zoom_default_level,
             "zoom_window_size":       s.zoom_window_size,
             "debug_logging":          s.debug_logging,
+            "always_on_top":          s.always_on_top,
+            "recent_hosts":           s.recent_hosts,
             "keybinds":               s.keybinds,
             "macros": [
                 {

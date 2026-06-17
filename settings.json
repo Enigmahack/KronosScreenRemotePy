@@ -16,7 +16,44 @@
   "zoom_default_level": 2.5,
   "zoom_window_size": 1.0,
   "debug_logging": false,
+  "always_on_top": false,
+  "recent_hosts": [
+    "192.168.100.15"
+  ],
   "keybinds": {},
-  "macros": [],
+  "macros": [
+    {
+      "description": "Test",
+      "trigger_key": 82,
+      "trigger_mods": 67108864,
+      "step_delay_ms": 100,
+      "steps": [
+        "KEY 107 1",
+        "KEY 107 0",
+        "KEY 102 1",
+        "KEY 102 0",
+        "KEY 42 1",
+        "KEY 42 0",
+        "KEY 108 1",
+        "KEY 108 0",
+        "KEY 108 1",
+        "KEY 108 0",
+        "KEY 108 1",
+        "KEY 108 0",
+        "KEY 108 1",
+        "KEY 108 0",
+        "KEY 108 1",
+        "KEY 108 0",
+        "KEY 108 1",
+        "KEY 108 0",
+        "KEY 108 1",
+        "KEY 108 0",
+        "KEY 108 1",
+        "KEY 108 0",
+        "KEY 108 1",
+        "KEY 108 0"
+      ]
+    }
+  ],
   "raw_key_maps": []
 }

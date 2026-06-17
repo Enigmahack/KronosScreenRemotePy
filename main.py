@@ -60,6 +60,11 @@ def main():
     app_icon = QIcon(str(_ico if _ico.exists() else _png))
     app.setWindowIcon(app_icon)
 
+    app.setStyleSheet(
+        "QToolTip { color: #CCCCCC; background-color: #2A2A2A;"
+        " border: 1px solid #555; padding: 3px; }"
+    )
+
     # Build Qt key name cache now that Qt is up
     models._build_key_names()
 

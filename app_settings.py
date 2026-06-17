@@ -95,6 +95,12 @@ class AppSettings:
     # Macros
     macros: List[MacroDef] = field(default_factory=list)
 
+    # Always on top
+    always_on_top: bool = False
+
+    # Recent connections (most-recent-first, capped at 10)
+    recent_hosts: List[str] = field(default_factory=list)
+
     # Raw key mappings (host Qt key → linux keycode)
     raw_key_maps: List[RawKeyMap] = field(default_factory=list)
 
