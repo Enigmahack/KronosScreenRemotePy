@@ -106,14 +106,15 @@ def _bar(value: int, total: int, color: str = _CPU_LINE) -> QProgressBar:
 class _BarRow(QWidget):
     """Label + progress bar + value label on one line."""
 
-    def __init__(self, label: str, color: str = _CPU_LINE, parent=None):
+    def __init__(self, label: str, color: str = _CPU_LINE, parent=None,
+                 label_width: int = 60, value_width: int = 38):
         super().__init__(parent)
         h = QHBoxLayout(self)
         h.setContentsMargins(0, 0, 0, 0)
         h.setSpacing(6)
 
         lbl = QLabel(label)
-        lbl.setFixedWidth(60)
+        lbl.setFixedWidth(label_width)
         lbl.setStyleSheet(f"color: {_TEXT_DIM}; font-size: 11px;")
         h.addWidget(lbl)
 
@@ -129,7 +130,7 @@ class _BarRow(QWidget):
         h.addWidget(self._bar, 1)
 
         self._val = QLabel("0%")
-        self._val.setFixedWidth(38)
+        self._val.setFixedWidth(value_width)
         self._val.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self._val.setStyleSheet(f"color: {_TEXT_NORM}; font-size: 11px;")
         h.addWidget(self._val)
@@ -219,7 +220,8 @@ class PerformanceWindow(QDialog):
         mem_group = QGroupBox("Memory")
         mem_group.setStyleSheet(cpu_group.styleSheet())
         mem_vbox = QVBoxLayout(mem_group)
-        self._mem_bar = _BarRow("RAM", color="#AACC88")
+        self._mem_bar = _BarRow("Kernel Memory", color="#AACC88",
+                                label_width=90, value_width=80)
         mem_vbox.addWidget(self._mem_bar)
         root.addWidget(mem_group)
 
@@ -229,13 +231,13 @@ class PerformanceWindow(QDialog):
         disk_vbox = QVBoxLayout(disk_group)
         disk_vbox.setSpacing(3)
 
-        self._rw_bar  = _BarRow("/korg/rw",  color="#DDAA55")
+        self._rw_bar  = _BarRow("SSD1",  color="#DDAA55")
         disk_vbox.addWidget(self._rw_bar)
 
         self._rw2_widget = QWidget()
         rw2_vbox = QVBoxLayout(self._rw2_widget)
         rw2_vbox.setContentsMargins(0, 0, 0, 0)
-        self._rw2_bar = _BarRow("/korg/rw2", color="#DDAA55")
+        self._rw2_bar = _BarRow("SSD2", color="#DDAA55")
         rw2_vbox.addWidget(self._rw2_bar)
         self._rw2_widget.setVisible(False)
         disk_vbox.addWidget(self._rw2_widget)
@@ -375,7 +377,11 @@ class PerformanceWindow(QDialog):
             avail_kb = int(kv.get("MEM_AVAIL_KB", kv.get("MEM_FREE_KB", "0")))
             used_kb  = total_kb - avail_kb
             if total_kb > 0:
-                self._mem_bar.set_used_of(used_kb // 1024, total_kb // 1024)
+                used_mb  = used_kb // 1024
+                total_mb = total_kb // 1024
+                self._mem_bar._bar.setRange(0, total_mb)
+                self._mem_bar._bar.setValue(used_mb)
+                self._mem_bar._val.setText(f"{used_mb}/{total_mb} MB")
         except ValueError:
             pass
 

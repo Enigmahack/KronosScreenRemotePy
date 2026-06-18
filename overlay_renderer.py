@@ -343,12 +343,13 @@ class OverlayRenderer:
         # Status bar
         dirty_flag = " [unsaved]" if cal_dirty else ""
         status_text = (f"Calibration{dirty_flag}  |  "
-                       f"S: save  X: clear all  R: reset  Ctrl+Z/Y: undo/redo  "
+                       f"S: save  X: clear all dots  R: reset  Ctrl+Z/Y: undo/redo  "
                        f"RClick: dot  Esc: exit")
         bar_h = 18
         bar_rect = QRectF(frame_rect.x(), frame_rect.bottom() - bar_h,
                           frame_rect.width(), bar_h)
         p.fillRect(bar_rect, QColor(0, 0, 0, 180))
-        p.setPen(_COL_TEXT_PRIMARY)
+        bar_color = QColor(0xCC, 0x44, 0x44) if cal_dirty else QColor(0x44, 0xBB, 0x44)
+        p.setPen(bar_color)
         p.setFont(QFont("Courier New", 8))
         p.drawText(bar_rect.toRect(), Qt.AlignVCenter | Qt.AlignHCenter, status_text)

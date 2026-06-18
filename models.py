@@ -228,8 +228,8 @@ class CalMesh:
             self._off_y[col][row] = oy
 
     def node_dst(self, col: int, row: int, w: int, h: int) -> Tuple[int, int]:
-        x = max(0, min(w - 1, self.nat_x(col, w) + self._off_x[col][row]))
-        y = max(0, min(h - 1, self.nat_y(row, h) + self._off_y[col][row]))
+        x = self.nat_x(col, w) + self._off_x[col][row]
+        y = self.nat_y(row, h) + self._off_y[col][row]
         return x, y
 
     # ── Forward map ────────────────────────────────────────────────────────────

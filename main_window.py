@@ -189,6 +189,7 @@ _FRAME_H    = 600
 _DRAG_START = 8    # px manhattan to start drag
 _DRAG_MOVE  = 3    # px to send TOUCH_MOVE after drag starts
 _CAL_NODE_R = 18.0
+_CAL_MARGIN = 20
 _TOUCH_FADE = 0.6  # seconds for touch marker fade
 _MODE_POLL_INTERVAL_MS = 1000
 
@@ -328,6 +329,10 @@ class FrameWidget(QWidget):
         p.fillRect(self.rect(), Qt.black)
 
         fr = self._compute_frame_rect()
+        if self._cal_mode:
+            m = _CAL_MARGIN
+            fr = QRectF(fr.x() + m, fr.y() + m,
+                        fr.width() - 2 * m, fr.height() - 2 * m)
         self._frame_rect = fr
 
         if self._frame_pixmap:
@@ -403,6 +408,8 @@ class FrameWidget(QWidget):
             return None
         fx = int((pos.x() - fr.x()) * _FRAME_W / fr.width())
         fy = int((pos.y() - fr.y()) * _FRAME_H / fr.height())
+        if self._cal_mode:
+            return QPoint(fx, fy)
         if fx < 0 or fy < 0 or fx >= _FRAME_W or fy >= _FRAME_H:
             return None
         return QPoint(fx, fy)
@@ -560,6 +567,7 @@ class FrameWidget(QWidget):
     def _show_touch_marker(self, nx: int, ny: int):
         self._touch_marker_pos  = (nx, ny)
         self._touch_marker_time = time.monotonic()
+        self.update()
 
     # ── Palette editor mouse helpers ───────────────────────────────────────────
 
@@ -983,8 +991,8 @@ class MainWindow(QMainWindow):
             return s
 
         # Permanent widgets (left → right)
-        self._kbd_label = QLabel("⌨")
-        self._kbd_label.setStyleSheet("color: #888;")
+        self._kbd_label = QLabel("⌨︎")
+        self._kbd_label.setStyleSheet("color: #888; font-family: 'Segoe UI Symbol';")
         self._kbd_label.setToolTip("Keyboard capture — click in frame to capture")
 
         self._fps_label = QLabel("")
@@ -1607,14 +1615,15 @@ class MainWindow(QMainWindow):
         self._update_kbd_indicator()
 
     def _update_kbd_indicator(self):
+        _kbd_font = "font-family: 'Segoe UI Symbol';"
         if not self._kbd_send_en:
-            self._kbd_label.setStyleSheet("color: #CC4444;")
+            self._kbd_label.setStyleSheet(f"color: #CC4444; {_kbd_font}")
             self._kbd_label.setToolTip("Keyboard send disabled")
         elif self._kbd_capture:
-            self._kbd_label.setStyleSheet("color: #44BB44;")
+            self._kbd_label.setStyleSheet(f"color: #44BB44; {_kbd_font}")
             self._kbd_label.setToolTip("Keyboard captured — keys forwarded to Kronos")
         else:
-            self._kbd_label.setStyleSheet("color: #888;")
+            self._kbd_label.setStyleSheet(f"color: #888; {_kbd_font}")
             self._kbd_label.setToolTip("Keyboard capture — click in frame to capture")
 
     def keyPressEvent(self, event: QKeyEvent):
@@ -1638,34 +1647,9 @@ class MainWindow(QMainWindow):
         if self._frame_w.palette_key(event):
             return
 
-        # Calibration mode — all keys stay local, nothing reaches Kronos
+        # Calibration mode — handled by eventFilter, but belt-and-suspenders
         if self._frame_w._cal_mode:
-            if key == Qt.Key_Escape:
-                self._act_cal.setChecked(False)
-                return
-            if mods & Qt.ControlModifier and key == Qt.Key_Z:
-                self._frame_w.cal_undo()
-                return
-            if mods & Qt.ControlModifier and key == Qt.Key_Y:
-                self._frame_w.cal_redo()
-                return
-            if key == Qt.Key_S and not mods:
-                storage.save_cal(self._frame_w._cal_mesh,
-                                 self._frame_w._cal_bias_dots)
-                self._frame_w._cal_dirty = False
-                self._frame_w.update()
-                return
-            if key == Qt.Key_X and not mods:
-                self._frame_w._cal_mesh.reset()
-                self._frame_w._cal_bias_dots.clear()
-                self._frame_w._cal_dirty = True
-                self._frame_w.update()
-                return
-            if key == Qt.Key_R and not mods:
-                self._frame_w._cal_mesh.reset()
-                self._frame_w._cal_dirty = True
-                self._frame_w.update()
-                return
+            self._handle_cal_key(event)
             return
 
         # Escape: close help overlay → exit fullscreen → send BUTTON EXIT
@@ -1843,11 +1827,6 @@ class MainWindow(QMainWindow):
         self._is_fullscreen = not self._is_fullscreen
 
     def _on_hide_controls_toggled(self, checked: bool):
-        if self._layout_preset != "Focused":
-            self._act_hide_ctrl.blockSignals(True)
-            self._act_hide_ctrl.setChecked(False)
-            self._act_hide_ctrl.blockSignals(False)
-            return
         self._set_controls_hidden(checked)
 
     def _apply_layout(self, preset: str):
@@ -1957,6 +1936,35 @@ class MainWindow(QMainWindow):
                                  self._frame_w._cal_bias_dots)
                 self._frame_w._cal_dirty = False
         self._frame_w.update()
+
+    def _handle_cal_key(self, event: QKeyEvent):
+        key  = event.key()
+        mods = event.modifiers()
+        if key == Qt.Key_Escape:
+            self._act_cal.setChecked(False)
+            return
+        if mods & Qt.ControlModifier and key == Qt.Key_Z:
+            self._frame_w.cal_undo()
+            return
+        if mods & Qt.ControlModifier and key == Qt.Key_Y:
+            self._frame_w.cal_redo()
+            return
+        if key == Qt.Key_S and not mods:
+            storage.save_cal(self._frame_w._cal_mesh,
+                             self._frame_w._cal_bias_dots)
+            self._frame_w._cal_dirty = False
+            self._frame_w.update()
+            return
+        if key == Qt.Key_X and not mods:
+            self._frame_w._cal_bias_dots.clear()
+            self._frame_w._cal_dirty = True
+            self._frame_w.update()
+            return
+        if key == Qt.Key_R and not mods:
+            self._frame_w._cal_mesh.reset()
+            self._frame_w._cal_dirty = True
+            self._frame_w.update()
+            return
 
     def _set_cal_grid(self, n: int):
         self._frame_w._cal_mesh = CalMesh(n, n)
@@ -2394,6 +2402,22 @@ class MainWindow(QMainWindow):
         if self._shutting_down:
             event.accept()
             return
+        if self._frame_w._cal_dirty:
+            r = QMessageBox.warning(
+                self, "Unsaved Calibration",
+                "You have unsaved calibration changes.\n\n"
+                "Do you want to save before quitting?",
+                QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
+                QMessageBox.Save)
+            if r == QMessageBox.Cancel:
+                event.ignore()
+                return
+            if r == QMessageBox.Save:
+                storage.save_cal(self._frame_w._cal_mesh,
+                                 self._frame_w._cal_bias_dots)
+                self._frame_w._cal_dirty = False
+            else:
+                self._frame_w._cal_dirty = False
         if self._settings.prompt_before_quitting:
             r = QMessageBox.question(self, "Quit?", "Disconnect and quit?",
                                      QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
@@ -2457,6 +2481,19 @@ class MainWindow(QMainWindow):
             if watched is self._vu_picker_btn and btn == Qt.MouseButton.LeftButton:
                 self._open_vu_device_picker()
                 return True
+
+        # Intercept all key events during calibration mode so menu
+        # accelerators (e.g. &Settings) don't steal single-letter keys.
+        if self._frame_w._cal_mode:
+            t = event.type()
+            if t == QEvent.Type.KeyPress:
+                if isinstance(watched, QWidget) and watched.window() is self:
+                    if not event.isAutoRepeat():
+                        self._handle_cal_key(event)
+                    return True
+            if t == QEvent.Type.KeyRelease:
+                if isinstance(watched, QWidget) and watched.window() is self:
+                    return True
 
         # Intercept all key events at application level when captured so
         # menu accelerators and QShortcuts never fire.  Returning True

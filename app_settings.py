@@ -62,7 +62,7 @@ class AppSettings:
     ctrl_port:   int = 7374
 
     # Streaming
-    pull_mode: bool = True
+    pull_mode: bool = False
     max_fps:   int  = 15
 
     # General
