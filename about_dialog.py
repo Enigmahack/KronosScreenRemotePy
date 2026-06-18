@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
     QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout,
 )
 
-APP_VERSION = "0.8.4"
+APP_VERSION = "1.0.0"
 APP_NAME    = "Kronos ScreenRemote (Python)"
 
 
