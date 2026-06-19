@@ -14,34 +14,30 @@ A Python application for remotely viewing and controlling a **Korg Kronos** synt
 
 ## Features
 
-- **Live Screen Streaming** — 800x600 8-bit indexed color at up to 15 FPS via TCP; supports full-frame (pull) and change-only modes for bandwidth efficiency
-- **Value Slider** — Left-panel INC/DEC buttons and draggable 0–127 value slider mirroring the Kronos front-panel VALUE control
+- **Live Screen Streaming** — 800×600 8-bit indexed color at up to 15 FPS via TCP; supports full-frame (pull) and change-only modes for bandwidth efficiency
+- **Value Slider** — Left-panel INC/DEC buttons and draggable 0–127 value slider mirroring the Kronos front-panel VALUE control; double-click to snap to center (64)
 - **Remote Control** — Virtual button panel (mode keys, number pad, data wheel, bank selects) with drag, scroll, and keyboard-shortcut support
 - **Mode Detection** — Reference-image OCR to identify the active Kronos operating mode automatically
 - **Audio VU Meter** — WASAPI real-time level monitoring (L/R peak + RMS) with device selection
-<img width="1195" height="511" alt="image" src="https://github.com/user-attachments/assets/7f2c35e1-3593-4f15-b74f-42a787b9129c" />
+<img width="1415" height="513" alt="2026-06-19 18_10_07-Kronos ScreenRemote — 192 168 100 15" src="https://github.com/user-attachments/assets/85ffbbdc-869f-4fa0-9eb4-fcbc56ebf740" />
 
-- **FTP File Manager** — Dual-pane file browser (local and Kronos) with upload, download, rename, delete, new folder, cut/copy/paste, column sorting, drag-and-drop between panes and within the same pane, and keyboard shortcuts (Ctrl+C/X/V/A, Del, F2, F5, Backspace, Enter)
-<img width="1195" height="512" alt="image" src="https://github.com/user-attachments/assets/f6344389-3f26-4e9f-bc53-8a714a329b7e" />
 
 - **Touch Calibration** — 3x3 - 5x5 warp mesh with bilinear interpolation for accurate touch-to-screen mapping
-<img width="1195" height="512" alt="image" src="https://github.com/user-attachments/assets/fce56b18-3374-43d0-8308-1df7da011355" />
+<img width="1415" height="513" alt="2026-06-19 18_32_56-GreenshotCalibration" src="https://github.com/user-attachments/assets/5b3e4752-845d-4813-9742-6ed7ff9e85e6" />
+
+
+- **FTP File Manager** — Browse, upload, and download files on the Kronos SD card with conflict resolution
+<img width="1408" height="512" alt="2026-06-19 18_16_51-Kronos ScreenRemote FileManager— 192 168 100 15" src="https://github.com/user-attachments/assets/dbcad5b3-76cb-4fc7-add5-6df8849c80c9" />
+
 
 - **Test Mode** — Enter the Kronos built-in hardware test mode for diagnostics (Tools menu)
-- **Macro System** — Record and play back sequences of button presses with configurable trigger keys and step delays
-<img width="1195" height="512" alt="image" src="https://github.com/user-attachments/assets/7e1d022a-0244-4dac-aa9e-8c64287ca3db" />
+- **Zoom & Layout Presets** — Configurable window sizes (75–200%), fullscreen, always-on-top; data input (right) and value input (left) panels can be independently hidden in Full mode or expanded/collapsed via dedicated rails in Focused mode, with panel state remembered across sessions
+<img width="952" height="512" alt="2026-06-19 18_14_45-Kronos ScreenRemote Views— 192 168 100 15" src="https://github.com/user-attachments/assets/d35bfd38-4f8f-4564-9079-45cc449bf4bd" />
 
 
-- **Command Palette** — Searchable keyboard-driven command interface (Ctrl+K)
-<img width="1195" height="512" alt="image" src="https://github.com/user-attachments/assets/171d7c31-f696-4844-b56c-1a2aefd517ed" />
+- **Hardware Stats Monitoring** — Monitor hard drive space, CPU core usage, Fan speed, CPU temperatures, and more.
+<img width="1415" height="513" alt="2026-06-19 18_11_31-Kronos ScreenRemote_PERF — 192 168 100 15" src="https://github.com/user-attachments/assets/9ef81aaf-ea4d-4937-81dd-b210cacd44de" />
 
-
-- **Zoom Window** — Configurable window sizes (75%--200%), fullscreen, always-on-top, and collapsible control rail
-<img width="1195" height="512" alt="image" src="https://github.com/user-attachments/assets/293f1098-9522-465f-8b33-08e215c9a11e" />
-
-
-- **Performance Monitor** — Real-time network latency and frame-rate diagnostics
-<img width="1195" height="511" alt="image" src="https://github.com/user-attachments/assets/f972e0d2-7ae2-4836-a478-6f01a434eb59" />
 
 ---
 
