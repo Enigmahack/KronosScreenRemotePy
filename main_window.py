@@ -784,6 +784,147 @@ class _StatusDot(QWidget):
         p.end()
 
 
+class KronosValueSliderPanel(QWidget):
+    """Left-side panel with INC/DEC buttons and a draggable value slider.
+
+    Design space is 282×600, matching the C# LeftPanelViewbox.
+    The background image (KronosLeftSide2EMPTY.png) is cropped/offset
+    to match the XAML Margin="-33,-113,-34,0".
+    """
+    button_pressed = Signal(str)
+    slider_changed = Signal(int)
+
+    _DS_W = 282
+    _DS_H = 600
+
+    _BTN_W = 50
+    _BTN_H = 24
+    _BTN_X = 114
+    _INC_Y = 72
+    _DEC_Y = 146
+
+    _CANVAS_LEFT   = 87
+    _CANVAS_TOP    = 300
+    _CANVAS_RIGHT  = 87
+    _CANVAS_BOTTOM = 30
+    _THUMB_W       = 72
+    _THUMB_H       = 42
+
+    _SLIDER_TRAVEL = 228.0
+    _THUMB_HALF    = 21.0
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumWidth(60)
+        self._bg_pixmap: Optional[QPixmap] = None
+        self._btn_pixmap: Optional[QPixmap] = None
+        self._thumb_pixmap: Optional[QPixmap] = None
+        self._thumb_top = self._SLIDER_TRAVEL
+        self._value = 0
+        self._dragging = False
+        self._pressed_btn: Optional[str] = None
+        self._load_images()
+
+    def _load_images(self):
+        res = pathlib.Path(__file__).parent / "Resources" / "Images"
+        bg = res / "KronosLeftSide2EMPTY.png"
+        if bg.exists():
+            self._bg_pixmap = QPixmap(str(bg))
+        btn = res / "UnlitThinButton.png"
+        if btn.exists():
+            self._btn_pixmap = QPixmap(str(btn))
+        thumb = res / "Slider.png"
+        if thumb.exists():
+            self._thumb_pixmap = QPixmap(str(thumb))
+
+    def paintEvent(self, _event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.SmoothPixmapTransform)
+        p.fillRect(self.rect(), Qt.black)
+
+        scale = min(self.width() / self._DS_W, self.height() / self._DS_H)
+        ox = (self.width() - self._DS_W * scale) / 2
+        oy = (self.height() - self._DS_H * scale) / 2
+        p.translate(ox, oy)
+        p.scale(scale, scale)
+
+        if self._bg_pixmap:
+            p.drawPixmap(QRect(-33, -113, 349, 713), self._bg_pixmap)
+        else:
+            p.fillRect(0, 0, self._DS_W, self._DS_H, QColor("#2A2A2A"))
+
+        if self._btn_pixmap:
+            inc_off = 2 if self._pressed_btn == "INC" else 0
+            p.drawPixmap(QRect(self._BTN_X, self._INC_Y + inc_off,
+                               self._BTN_W, self._BTN_H), self._btn_pixmap)
+            dec_off = 2 if self._pressed_btn == "DEC" else 0
+            p.drawPixmap(QRect(self._BTN_X, self._DEC_Y + dec_off,
+                               self._BTN_W, self._BTN_H), self._btn_pixmap)
+
+        if self._thumb_pixmap:
+            tx = self._CANVAS_LEFT + 17
+            ty = self._CANVAS_TOP + self._thumb_top
+            p.drawPixmap(QRect(tx, int(ty), self._THUMB_W, self._THUMB_H),
+                         self._thumb_pixmap)
+
+        p.end()
+
+    def _to_design(self, pos) -> QPointF:
+        scale = min(self.width() / self._DS_W, self.height() / self._DS_H)
+        ox = (self.width() - self._DS_W * scale) / 2
+        oy = (self.height() - self._DS_H * scale) / 2
+        return QPointF((pos.x() - ox) / scale, (pos.y() - oy) / scale)
+
+    def mousePressEvent(self, event: QMouseEvent):
+        if event.button() != Qt.MouseButton.LeftButton:
+            return
+        ds = self._to_design(event.position())
+        inc_rect = QRect(self._BTN_X, self._INC_Y, self._BTN_W, self._BTN_H)
+        dec_rect = QRect(self._BTN_X, self._DEC_Y, self._BTN_W, self._BTN_H)
+        if inc_rect.contains(int(ds.x()), int(ds.y())):
+            self._pressed_btn = "INC"
+            self.update()
+            self.button_pressed.emit("INC")
+            return
+        if dec_rect.contains(int(ds.x()), int(ds.y())):
+            self._pressed_btn = "DEC"
+            self.update()
+            self.button_pressed.emit("DEC")
+            return
+        canvas_rect = QRect(self._CANVAS_LEFT, self._CANVAS_TOP,
+                            self._DS_W - self._CANVAS_LEFT - self._CANVAS_RIGHT,
+                            self._DS_H - self._CANVAS_TOP - self._CANVAS_BOTTOM)
+        if canvas_rect.contains(int(ds.x()), int(ds.y())):
+            self._dragging = True
+            self.grabMouse()
+            self._update_slider_from_mouse(ds.y())
+
+    def mouseMoveEvent(self, event: QMouseEvent):
+        if not self._dragging:
+            return
+        ds = self._to_design(event.position())
+        self._update_slider_from_mouse(ds.y())
+
+    def mouseReleaseEvent(self, event: QMouseEvent):
+        if event.button() == Qt.MouseButton.LeftButton:
+            if self._dragging:
+                self._dragging = False
+                self.releaseMouse()
+            if self._pressed_btn is not None:
+                self._pressed_btn = None
+                self.update()
+
+    def _update_slider_from_mouse(self, mouse_y: float):
+        local_y = mouse_y - self._CANVAS_TOP
+        thumb_top = max(0.0, min(local_y - self._THUMB_HALF, self._SLIDER_TRAVEL))
+        self._thumb_top = thumb_top
+        new_val = round(127.0 * (self._SLIDER_TRAVEL - thumb_top) / self._SLIDER_TRAVEL)
+        if new_val != self._value:
+            self._value = new_val
+            self.slider_changed.emit(new_val)
+        self.update()
+
+
 class _CollapseBar(QWidget):
     """Thin vertical bar between frame and controls with a clickable arrow."""
     clicked = Signal()
@@ -936,7 +1077,7 @@ class MainWindow(QMainWindow):
 
     def _setup_ui(self):
         self.setWindowTitle(_APP_TITLE)
-        self.resize(1590, 650)
+        self.resize(1882, 650)
         self.setStyleSheet("QMainWindow { background: black; }")
         if self._settings.always_on_top:
             self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
@@ -948,20 +1089,26 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # Frame widget (left, 2/3 of width)
+        # Left value-slider panel (282 design units wide)
+        self._left_panel = KronosValueSliderPanel()
+        self._left_panel.button_pressed.connect(self._on_left_panel_button)
+        self._left_panel.slider_changed.connect(self._on_vslider_changed)
+        layout.addWidget(self._left_panel, 282)
+
+        # Frame widget (800 design units wide)
         self._frame_w = FrameWidget()
-        layout.addWidget(self._frame_w, 1)
+        layout.addWidget(self._frame_w, 800)
 
         # Collapse bar between frame and control surface
         self._collapse_bar = _CollapseBar()
         self._collapse_bar.clicked.connect(self._toggle_controls_from_bar)
         layout.addWidget(self._collapse_bar)
 
-        # Control surface (right — same design-space width as the frame: 800 units)
+        # Control surface (800 design units wide)
         self._ctrl_surface = KronosControlSurface()
         self._ctrl_surface.button_pressed.connect(self._on_ctrl_button)
         self._ctrl_surface.wheel_step.connect(self._on_wheel_step)
-        layout.addWidget(self._ctrl_surface, 1)
+        layout.addWidget(self._ctrl_surface, 800)
 
         # Signals from frame widget
         self._frame_w.touch_down.connect(self._on_touch_down)
@@ -1049,21 +1196,20 @@ class MainWindow(QMainWindow):
     def _build_menu(self):
         mb = self.menuBar()
 
-        # Connection
+        # Connection — matches C# menu order
         conn_menu = mb.addMenu("&Connection")
         self._act_connect    = conn_menu.addAction("&Connect")
-        self._act_refresh    = conn_menu.addAction("Re&fresh Display")
         conn_menu.addSeparator()
-        self._act_disconnect = conn_menu.addAction("&Disconnect")
-        conn_menu.addSeparator()
-        self._recent_menu = conn_menu.addMenu("Recent C&onnections")
+        self._recent_menu = conn_menu.addMenu("&Recent Connections")
         self._rebuild_recent_menu()
         self._act_copy_ip = conn_menu.addAction("Copy &IP Address")
         conn_menu.addSeparator()
         self._act_file_mgr   = conn_menu.addAction("File &Manager…")
         conn_menu.addSeparator()
-        self._act_quit       = conn_menu.addAction("&Quit")
+        self._act_disconnect = conn_menu.addAction("&Disconnect")
         self._act_disconnect.setEnabled(False)
+        conn_menu.addSeparator()
+        self._act_quit       = conn_menu.addAction("&Quit")
 
         # View
         view_menu = mb.addMenu("&View")
@@ -1074,11 +1220,12 @@ class MainWindow(QMainWindow):
         self._act_zoom.setCheckable(True)
         view_menu.addSeparator()
         self._act_full     = view_menu.addAction("&Fullscreen")
+        self._act_hide_ctrl = view_menu.addAction("&Hide Controls")
+        self._act_hide_ctrl.setCheckable(True)
         self._act_on_top   = view_menu.addAction("Always on &Top")
         self._act_on_top.setCheckable(True)
         self._act_on_top.setChecked(self._settings.always_on_top)
-        self._act_hide_ctrl = view_menu.addAction("&Hide Controls")
-        self._act_hide_ctrl.setCheckable(True)
+        self._act_refresh  = view_menu.addAction("Re&fresh Display")
         view_menu.addSeparator()
         preset_menu = view_menu.addMenu("Layout &Preset")
         self._act_preset_full    = preset_menu.addAction("&Full")
@@ -1109,14 +1256,14 @@ class MainWindow(QMainWindow):
             a.setCheckable(True)
             self._act_grid[n] = a
         self._act_grid[5].setChecked(True)
+        self._act_test_mode   = tools_menu.addAction("Enter Kronos &Test Mode")
         tools_menu.addSeparator()
+        self._act_screenshot  = tools_menu.addAction("Save &Screenshot…")
         self._act_quick_save  = tools_menu.addAction("&Quick Save Screenshot")
-        self._act_screenshot  = tools_menu.addAction("Save Screenshot &As…")
         self._act_copy_frame  = tools_menu.addAction("&Copy Frame to Clipboard")
-        self._act_open_ss_dir = tools_menu.addAction("&Open Screenshots Folder")
+        self._act_open_ss_dir = tools_menu.addAction("Open Screenshots &Folder")
         tools_menu.addSeparator()
         self._act_keyboard_info = tools_menu.addAction("&Keyboard Info…")
-        tools_menu.addSeparator()
         self._act_disable_kbd = tools_menu.addAction("&Disable Keyboard Send")
         self._act_disable_kbd.setCheckable(True)
 
@@ -1182,6 +1329,7 @@ class MainWindow(QMainWindow):
         self._act_cal.toggled.connect(self._on_cal_toggled)
         for n, act in self._act_grid.items():
             act.triggered.connect(lambda checked, s=n: self._set_cal_grid(s))
+        self._act_test_mode.triggered.connect(self._enter_test_mode)
         self._act_quick_save.triggered.connect(self._quick_save_screenshot)
         self._act_screenshot.triggered.connect(self._save_screenshot)
         self._act_copy_frame.triggered.connect(self._copy_frame_to_clipboard)
@@ -1227,6 +1375,7 @@ class MainWindow(QMainWindow):
         self._ctrl_surface.setVisible(not ctrl_hidden)
         self._collapse_bar.set_expanded(not ctrl_hidden)
         self._act_hide_ctrl.setChecked(ctrl_hidden)
+        self._show_left_panel(not ctrl_hidden and not focused)
 
     # ── Connection ─────────────────────────────────────────────────────────────
 
@@ -1603,6 +1752,17 @@ class MainWindow(QMainWindow):
         # Animate the wheel widget (direction: +1=CW, -1=CCW)
         self._ctrl_surface.trigger_wheel_anim(1 if delta > 0 else -1)
 
+    # ── Left panel (value slider) ─────────────────────────────────────────────
+
+    def _on_left_panel_button(self, name: str):
+        self._ctrl_send(f"BUTTON {name}")
+
+    def _on_vslider_changed(self, value: int):
+        self._ctrl_send(f"VSLIDER {value}")
+
+    def _show_left_panel(self, show: bool):
+        self._left_panel.setVisible(show)
+
     # ── Keyboard ───────────────────────────────────────────────────────────────
 
     @Slot()
@@ -1843,6 +2003,7 @@ class MainWindow(QMainWindow):
             self._act_hide_ctrl.blockSignals(True)
             self._act_hide_ctrl.setChecked(False)
             self._act_hide_ctrl.blockSignals(False)
+            self._show_left_panel(True)
         else:
             ctrl_hidden = self._settings.hide_controls
             self._ctrl_surface.setVisible(not ctrl_hidden)
@@ -1850,6 +2011,7 @@ class MainWindow(QMainWindow):
             self._act_hide_ctrl.blockSignals(True)
             self._act_hide_ctrl.setChecked(ctrl_hidden)
             self._act_hide_ctrl.blockSignals(False)
+            self._show_left_panel(False)
         storage.save_settings(self._settings)
 
     def _toggle_controls_from_bar(self):
@@ -1858,6 +2020,7 @@ class MainWindow(QMainWindow):
     def _set_controls_hidden(self, hidden: bool):
         self._ctrl_surface.setVisible(not hidden)
         self._collapse_bar.set_expanded(not hidden)
+        self._show_left_panel(not hidden)
         self._settings.hide_controls = hidden
         self._act_hide_ctrl.blockSignals(True)
         self._act_hide_ctrl.setChecked(hidden)
@@ -1911,7 +2074,14 @@ class MainWindow(QMainWindow):
         self._rebuild_recent_menu()
 
     def _set_window_size(self, scale: float):
-        base_w = int(1600 * scale)
+        controls_visible = self._ctrl_surface.isVisible()
+        left_visible = self._left_panel.isVisible()
+        base_w = 800  # frame is always 800
+        if controls_visible:
+            base_w += 800  # control surface
+        if left_visible:
+            base_w += 282  # left value slider panel
+        base_w = int(base_w * scale)
         base_h = int(600 * scale + 50)  # +50 for menu+statusbar
         self.resize(base_w, base_h)
         for s, a in self._act_sz.items():
@@ -1972,6 +2142,24 @@ class MainWindow(QMainWindow):
         for size, act in self._act_grid.items():
             act.setChecked(size == n)
         self._frame_w.update()
+
+    def _enter_test_mode(self):
+        result = QMessageBox.warning(
+            self,
+            "Kronos Test Mode",
+            "This will place you into the Kronos Test Mode. All unsaved changes "
+            "will be lost, and your Kronos will need to be restarted after "
+            "complete. Also, this is potentially a dangerous operation and should "
+            "only be performed if you are aware of the risk.\n\n"
+            "Do you wish to continue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if result != QMessageBox.StandardButton.Yes:
+            return
+        self._ctrl_send("BUTTON PROGRAM")
+        QTimer.singleShot(500, lambda: self._ctrl_send(
+            "CHORD 500 MIX_KNOBS RESET ENTER NUM5"))
 
     def _save_screenshot(self):
         if not self._frame_w._frame_pixmap:

@@ -15,6 +15,7 @@ A Python application for remotely viewing and controlling a **Korg Kronos** synt
 ## Features
 
 - **Live Screen Streaming** — 800x600 8-bit indexed color at up to 15 FPS via TCP; supports full-frame (pull) and change-only modes for bandwidth efficiency
+- **Value Slider** — Left-panel INC/DEC buttons and draggable 0–127 value slider mirroring the Kronos front-panel VALUE control
 - **Remote Control** — Virtual button panel (mode keys, number pad, data wheel, bank selects) with drag, scroll, and keyboard-shortcut support
 - **Mode Detection** — Reference-image OCR to identify the active Kronos operating mode automatically
 - **Audio VU Meter** — WASAPI real-time level monitoring (L/R peak + RMS) with device selection
@@ -26,6 +27,7 @@ A Python application for remotely viewing and controlling a **Korg Kronos** synt
 - **Touch Calibration** — 3x3 - 5x5 warp mesh with bilinear interpolation for accurate touch-to-screen mapping
 <img width="1195" height="512" alt="image" src="https://github.com/user-attachments/assets/fce56b18-3374-43d0-8308-1df7da011355" />
 
+- **Test Mode** — Enter the Kronos built-in hardware test mode for diagnostics (Tools menu)
 - **Macro System** — Record and play back sequences of button presses with configurable trigger keys and step delays
 <img width="1195" height="512" alt="image" src="https://github.com/user-attachments/assets/7e1d022a-0244-4dac-aa9e-8c64287ca3db" />
 
@@ -142,20 +144,25 @@ Open via **Connection > File Manager** or right-click the frame and select **Fil
 
 | Shortcut | Action |
 |---|---|
+| F1 | Open help window |
+| F2–F8 | Switch Kronos operating mode (Setlist through Disk) |
+| A | Toggle aspect lock |
+| C | Toggle calibration grid overlay |
+| F | Toggle fullscreen |
+| M | Toggle VGA mirror |
+| Q | Quit |
+| Z | Toggle zoom window |
+| + / − | Zoom in / zoom out (enables zoom automatically if off) |
+| Esc | Send EXIT to Kronos / exit fullscreen / dismiss overlays |
+| Enter | Send ENTER to Kronos |
+| Ctrl+1–5 | Window size: 75% / 100% / 125% / 150% / 200% |
 | Ctrl+K | Open command palette |
 | Ctrl+S | Quick save screenshot |
 | Ctrl+Shift+S | Save screenshot as |
-| F1 | Help |
-| F2--F8 | Switch Kronos operating mode (Setlist through Disk) |
-| Q | Quit |
-| F | Toggle fullscreen |
-| Z | Toggle zoom window |
-| A | Toggle aspect lock |
-| M | Toggle VGA mirror |
-| C | Toggle calibration grid overlay |
 | Ctrl+Scroll | Adjust zoom level |
+| ~ (fullscreen) | Show / hide menu bar while in fullscreen |
 
-All shortcuts are rebindable via **Settings > Key Bindings**. Click in the frame to capture keyboard input for forwarding to the Kronos.
+All shortcuts (except Ctrl combos) are rebindable via **Settings → Settings… → Keybindings**. Click in the frame to capture keyboard input for forwarding to the Kronos.
 
 ---
 
