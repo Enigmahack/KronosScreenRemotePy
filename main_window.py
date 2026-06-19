@@ -43,6 +43,7 @@ import ctrl_client as CtrlClient
 import key_map
 import storage
 from app_settings import AppSettings, get_rebindable
+from boot_phase_detector import BootPhaseDetector, Phase as BootPhase
 from control_surface import KronosControlSurface
 from mode_detector import CombiProgramEditDetector, ModeDetector, is_frame_mostly_black
 from models import CalBiasDot, CalHistEntry, CalHistKind, CalMesh, HistEntry, PaletteEntry
@@ -137,6 +138,13 @@ def _mods_to_int(mods) -> int:
 
 
 _APP_TITLE  = "Kronos ScreenRemote"
+
+# Boot bar fill fractions (0..1, left edge to right edge of bar)
+_BOOT_F_STATIC_END  = 724.0 / 1302   # px 864 in 1600-wide image
+_BOOT_F_PRELOAD_END = 1190.0 / 1302  # px 1330
+_BOOT_F_BANK_START  = 1190.0 / 1302  # px 1330
+_BOOT_F_BANK_END    = 1.0            # px 1442 = right edge
+_BOOT_ENTRY_DELAY   = 0.5            # seconds before entering boot phase
 
 _NUMPAD_MAP: dict[int, str] = {
     Qt.Key_0: "NUM0", Qt.Key_1: "NUM1", Qt.Key_2: "NUM2",
@@ -246,6 +254,8 @@ class FrameWidget(QWidget):
         self._boot_phase  = True
         self._is_connected = False
         self._disable_boot_screen = False
+        self._frame_is_likely_boot_screen = False
+        self._boot_fill_fraction = 0.0
 
         self._renderer = OverlayRenderer()
 
@@ -275,7 +285,6 @@ class FrameWidget(QWidget):
         self._cal_hist_pos  = -1
 
         # Boot splash
-        self._boot_bar_x    = 864
         self._disconnect_msg = ""
 
         # Render timer for touch marker fade
@@ -336,10 +345,11 @@ class FrameWidget(QWidget):
                         fr.width() - 2 * m, fr.height() - 2 * m)
         self._frame_rect = fr
 
-        if self._frame_pixmap:
+        if (self._boot_phase and self._is_connected
+                and not self._disable_boot_screen and self._frame_is_likely_boot_screen):
+            self._renderer.draw_boot_splash(p, fr, self._boot_fill_fraction)
+        elif self._frame_pixmap:
             p.drawPixmap(fr.toRect(), self._frame_pixmap)
-        elif self._boot_phase and self._is_connected and not self._disable_boot_screen:
-            self._renderer.draw_boot_splash(p, fr, self._boot_bar_x)
         elif not self._is_connected:
             self._renderer.draw_disconnected(p, fr, self._disconnect_msg or "Not connected")
 
@@ -848,6 +858,7 @@ class KronosValueSliderPanel(QWidget):
         oy = (self.height() - self._DS_H * scale) / 2
         p.translate(ox, oy)
         p.scale(scale, scale)
+        p.setClipRect(QRect(0, 0, self._DS_W, self._DS_H))
 
         if self._bg_pixmap:
             p.drawPixmap(QRect(-33, -113, 349, 713), self._bg_pixmap)
@@ -1022,6 +1033,7 @@ class MainWindow(QMainWindow):
 
         self._mode_detector  = ModeDetector()
         self._combi_detector = CombiProgramEditDetector()
+        self._boot_detector  = BootPhaseDetector()
         self._current_mode   = 0
         self._prev_mode      = 0
         self._pending_mode   = 0   # user-requested mode awaiting detection confirmation
@@ -1040,6 +1052,21 @@ class MainWindow(QMainWindow):
         self._combi_flash_timer = QTimer(self)
         self._combi_flash_timer.setInterval(420)
         self._combi_flash_timer.timeout.connect(self._combi_flash_tick)
+
+        # Boot phase state
+        self._boot_phase         = False
+        self._detected_mode_ever = False
+        self._boot_first_frame: float   = 0.0
+        self._boot_phase_start: float   = 0.0
+        self._preload_timer_start: float = 0.0
+        self._bank_data_detected_at: float = 0.0
+        self._boot_load_phase    = BootPhase.NONE
+        self._finishing_fill_frac = _BOOT_F_STATIC_END
+        self._preload_schedule: Optional[list[tuple[float, float]]] = None
+
+        self._boot_anim_timer = QTimer(self)
+        self._boot_anim_timer.setInterval(30)
+        self._boot_anim_timer.timeout.connect(self._boot_anim_tick)
 
         self._fps_count   = 0
         self._fps_time    = time.monotonic()
@@ -1486,6 +1513,7 @@ class MainWindow(QMainWindow):
     def _disconnect(self, quiet: bool = False):
         if not quiet:
             self._auto_reconnect_enabled = False  # explicit user disconnect — no auto-reconnect
+        self._reset_boot_state()
         self._mode_poll_timer.stop()
         self._poll_in_progress = False
         if self._combi_prog_edit_active:
@@ -1502,7 +1530,6 @@ class MainWindow(QMainWindow):
         self._frame_w._is_connected = False
         self._frame_w._frame_pixmap = None
         self._frame_w._frame_image  = None
-        self._frame_w._boot_phase   = False
         if not quiet:
             self._frame_w._disconnect_msg = "Disconnected"
         self._frame_w.update()
@@ -1527,8 +1554,11 @@ class MainWindow(QMainWindow):
             self._fps_time     = now
             self._fps_label.setText(f"{self._measured_fps:.1f} fps")
 
-        # Suppress detection while the framebuffer is still mostly black (boot)
+        # Per-frame black checks
         mostly_black = is_frame_mostly_black(raw, self._frame_w._lut)
+        likely_boot = is_frame_mostly_black(
+            raw, self._frame_w._lut, self._settings.boot_screen_threshold / 100.0)
+        self._frame_w._frame_is_likely_boot_screen = likely_boot
 
         if not mostly_black:
             # Mode + help detection from top-left 140×55 region
@@ -1551,12 +1581,9 @@ class MainWindow(QMainWindow):
                 self._enter_combi_program_edit()
             elif self._combi_prog_edit_active:
                 if self._current_mode != 3:
-                    # Mode change is definitive — exit immediately
                     self._combi_exit_gone_at = 0.0
                     self._exit_combi_program_edit()
                 elif not indicator:
-                    # Indicator absent but mode still 3 — holdoff before exiting
-                    # (covers cases like a menu briefly covering the indicator pixel)
                     now = time.monotonic()
                     if self._combi_exit_gone_at == 0.0:
                         self._combi_exit_gone_at = now
@@ -1564,18 +1591,34 @@ class MainWindow(QMainWindow):
                         self._combi_exit_gone_at = 0.0
                         self._exit_combi_program_edit()
                 else:
-                    self._combi_exit_gone_at = 0.0  # indicator back — reset holdoff
+                    self._combi_exit_gone_at = 0.0
 
-        # Exit boot phase once a mode is detected or frame is no longer mostly black
-        if self._frame_w._boot_phase:
-            if self._current_mode > 0:
-                self._frame_w._boot_phase = False
-            elif not is_frame_mostly_black(raw, self._frame_w._lut,
-                                           self._settings.boot_screen_threshold / 100.0):
-                self._frame_w._boot_phase = False
+        # Boot phase entry: after BOOT_ENTRY_DELAY with no mode detected
+        if self._boot_first_frame == 0.0:
+            self._boot_first_frame = time.monotonic()
+        if (not self._detected_mode_ever and not self._boot_phase
+                and self._boot_first_frame > 0
+                and time.monotonic() - self._boot_first_frame >= _BOOT_ENTRY_DELAY):
+            self._enter_boot_phase()
+
+        # Boot load-phase detection — advance phases strictly forward
+        if self._boot_phase:
+            detected = self._boot_detector.identify(raw, _FRAME_W, self._frame_w._lut)
+            if (detected == BootPhase.FINISHING
+                    and self._boot_load_phase < BootPhase.FINISHING):
+                self._finishing_fill_frac = self._compute_boot_fill_fraction()
+                self._boot_load_phase = BootPhase.FINISHING
+            elif (detected == BootPhase.BANK_DATA
+                    and self._boot_load_phase < BootPhase.BANK_DATA):
+                self._boot_load_phase = BootPhase.BANK_DATA
+                self._bank_data_detected_at = time.monotonic()
+            elif (detected == BootPhase.PRELOAD_KSC
+                    and self._boot_load_phase < BootPhase.PRELOAD_KSC):
+                self._boot_load_phase = BootPhase.PRELOAD_KSC
 
     @Slot()
     def _on_disconnected(self):
+        self._reset_boot_state()
         self._frame_w._is_connected    = False
         self._frame_w._frame_pixmap    = None
         self._frame_w._disconnect_msg  = "Connection lost"
@@ -1649,9 +1692,10 @@ class MainWindow(QMainWindow):
         self._set_conn_state("connected", f"Connected — {self._host}")
         self.setWindowTitle(f"{_APP_TITLE} — {self._host}")
         self._add_recent_host(self._host)
+        self._reset_boot_state()
         self._frame_w._is_connected  = True
-        self._frame_w._boot_phase    = True
         self._frame_w._disable_boot_screen = self._settings.disable_boot_screen
+        self._frame_w._frame_is_likely_boot_screen = True
         self._frame_w._disconnect_msg = ""
         self._frame_w.update()
         self._mode_poll_timer.start()
@@ -1681,8 +1725,107 @@ class MainWindow(QMainWindow):
         if mode != self._current_mode:
             self._prev_mode = self._current_mode
         self._current_mode = mode
+        self._detected_mode_ever = True
+        if self._boot_phase:
+            self._exit_boot_phase()
         self._ctrl_surface.set_mode(mode)
         self._mode_label.setText(_MODE_NAMES[mode] if 1 <= mode <= 7 else "")
+
+    # ── Boot phase ────────────────────────────────────────────────────────────
+
+    def _reset_boot_state(self):
+        self._boot_phase = False
+        self._detected_mode_ever = False
+        self._boot_first_frame = 0.0
+        self._boot_phase_start = 0.0
+        self._preload_timer_start = 0.0
+        self._bank_data_detected_at = 0.0
+        self._boot_load_phase = BootPhase.NONE
+        self._finishing_fill_frac = _BOOT_F_STATIC_END
+        self._preload_schedule = None
+        self._boot_anim_timer.stop()
+        self._frame_w._boot_phase = False
+        self._frame_w._boot_fill_fraction = 0.0
+        self._frame_w._frame_is_likely_boot_screen = False
+
+    def _enter_boot_phase(self):
+        self._boot_phase = True
+        self._boot_phase_start = time.monotonic()
+        self._preload_timer_start = time.monotonic()
+        self._boot_load_phase = BootPhase.NONE
+        self._finishing_fill_frac = _BOOT_F_STATIC_END
+        self._build_preload_schedule()
+        self._frame_w._boot_phase = True
+        self._boot_anim_timer.start()
+        self._boot_anim_tick()
+
+    def _exit_boot_phase(self):
+        self._boot_phase = False
+        self._boot_anim_timer.stop()
+        self._frame_w._boot_phase = False
+        self._frame_w.update()
+
+    def _build_preload_schedule(self):
+        import random
+        pause_count = 25
+        active_total = 20.0
+        pause_duration = 1.0
+        pts = sorted(random.random() * active_total for _ in range(pause_count))
+        segs: list[tuple[float, float]] = []
+        wall = 0.0
+        prog = 0.0
+        for p in pts:
+            active = p - prog
+            if active > 1e-9:
+                wall += active
+                prog += active
+                segs.append((wall, prog))
+            wall += pause_duration
+            segs.append((wall, prog))
+        tail = active_total - prog
+        if tail > 1e-9:
+            wall += tail
+            prog = active_total
+            segs.append((wall, prog))
+        self._preload_schedule = segs
+
+    def _get_preload_progress(self, elapsed: float) -> float:
+        if self._preload_schedule is None:
+            return max(0.0, min(1.0, elapsed / 20.0))
+        prev_wall = 0.0
+        prev_prog = 0.0
+        for wall_end, prog_end in self._preload_schedule:
+            if elapsed <= wall_end:
+                wall_span = wall_end - prev_wall
+                prog_span = prog_end - prev_prog
+                if prog_span < 1e-9 or wall_span < 1e-9:
+                    return prev_prog / 20.0
+                return (prev_prog + (elapsed - prev_wall) / wall_span * prog_span) / 20.0
+            prev_wall = wall_end
+            prev_prog = prog_end
+        return 1.0
+
+    def _compute_boot_fill_fraction(self) -> float:
+        if self._boot_load_phase == BootPhase.FINISHING:
+            return self._finishing_fill_frac
+        if self._boot_load_phase == BootPhase.BANK_DATA and self._bank_data_detected_at > 0:
+            t = max(0.0, min(1.0, (time.monotonic() - self._bank_data_detected_at) / 5.0))
+            raw = _BOOT_F_BANK_START + (_BOOT_F_BANK_END - _BOOT_F_BANK_START) * t
+        elif self._preload_timer_start > 0:
+            elapsed = time.monotonic() - self._preload_timer_start
+            t = max(0.0, min(1.0, self._get_preload_progress(elapsed)))
+            raw = _BOOT_F_STATIC_END + (_BOOT_F_PRELOAD_END - _BOOT_F_STATIC_END) * t
+        else:
+            raw = _BOOT_F_STATIC_END
+        snapped = math.floor(raw / 0.01) * 0.01
+        return max(snapped, _BOOT_F_STATIC_END)
+
+    def _boot_anim_tick(self):
+        if not self._boot_phase:
+            self._boot_anim_timer.stop()
+            return
+        self._frame_w._boot_fill_fraction = self._compute_boot_fill_fraction()
+        self._frame_w.update()
 
     def _combi_flash_tick(self):
         if not self._combi_prog_edit_active:
@@ -2156,7 +2299,7 @@ class MainWindow(QMainWindow):
 
     def _resize_to_fit(self):
         """Resize the window to match the currently visible panels, preserving height."""
-        if self._is_fullscreen or not self.isVisible():
+        if self._is_fullscreen or self.isMaximized() or not self.isVisible():
             return
         h = self.height()
         chrome = h - self._frame_w.height() if self._frame_w.height() > 0 else 50
@@ -2320,6 +2463,8 @@ class MainWindow(QMainWindow):
         mirror_before  = self._settings.vga_mirror_enabled
         ss_before      = self._settings.screensaver_timeout
         debug_before   = self._settings.debug_logging
+        hide_data_before  = self._settings.hide_data_input
+        hide_value_before = self._settings.hide_value_input
         dlg = SettingsWindow(self._settings, self)
         if dlg.exec() == QDialog.Accepted:
             storage.save_settings(self._settings)
@@ -2334,8 +2479,10 @@ class MainWindow(QMainWindow):
             self._frame_w._zoom_level = self._zoom_level
             # Apply boot screen setting
             self._frame_w._disable_boot_screen = self._settings.disable_boot_screen
-            # Apply hide data/value input
-            self._apply_layout(self._layout_preset)
+            # Apply hide data/value input only if visibility changed
+            if (self._settings.hide_data_input != hide_data_before or
+                    self._settings.hide_value_input != hide_value_before):
+                self._apply_layout(self._layout_preset)
             # Apply debug logging change immediately
             if self._settings.debug_logging != debug_before:
                 _setup_logging(self._settings.debug_logging)

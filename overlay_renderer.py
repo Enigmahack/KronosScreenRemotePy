@@ -43,10 +43,12 @@ _SWATCH_ROWS   = 16
 _SLIDER_W      = 162
 _PANEL_PADDING = 12
 
-# Boot splash bar extents in 1600-px image space
-_BAR_Y1, _BAR_Y2         = 859, 865
-_BAR_X_STATIC_END        = 864
-_BAR_X_END               = 1442
+# Boot splash bar geometry as fractions of the splash image (1600x1200 reference)
+_BAR_FX0 = 140.0 / 1600   # left edge of bar
+_BAR_FX1 = 1442.0 / 1600  # right edge of bar
+_BAR_FY0 = 859.0 / 1200   # top of bar
+_BAR_FY1 = 865.0 / 1200   # bottom of bar
+_COL_BOOT_BAR_GREY = QColor(0x96, 0x96, 0x96)
 
 _FONT_MONO  = QFont("Courier New", 10)
 _FONT_SMALL = QFont("Segoe UI", 9) if True else QFont("sans-serif", 9)
@@ -63,10 +65,11 @@ class OverlayRenderer:
     # ── Boot splash ────────────────────────────────────────────────────────────
 
     def draw_boot_splash(self, p: QPainter, frame_rect: QRectF,
-                         progress_x: int):
+                         fill_fraction: float):
         """
-        Draw the boot splash image scaled to frame_rect, with a red progress bar
-        at the mapped position of _BAR_Y1.._BAR_Y2 in the 1600-px image space.
+        Draw the boot splash image scaled to frame_rect, with a progress bar.
+        fill_fraction is 0..1 across the bar range (left=_BAR_FX0, right=_BAR_FX1).
+        Grey shows unfilled portion; red shows filled portion.
         """
         if not self._boot_splash_loaded:
             self._boot_splash_loaded = True
@@ -75,16 +78,21 @@ class OverlayRenderer:
 
         if self._boot_splash and not self._boot_splash.isNull():
             p.drawPixmap(frame_rect.toRect(), self._boot_splash)
-            # Map bar coords from 1600×1200 image space to frame_rect
-            img_w, img_h = 1600, 1200
-            x0 = frame_rect.x() + frame_rect.width()  * _BAR_X_STATIC_END / img_w
-            x1 = frame_rect.x() + frame_rect.width()  * progress_x         / img_w
-            y0 = frame_rect.y() + frame_rect.height() * _BAR_Y1            / img_h
-            y1 = frame_rect.y() + frame_rect.height() * _BAR_Y2            / img_h
-            bar = QRectF(x0, y0, max(0.0, x1 - x0), y1 - y0)
-            p.fillRect(bar, _COL_BOOT_BAR)
+            ry = frame_rect.y() + _BAR_FY0 * frame_rect.height()
+            rh = (_BAR_FY1 - _BAR_FY0) * frame_rect.height()
+            clipped = max(0.0, min(1.0, fill_fraction))
+            fill_fx = _BAR_FX0 + clipped * (_BAR_FX1 - _BAR_FX0)
+            # Grey (unfilled) portion
+            if fill_fx < _BAR_FX1:
+                gx = frame_rect.x() + fill_fx * frame_rect.width()
+                gw = (_BAR_FX1 - fill_fx) * frame_rect.width()
+                p.fillRect(QRectF(gx, ry, gw, rh), _COL_BOOT_BAR_GREY)
+            # Red (filled) portion
+            if fill_fx > _BAR_FX0:
+                rx = frame_rect.x() + _BAR_FX0 * frame_rect.width()
+                rw = (fill_fx - _BAR_FX0) * frame_rect.width()
+                p.fillRect(QRectF(rx, ry, rw, rh), _COL_BOOT_BAR)
         else:
-            # No image — draw a simple black overlay with text
             p.fillRect(frame_rect, Qt.black)
             p.setPen(_COL_ACCENT)
             p.setFont(_FONT_SMALL)
