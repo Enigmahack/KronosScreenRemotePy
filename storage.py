@@ -46,11 +46,16 @@ def load_settings() -> AppSettings:
         s.pull_mode              = root.get("pull_mode",              s.pull_mode)
         s.max_fps                = root.get("max_fps",                s.max_fps)
         s.prompt_before_quitting = root.get("prompt_before_quitting", s.prompt_before_quitting)
-        s.hide_controls          = root.get("hide_controls",          s.hide_controls)
+        s.hide_data_input        = root.get("hide_data_input",        root.get("hide_controls", s.hide_data_input))
+        s.hide_value_input       = root.get("hide_value_input",       s.hide_value_input)
         s.screenshot_dir         = root.get("screenshot_dir",         s.screenshot_dir)
         s.vga_mirror_enabled     = root.get("vga_mirror_enabled",     s.vga_mirror_enabled)
         s.screensaver_timeout    = root.get("screensaver_timeout",    s.screensaver_timeout)
         s.layout_preset          = root.get("layout_preset",          s.layout_preset)
+        s.focused_data_expanded  = root.get("focused_data_expanded",  s.focused_data_expanded)
+        s.focused_value_expanded = root.get("focused_value_expanded", s.focused_value_expanded)
+        s.boot_screen_threshold  = root.get("boot_screen_threshold",  s.boot_screen_threshold)
+        s.disable_boot_screen    = root.get("disable_boot_screen",    s.disable_boot_screen)
         s.zoom_default_level     = float(root.get("zoom_default_level", s.zoom_default_level))
         s.zoom_window_size       = float(root.get("zoom_window_size",   s.zoom_window_size))
         s.debug_logging          = root.get("debug_logging",          s.debug_logging)
@@ -99,11 +104,16 @@ def save_settings(s: AppSettings):
             "pull_mode":              s.pull_mode,
             "max_fps":                s.max_fps,
             "prompt_before_quitting": s.prompt_before_quitting,
-            "hide_controls":          s.hide_controls,
+            "hide_data_input":        s.hide_data_input,
+            "hide_value_input":       s.hide_value_input,
             "screenshot_dir":         s.screenshot_dir,
             "vga_mirror_enabled":     s.vga_mirror_enabled,
             "screensaver_timeout":    s.screensaver_timeout,
             "layout_preset":          s.layout_preset,
+            "focused_data_expanded":  s.focused_data_expanded,
+            "focused_value_expanded": s.focused_value_expanded,
+            "boot_screen_threshold":  s.boot_screen_threshold,
+            "disable_boot_screen":    s.disable_boot_screen,
             "zoom_default_level":     s.zoom_default_level,
             "zoom_window_size":       s.zoom_window_size,
             "debug_logging":          s.debug_logging,

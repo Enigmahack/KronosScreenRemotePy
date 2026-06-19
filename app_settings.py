@@ -67,7 +67,8 @@ class AppSettings:
 
     # General
     prompt_before_quitting: bool = True
-    hide_controls:          bool = False
+    hide_data_input:        bool = False
+    hide_value_input:       bool = False
     screenshot_dir:         str  = ""
 
     # FTP authentication (required by the stream daemon)
@@ -81,6 +82,12 @@ class AppSettings:
 
     # UI layout
     layout_preset: str = "Full"  # "Full" | "Focused" | "Detached"
+    focused_data_expanded:  bool = False
+    focused_value_expanded: bool = False
+
+    # Boot screen
+    boot_screen_threshold: int  = 60   # 5–95 %
+    disable_boot_screen:   bool = False
 
     # View
     zoom_default_level: float = 2.5
@@ -146,7 +153,8 @@ REBINDABLE_DEFS: list[tuple[str, str, str]] = [
     ("Mirror",        "Toggle VGA Mirror",       "M"),
     ("Help",          "Toggle Help",             "F1"),
     ("Calibrate",     "Toggle Calibration Mode", "C"),
-    ("HideControls",  "Hide/Show Controls",      ""),
+    ("HideDataInput",  "Hide/Show Data Input",    ""),
+    ("HideValueInput", "Hide/Show Value Input",   ""),
     ("Mode Setlist",  "Mode: Setlist",           "F2"),
     ("Mode Combi",    "Mode: Combi",             "F3"),
     ("Mode Program",  "Mode: Program",           "F4"),

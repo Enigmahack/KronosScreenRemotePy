@@ -245,6 +245,7 @@ class FrameWidget(QWidget):
         self._kbd_capture = False
         self._boot_phase  = True
         self._is_connected = False
+        self._disable_boot_screen = False
 
         self._renderer = OverlayRenderer()
 
@@ -337,7 +338,7 @@ class FrameWidget(QWidget):
 
         if self._frame_pixmap:
             p.drawPixmap(fr.toRect(), self._frame_pixmap)
-        elif self._boot_phase and self._is_connected:
+        elif self._boot_phase and self._is_connected and not self._disable_boot_screen:
             self._renderer.draw_boot_splash(p, fr, self._boot_bar_x)
         elif not self._is_connected:
             self._renderer.draw_disconnected(p, fr, self._disconnect_msg or "Not connected")
@@ -905,6 +906,13 @@ class KronosValueSliderPanel(QWidget):
         ds = self._to_design(event.position())
         self._update_slider_from_mouse(ds.y())
 
+    def mouseDoubleClickEvent(self, event: QMouseEvent):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._thumb_top = self._SLIDER_TRAVEL * (127 - 64) / 127.0
+            self._value = 64
+            self.slider_changed.emit(64)
+            self.update()
+
     def mouseReleaseEvent(self, event: QMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton:
             if self._dragging:
@@ -926,15 +934,15 @@ class KronosValueSliderPanel(QWidget):
 
 
 class _CollapseBar(QWidget):
-    """Thin vertical bar between frame and controls with a clickable arrow."""
+    """Thin vertical bar on the edge used to expand/collapse adjacent panels."""
     clicked = Signal()
 
-    def __init__(self, parent=None):
+    def __init__(self, right_side: bool = True, parent=None):
         super().__init__(parent)
         self.setFixedWidth(14)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setToolTip("Show/hide Data Controls")
         self._expanded = True
+        self._right_side = right_side
 
     def set_expanded(self, expanded: bool):
         self._expanded = expanded
@@ -944,9 +952,15 @@ class _CollapseBar(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         p.fillRect(self.rect(), QColor("#1A1A1A"))
-        p.setPen(QColor("#888"))
-        p.drawLine(0, 0, 0, self.height())
-        arrow = "◀" if self._expanded else "▶"
+        p.setPen(QColor("#333"))
+        if self._right_side:
+            p.drawLine(0, 0, 0, self.height())
+        else:
+            p.drawLine(self.width() - 1, 0, self.width() - 1, self.height())
+        if self._right_side:
+            arrow = "‹" if self._expanded else "›"
+        else:
+            arrow = "›" if self._expanded else "‹"
         p.setPen(QColor("#AAA"))
         f = p.font()
         f.setPixelSize(12)
@@ -1089,6 +1103,13 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
+        # Focused-mode value rail (left edge)
+        self._value_rail = _CollapseBar(right_side=False)
+        self._value_rail.setToolTip("Expand/collapse value input")
+        self._value_rail.clicked.connect(self._toggle_focused_value_expand)
+        self._value_rail.setVisible(False)
+        layout.addWidget(self._value_rail)
+
         # Left value-slider panel (282 design units wide)
         self._left_panel = KronosValueSliderPanel()
         self._left_panel.button_pressed.connect(self._on_left_panel_button)
@@ -1099,16 +1120,18 @@ class MainWindow(QMainWindow):
         self._frame_w = FrameWidget()
         layout.addWidget(self._frame_w, 800)
 
-        # Collapse bar between frame and control surface
-        self._collapse_bar = _CollapseBar()
-        self._collapse_bar.clicked.connect(self._toggle_controls_from_bar)
-        layout.addWidget(self._collapse_bar)
-
         # Control surface (800 design units wide)
         self._ctrl_surface = KronosControlSurface()
         self._ctrl_surface.button_pressed.connect(self._on_ctrl_button)
         self._ctrl_surface.wheel_step.connect(self._on_wheel_step)
         layout.addWidget(self._ctrl_surface, 800)
+
+        # Focused-mode data rail (right edge)
+        self._data_rail = _CollapseBar(right_side=True)
+        self._data_rail.setToolTip("Expand/collapse data input")
+        self._data_rail.clicked.connect(self._toggle_focused_data_expand)
+        self._data_rail.setVisible(False)
+        layout.addWidget(self._data_rail)
 
         # Signals from frame widget
         self._frame_w.touch_down.connect(self._on_touch_down)
@@ -1220,8 +1243,10 @@ class MainWindow(QMainWindow):
         self._act_zoom.setCheckable(True)
         view_menu.addSeparator()
         self._act_full     = view_menu.addAction("&Fullscreen")
-        self._act_hide_ctrl = view_menu.addAction("&Hide Controls")
-        self._act_hide_ctrl.setCheckable(True)
+        self._act_hide_data  = view_menu.addAction("Hide &Data Input")
+        self._act_hide_data.setCheckable(True)
+        self._act_hide_value = view_menu.addAction("Hide &Value Input")
+        self._act_hide_value.setCheckable(True)
         self._act_on_top   = view_menu.addAction("Always on &Top")
         self._act_on_top.setCheckable(True)
         self._act_on_top.setChecked(self._settings.always_on_top)
@@ -1317,7 +1342,8 @@ class MainWindow(QMainWindow):
         self._act_zoom.toggled.connect(self._on_zoom_toggled)
         self._act_full.triggered.connect(self._toggle_fullscreen)
         self._act_on_top.toggled.connect(self._on_always_on_top_toggled)
-        self._act_hide_ctrl.toggled.connect(self._on_hide_controls_toggled)
+        self._act_hide_data.toggled.connect(self._toggle_hide_data_input)
+        self._act_hide_value.toggled.connect(self._toggle_hide_value_input)
 
         self._act_preset_full.triggered.connect(lambda: self._apply_layout("Full"))
         self._act_preset_focused.triggered.connect(lambda: self._apply_layout("Focused"))
@@ -1370,12 +1396,7 @@ class MainWindow(QMainWindow):
         focused = self._layout_preset == "Focused"
         self._act_preset_full.setChecked(not focused)
         self._act_preset_focused.setChecked(focused)
-        self._collapse_bar.setVisible(focused)
-        ctrl_hidden = focused and self._settings.hide_controls
-        self._ctrl_surface.setVisible(not ctrl_hidden)
-        self._collapse_bar.set_expanded(not ctrl_hidden)
-        self._act_hide_ctrl.setChecked(ctrl_hidden)
-        self._show_left_panel(not ctrl_hidden and not focused)
+        self._apply_layout(self._layout_preset)
 
     # ── Connection ─────────────────────────────────────────────────────────────
 
@@ -1545,9 +1566,13 @@ class MainWindow(QMainWindow):
                 else:
                     self._combi_exit_gone_at = 0.0  # indicator back — reset holdoff
 
-        # Exit boot phase once a mode is detected
-        if self._frame_w._boot_phase and self._current_mode > 0:
-            self._frame_w._boot_phase = False
+        # Exit boot phase once a mode is detected or frame is no longer mostly black
+        if self._frame_w._boot_phase:
+            if self._current_mode > 0:
+                self._frame_w._boot_phase = False
+            elif not is_frame_mostly_black(raw, self._frame_w._lut,
+                                           self._settings.boot_screen_threshold / 100.0):
+                self._frame_w._boot_phase = False
 
     @Slot()
     def _on_disconnected(self):
@@ -1626,6 +1651,7 @@ class MainWindow(QMainWindow):
         self._add_recent_host(self._host)
         self._frame_w._is_connected  = True
         self._frame_w._boot_phase    = True
+        self._frame_w._disable_boot_screen = self._settings.disable_boot_screen
         self._frame_w._disconnect_msg = ""
         self._frame_w.update()
         self._mode_poll_timer.start()
@@ -1866,6 +1892,10 @@ class MainWindow(QMainWindow):
                 self._toggle_help(); return
             if self._matches_keybind(event, "Calibrate"):
                 self._act_cal.setChecked(not self._act_cal.isChecked()); return
+            if self._matches_keybind(event, "HideDataInput"):
+                self._toggle_hide_data_input(not self._settings.hide_data_input); return
+            if self._matches_keybind(event, "HideValueInput"):
+                self._toggle_hide_value_input(not self._settings.hide_value_input); return
 
         # Mode select keybinds
         for i in range(1, 8):
@@ -1986,8 +2016,27 @@ class MainWindow(QMainWindow):
             self.showFullScreen()
         self._is_fullscreen = not self._is_fullscreen
 
-    def _on_hide_controls_toggled(self, checked: bool):
-        self._set_controls_hidden(checked)
+    def _toggle_hide_data_input(self, checked: bool):
+        if self._layout_preset != "Full":
+            return
+        self._settings.hide_data_input = checked
+        self._ctrl_surface.setVisible(not checked)
+        self._act_hide_data.blockSignals(True)
+        self._act_hide_data.setChecked(checked)
+        self._act_hide_data.blockSignals(False)
+        storage.save_settings(self._settings)
+        self._resize_to_fit()
+
+    def _toggle_hide_value_input(self, checked: bool):
+        if self._layout_preset != "Full":
+            return
+        self._settings.hide_value_input = checked
+        self._show_left_panel(not checked)
+        self._act_hide_value.blockSignals(True)
+        self._act_hide_value.setChecked(checked)
+        self._act_hide_value.blockSignals(False)
+        storage.save_settings(self._settings)
+        self._resize_to_fit()
 
     def _apply_layout(self, preset: str):
         self._layout_preset = preset
@@ -1995,37 +2044,55 @@ class MainWindow(QMainWindow):
         focused = preset == "Focused"
         self._act_preset_full.setChecked(not focused)
         self._act_preset_focused.setChecked(focused)
-        self._collapse_bar.setVisible(focused)
+
+        # Menu enable state — data/value hiding only in Full
+        self._act_hide_data.setEnabled(not focused)
+        self._act_hide_value.setEnabled(not focused)
+
         if not focused:
-            self._ctrl_surface.setVisible(True)
-            self._collapse_bar.set_expanded(True)
-            self._settings.hide_controls = False
-            self._act_hide_ctrl.blockSignals(True)
-            self._act_hide_ctrl.setChecked(False)
-            self._act_hide_ctrl.blockSignals(False)
-            self._show_left_panel(True)
+            # Full layout
+            self._value_rail.setVisible(False)
+            self._data_rail.setVisible(False)
+            self._ctrl_surface.setVisible(not self._settings.hide_data_input)
+            self._show_left_panel(not self._settings.hide_value_input)
+            self._act_hide_data.blockSignals(True)
+            self._act_hide_data.setChecked(self._settings.hide_data_input)
+            self._act_hide_data.blockSignals(False)
+            self._act_hide_value.blockSignals(True)
+            self._act_hide_value.setChecked(self._settings.hide_value_input)
+            self._act_hide_value.blockSignals(False)
         else:
-            ctrl_hidden = self._settings.hide_controls
-            self._ctrl_surface.setVisible(not ctrl_hidden)
-            self._collapse_bar.set_expanded(not ctrl_hidden)
-            self._act_hide_ctrl.blockSignals(True)
-            self._act_hide_ctrl.setChecked(ctrl_hidden)
-            self._act_hide_ctrl.blockSignals(False)
-            self._show_left_panel(False)
+            # Focused layout — show rails on outermost edges
+            self._value_rail.setVisible(True)
+            self._data_rail.setVisible(True)
+            data_exp  = self._settings.focused_data_expanded
+            value_exp = self._settings.focused_value_expanded
+            self._ctrl_surface.setVisible(data_exp)
+            self._show_left_panel(value_exp)
+            self._value_rail.set_expanded(value_exp)
+            self._data_rail.set_expanded(data_exp)
         storage.save_settings(self._settings)
+        self._resize_to_fit()
 
-    def _toggle_controls_from_bar(self):
-        self._set_controls_hidden(self._ctrl_surface.isVisible())
-
-    def _set_controls_hidden(self, hidden: bool):
-        self._ctrl_surface.setVisible(not hidden)
-        self._collapse_bar.set_expanded(not hidden)
-        self._show_left_panel(not hidden)
-        self._settings.hide_controls = hidden
-        self._act_hide_ctrl.blockSignals(True)
-        self._act_hide_ctrl.setChecked(hidden)
-        self._act_hide_ctrl.blockSignals(False)
+    def _toggle_focused_data_expand(self):
+        if self._layout_preset != "Focused":
+            return
+        exp = not self._ctrl_surface.isVisible()
+        self._settings.focused_data_expanded = exp
+        self._ctrl_surface.setVisible(exp)
+        self._data_rail.set_expanded(exp)
         storage.save_settings(self._settings)
+        self._resize_to_fit()
+
+    def _toggle_focused_value_expand(self):
+        if self._layout_preset != "Focused":
+            return
+        exp = not self._left_panel.isVisible()
+        self._settings.focused_value_expanded = exp
+        self._show_left_panel(exp)
+        self._value_rail.set_expanded(exp)
+        storage.save_settings(self._settings)
+        self._resize_to_fit()
 
     def _on_always_on_top_toggled(self, checked: bool):
         self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, checked)
@@ -2086,6 +2153,28 @@ class MainWindow(QMainWindow):
         self.resize(base_w, base_h)
         for s, a in self._act_sz.items():
             a.setChecked(abs(s - scale) < 0.01)
+
+    def _resize_to_fit(self):
+        """Resize the window to match the currently visible panels, preserving height."""
+        if self._is_fullscreen or not self.isVisible():
+            return
+        h = self.height()
+        chrome = h - self._frame_w.height() if self._frame_w.height() > 0 else 50
+        frame_h = max(h - chrome, 100)
+        scale = frame_h / 600.0
+        design_w = 800  # frame always present
+        if self._ctrl_surface.isVisible():
+            design_w += 800
+        if self._left_panel.isVisible():
+            design_w += 282
+        # Rails add 14px each (fixed width, not scaled)
+        rail_w = 0
+        if self._value_rail.isVisible():
+            rail_w += 14
+        if self._data_rail.isVisible():
+            rail_w += 14
+        new_w = int(design_w * scale) + rail_w
+        self.resize(new_w, h)
 
     # ── Tools ──────────────────────────────────────────────────────────────────
 
@@ -2157,9 +2246,10 @@ class MainWindow(QMainWindow):
         )
         if result != QMessageBox.StandardButton.Yes:
             return
+        self._set_kbd_capture()
         self._ctrl_send("BUTTON PROGRAM")
         QTimer.singleShot(500, lambda: self._ctrl_send(
-            "CHORD 500 MIX_KNOBS RESET ENTER NUM5"))
+            "CHORD 250 MIX_KNOBS RESET ENTER NUM5"))
 
     def _save_screenshot(self):
         if not self._frame_w._frame_pixmap:
@@ -2242,6 +2332,10 @@ class MainWindow(QMainWindow):
             # Apply zoom default
             self._zoom_level = self._settings.zoom_default_level
             self._frame_w._zoom_level = self._zoom_level
+            # Apply boot screen setting
+            self._frame_w._disable_boot_screen = self._settings.disable_boot_screen
+            # Apply hide data/value input
+            self._apply_layout(self._layout_preset)
             # Apply debug logging change immediately
             if self._settings.debug_logging != debug_before:
                 _setup_logging(self._settings.debug_logging)
@@ -2276,11 +2370,13 @@ class MainWindow(QMainWindow):
             for i in range(1, 8)
         }
         cmds.update({
-            "Fullscreen": self._toggle_fullscreen,
-            "Mirror":     self._toggle_mirror,
-            "Calibrate":  lambda: self._act_cal.setChecked(not self._act_cal.isChecked()),
-            "Help":       self._toggle_help,
-            "Quit":       self._try_quit,
+            "Fullscreen":      self._toggle_fullscreen,
+            "Mirror":          self._toggle_mirror,
+            "Calibrate":       lambda: self._act_cal.setChecked(not self._act_cal.isChecked()),
+            "Help":            self._toggle_help,
+            "Quit":            self._try_quit,
+            "HideDataInput":   lambda: self._toggle_hide_data_input(not self._settings.hide_data_input),
+            "HideValueInput":  lambda: self._toggle_hide_value_input(not self._settings.hide_value_input),
         })
         fn = cmds.get(action)
         if fn:

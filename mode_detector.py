@@ -105,16 +105,17 @@ class ModeDetector:
         return matches / len(refs)
 
 
-def is_frame_mostly_black(frame8bpp: bytes, lut: list[int]) -> bool:
-    """True when >90% of pixels are near-black (all channels ≤ 20).
-    Used to suppress detection against the boot framebuffer."""
+def is_frame_mostly_black(frame8bpp: bytes, lut: list[int],
+                          threshold: float = 0.90) -> bool:
+    """True when more than `threshold` fraction of pixels are near-black (all channels ≤ 20).
+    Default 0.90 suppresses mode detection during boot."""
     black = sum(
         1 for b in frame8bpp
         if ((lut[b] >> 16) & 0xFF) <= 20
         and ((lut[b] >>  8) & 0xFF) <= 20
         and  (lut[b]        & 0xFF) <= 20
     )
-    return black > len(frame8bpp) * 0.90
+    return black > len(frame8bpp) * threshold
 
 
 # ── Combi Program-Edit Detector ────────────────────────────────────────────────

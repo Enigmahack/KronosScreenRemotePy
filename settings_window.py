@@ -100,10 +100,14 @@ class SettingsWindow(QDialog):
         vb = QVBoxLayout(w)
         vb.setSpacing(6)
 
-        self._quit_prompt = QCheckBox("Prompt before quitting")
-        self._hide_ctrl   = QCheckBox("Hide the controls panel on startup")
+        self._quit_prompt    = QCheckBox("Prompt before quitting")
+        self._hide_data_inp  = QCheckBox("Hide data input panel on startup")
+        self._hide_data_inp.setToolTip("Hides the right-hand button panel at launch. Toggle from View → Hide Data Input.")
+        self._hide_value_inp = QCheckBox("Hide value input panel on startup")
+        self._hide_value_inp.setToolTip("Hides the left-hand slider panel at launch. Toggle from View → Hide Value Input.")
         vb.addWidget(self._quit_prompt)
-        vb.addWidget(self._hide_ctrl)
+        vb.addWidget(self._hide_data_inp)
+        vb.addWidget(self._hide_value_inp)
 
         vb.addSpacing(8)
         vb.addWidget(_section("Screenshots"))
@@ -208,6 +212,35 @@ class SettingsWindow(QDialog):
         vb.addLayout(fps_row)
         vb.addWidget(_hint("Change-driven mode consumes no CPU when the Kronos screen is idle. "
                            "Streaming changes take effect on the next connect."))
+
+        vb.addSpacing(12)
+        vb.addWidget(_section("Boot screen"))
+        self._disable_boot = QCheckBox("Disable boot screen graphics")
+        self._disable_boot.setToolTip(
+            "Suppresses the animated splash overlay shown while the Kronos is booting. "
+            "The raw boot frames are still displayed — only the decorative overlay is removed.")
+        vb.addWidget(self._disable_boot)
+        vb.addWidget(_hint("When enabled, the animated boot splash overlay is not drawn. "
+                           "You will still see the raw Kronos boot frames as they stream in."))
+
+        vb.addSpacing(8)
+        vb.addWidget(_section("Boot screen detection"))
+        boot_row = QHBoxLayout()
+        self._boot_thresh_slider = QSlider(Qt.Horizontal)
+        self._boot_thresh_slider.setRange(5, 95)
+        self._boot_thresh_slider.setTickInterval(5)
+        self._boot_thresh_slider.setSingleStep(5)
+        self._boot_thresh_lbl = QLabel("60%")
+        self._boot_thresh_lbl.setFixedWidth(50)
+        self._boot_thresh_slider.valueChanged.connect(
+            lambda v: self._boot_thresh_lbl.setText(f"{v}%"))
+        boot_row.addWidget(self._boot_thresh_slider)
+        boot_row.addWidget(self._boot_thresh_lbl)
+        vb.addLayout(boot_row)
+        vb.addWidget(_hint("Percentage of the frame that must be black before the boot splash "
+                           "overlay is displayed. Raise this value if the splash appears during "
+                           "normal use (e.g. Kronos calibration mode with a dark screen). Default: 60%."))
+
         vb.addStretch()
         return w
 
@@ -462,7 +495,8 @@ class SettingsWindow(QDialog):
 
         # General
         self._quit_prompt.setChecked(s.prompt_before_quitting)
-        self._hide_ctrl.setChecked(s.hide_controls)
+        self._hide_data_inp.setChecked(s.hide_data_input)
+        self._hide_value_inp.setChecked(s.hide_value_input)
         self._screenshot_dir.setText(s.screenshot_dir)
         self._vga_mirror.setChecked(s.vga_mirror_enabled)
         self._ss_spin.setValue(s.screensaver_timeout)
@@ -481,6 +515,9 @@ class SettingsWindow(QDialog):
         self._rb_change.setChecked(not pull)
         self._fps_slider.setValue(s.max_fps)
         self._fps_lbl.setText(f"{s.max_fps} fps")
+        self._disable_boot.setChecked(s.disable_boot_screen)
+        self._boot_thresh_slider.setValue(s.boot_screen_threshold)
+        self._boot_thresh_lbl.setText(f"{s.boot_screen_threshold}%")
 
         # View
         self._zoom_level_slider.setValue(int(s.zoom_default_level * 10))
@@ -508,7 +545,8 @@ class SettingsWindow(QDialog):
 
         # General
         s.prompt_before_quitting = self._quit_prompt.isChecked()
-        s.hide_controls          = self._hide_ctrl.isChecked()
+        s.hide_data_input        = self._hide_data_inp.isChecked()
+        s.hide_value_input       = self._hide_value_inp.isChecked()
         s.screenshot_dir         = self._screenshot_dir.text().strip()
         s.vga_mirror_enabled     = self._vga_mirror.isChecked()
         s.screensaver_timeout    = self._ss_spin.value()
@@ -522,8 +560,10 @@ class SettingsWindow(QDialog):
         s.ftp_port     = self._ftp_port_spin.value()
 
         # Streaming
-        s.pull_mode = self._rb_pull.isChecked()
-        s.max_fps   = self._fps_slider.value()
+        s.pull_mode              = self._rb_pull.isChecked()
+        s.max_fps                = self._fps_slider.value()
+        s.disable_boot_screen    = self._disable_boot.isChecked()
+        s.boot_screen_threshold  = self._boot_thresh_slider.value()
 
         # View
         s.zoom_default_level = self._zoom_level_slider.value() / 10.0
@@ -896,7 +936,8 @@ class SettingsWindow(QDialog):
         """Flush UI state into self._settings without calling accept()."""
         s = self._settings
         s.prompt_before_quitting = self._quit_prompt.isChecked()
-        s.hide_controls          = self._hide_ctrl.isChecked()
+        s.hide_data_input        = self._hide_data_inp.isChecked()
+        s.hide_value_input       = self._hide_value_inp.isChecked()
         s.screenshot_dir         = self._screenshot_dir.text().strip()
         s.vga_mirror_enabled     = self._vga_mirror.isChecked()
         s.screensaver_timeout    = self._ss_spin.value()
@@ -908,6 +949,8 @@ class SettingsWindow(QDialog):
         s.ftp_port               = self._ftp_port_spin.value()
         s.pull_mode              = self._rb_pull.isChecked()
         s.max_fps                = self._fps_slider.value()
+        s.disable_boot_screen    = self._disable_boot.isChecked()
+        s.boot_screen_threshold  = self._boot_thresh_slider.value()
         s.zoom_default_level     = self._zoom_level_slider.value() / 10.0
         s.zoom_window_size       = self._zoom_win_slider.value()   / 10.0
         s.debug_logging          = self._debug_logging.isChecked()

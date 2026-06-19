@@ -97,9 +97,9 @@ def _build_html() -> str:
                                          "Top = 127, bottom = 0. The command is sent only when the "
                                          "value changes."),
         ),
-        _p("The left panel is visible in the <b>Full</b> layout when controls are "
-           "shown. It hides automatically in <b>Focused</b> layout or when controls "
-           "are hidden."),
+        _p("The left panel is visible in the <b>Full</b> layout when value input is "
+           "shown. It hides automatically in <b>Focused</b> layout or via "
+           "View → Hide Value Input."),
 
         _h1("Control Surface  (right panel)"),
         _p("The right panel mirrors the physical Kronos front panel. Clicking any "
@@ -267,7 +267,8 @@ def _build_html() -> str:
             _kb_row("VGA Mirror",             "Enable VGA output mirroring on the Kronos."),
             _kb_row("Screensaver Timeout",    "Seconds before the Kronos display dims (0 = disabled)."),
             _kb_row("Prompt before quitting", "Show a confirmation dialog when closing the app."),
-            _kb_row("Hide Controls",          "Start with the control surface hidden (Full layout only)."),
+            _kb_row("Hide Data Input",         "Hide / show the data input panel (Full layout only)."),
+            _kb_row("Hide Value Input",        "Hide / show the value input panel (Full layout only)."),
             _kb_row("Screenshot Directory",   "Default folder for Quick Save screenshots."),
             _kb_row("Debug Logging",          "Write verbose diagnostic output to the console."),
             _kb_row("Zoom Default Level",     "Initial magnification when the zoom window opens (2.5× – 10×)."),
