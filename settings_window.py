@@ -177,6 +177,10 @@ class SettingsWindow(QDialog):
         form.addRow("FTP Username:", self._ftp_user)
         form.addRow("FTP Password:", self._ftp_pass)
         form.addRow("FTP Port:",     self._ftp_port_spin)
+
+        form.addRow(_section("MIDI"))
+        self._midi_monitor = QCheckBox("Enable MIDI bridge (SysEx Tool, Set List Viewer, name caching)")
+        form.addRow(self._midi_monitor)
         return w
 
     # ── Streaming tab ──────────────────────────────────────────────────────────
@@ -508,6 +512,7 @@ class SettingsWindow(QDialog):
         self._ftp_user.setText(s.ftp_username)
         self._ftp_pass.setText(s.ftp_password)
         self._ftp_port_spin.setValue(s.ftp_port)
+        self._midi_monitor.setChecked(s.midi_monitor_enabled)
 
         # Streaming
         pull = s.pull_mode
@@ -558,6 +563,7 @@ class SettingsWindow(QDialog):
         s.ftp_username = self._ftp_user.text()
         s.ftp_password = self._ftp_pass.text()
         s.ftp_port     = self._ftp_port_spin.value()
+        s.midi_monitor_enabled = self._midi_monitor.isChecked()
 
         # Streaming
         s.pull_mode              = self._rb_pull.isChecked()
@@ -947,6 +953,7 @@ class SettingsWindow(QDialog):
         s.ftp_username           = self._ftp_user.text()
         s.ftp_password           = self._ftp_pass.text()
         s.ftp_port               = self._ftp_port_spin.value()
+        s.midi_monitor_enabled   = self._midi_monitor.isChecked()
         s.pull_mode              = self._rb_pull.isChecked()
         s.max_fps                = self._fps_slider.value()
         s.disable_boot_screen    = self._disable_boot.isChecked()

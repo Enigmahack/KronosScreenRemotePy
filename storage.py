@@ -9,10 +9,13 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import threading
 from typing import Dict, List, Set, Tuple
 
 from models import PaletteEntry, CalMesh, CalBiasDot
 from app_settings import AppSettings, MacroDef, RawKeyMap
+from kronos_sysex import CachedName
+from setlist_data import SetListData, SetListSlot
 
 
 def _data_dir() -> pathlib.Path:
@@ -43,6 +46,7 @@ def load_settings() -> AppSettings:
         s.ftp_username           = root.get("ftp_username",           s.ftp_username)
         s.ftp_password           = root.get("ftp_password",           s.ftp_password)
         s.ftp_port               = root.get("ftp_port",               s.ftp_port)
+        s.midi_monitor_enabled   = root.get("midi_monitor_enabled",   s.midi_monitor_enabled)
         s.pull_mode              = root.get("pull_mode",              s.pull_mode)
         s.max_fps                = root.get("max_fps",                s.max_fps)
         s.prompt_before_quitting = root.get("prompt_before_quitting", s.prompt_before_quitting)
@@ -101,6 +105,7 @@ def save_settings(s: AppSettings):
             "ftp_username":           s.ftp_username,
             "ftp_password":           s.ftp_password,
             "ftp_port":               s.ftp_port,
+            "midi_monitor_enabled":   s.midi_monitor_enabled,
             "pull_mode":              s.pull_mode,
             "max_fps":                s.max_fps,
             "prompt_before_quitting": s.prompt_before_quitting,
@@ -163,7 +168,8 @@ def import_settings(path: str) -> AppSettings:
 
 def reset_all():
     """Delete all persisted data files and return a fresh AppSettings."""
-    for name in ("settings.json", "palette_override.json", "palette_lock.json", "cal_data.json"):
+    for name in ("settings.json", "palette_override.json", "palette_lock.json", "cal_data.json",
+                 "name_cache.json", "dumped_banks.json", "setlist_cache.json"):
         p = _path(name)
         try:
             if p.exists():
@@ -269,3 +275,149 @@ def save_cal(mesh: CalMesh, dots: List[CalBiasDot]):
             json.dumps(root, indent=2), encoding="utf-8")
     except Exception as e:
         print(f"[cal] save failed: {e}")
+
+
+# ── Program/Combi name cache ────────────────────────────────────────────────
+# name_cache.json: { host: [ {type, bank, number, name}, ... ] }
+# Keyed by "host" (the SysExService cache key — the TCP host, matching
+# Core/Storage.cs LoadNames/SaveNames).
+
+_names_lock = threading.Lock()
+_dumped_lock = threading.Lock()
+_setlists_lock = threading.Lock()
+
+
+def load_names(cache_key: str) -> List[CachedName]:
+    p = _path("name_cache.json")
+    if not p.exists():
+        return []
+    try:
+        with _names_lock:
+            root = json.loads(p.read_text(encoding="utf-8"))
+        out: List[CachedName] = []
+        for e in root.get(cache_key, []):
+            try:
+                out.append(CachedName(int(e["type"]), int(e["bank"]), int(e["number"]), str(e["name"])))
+            except Exception:
+                pass
+        return out
+    except Exception as e:
+        print(f"[names] load failed: {e}")
+        return []
+
+
+def save_names(cache_key: str, names: List[CachedName]):
+    p = _path("name_cache.json")
+    try:
+        with _names_lock:
+            root = {}
+            if p.exists():
+                try:
+                    root = json.loads(p.read_text(encoding="utf-8"))
+                except Exception:
+                    root = {}
+            root[cache_key] = [
+                {"type": n.type, "bank": n.bank, "number": n.number, "name": n.name}
+                for n in names
+            ]
+            p.write_text(json.dumps(root, indent=2), encoding="utf-8")
+    except Exception as e:
+        print(f"[names] save failed: {e}")
+
+
+# ── Dumped-bank ledger ───────────────────────────────────────────────────────
+# dumped_banks.json: { host: ["type:bankHex", ...] }
+# Tracks which (type, objBank) name sweeps have completed, separately from the
+# name cache since an empty bank legitimately caches zero names.
+
+def load_dumped_banks(cache_key: str) -> Set[Tuple[int, int]]:
+    p = _path("dumped_banks.json")
+    if not p.exists():
+        return set()
+    try:
+        with _dumped_lock:
+            root = json.loads(p.read_text(encoding="utf-8"))
+        out: Set[Tuple[int, int]] = set()
+        for tok in root.get(cache_key, []):
+            try:
+                t, b = tok.split(":")
+                out.add((int(t), int(b, 16)))
+            except Exception:
+                pass
+        return out
+    except Exception as e:
+        print(f"[dumped-banks] load failed: {e}")
+        return set()
+
+
+def save_dumped_banks(cache_key: str, banks: Set[Tuple[int, int]]):
+    p = _path("dumped_banks.json")
+    try:
+        with _dumped_lock:
+            root = {}
+            if p.exists():
+                try:
+                    root = json.loads(p.read_text(encoding="utf-8"))
+                except Exception:
+                    root = {}
+            root[cache_key] = sorted(f"{t}:{b:02x}" for t, b in banks)
+            p.write_text(json.dumps(root, indent=2), encoding="utf-8")
+    except Exception as e:
+        print(f"[dumped-banks] save failed: {e}")
+
+
+# ── Set List cache ───────────────────────────────────────────────────────────
+# setlist_cache.json: { host: { "<number>": {name, slots:[...]}, ... } }
+
+def load_setlists(cache_key: str) -> Dict[int, SetListData]:
+    p = _path("setlist_cache.json")
+    if not p.exists():
+        return {}
+    try:
+        with _setlists_lock:
+            root = json.loads(p.read_text(encoding="utf-8"))
+        out: Dict[int, SetListData] = {}
+        for num_str, sl in root.get(cache_key, {}).items():
+            try:
+                num = int(num_str)
+                slots = [
+                    SetListSlot(
+                        number=s["number"], name=s["name"], type=s["type"], bank=s["bank"],
+                        index=s["index"], color=s["color"], hold_time=s["hold_time"],
+                        volume=s["volume"], comments=s["comments"])
+                    for s in sl.get("slots", [])
+                ]
+                out[num] = SetListData(num, sl.get("name", ""), slots)
+            except Exception:
+                pass
+        return out
+    except Exception as e:
+        print(f"[setlists] load failed: {e}")
+        return {}
+
+
+def save_setlists(cache_key: str, setlists: Dict[int, SetListData]):
+    p = _path("setlist_cache.json")
+    try:
+        with _setlists_lock:
+            root = {}
+            if p.exists():
+                try:
+                    root = json.loads(p.read_text(encoding="utf-8"))
+                except Exception:
+                    root = {}
+            root[cache_key] = {
+                str(num): {
+                    "name": data.name,
+                    "slots": [
+                        {"number": s.number, "name": s.name, "type": s.type, "bank": s.bank,
+                         "index": s.index, "color": s.color, "hold_time": s.hold_time,
+                         "volume": s.volume, "comments": s.comments}
+                        for s in data.slots
+                    ],
+                }
+                for num, data in setlists.items()
+            }
+            p.write_text(json.dumps(root, indent=2), encoding="utf-8")
+    except Exception as e:
+        print(f"[setlists] save failed: {e}")

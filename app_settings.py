@@ -76,6 +76,9 @@ class AppSettings:
     ftp_password: str = ""
     ftp_port:     int = 21
 
+    # MIDI bridge (port 9875) — SysEx tool, Set List viewer, name caching
+    midi_monitor_enabled: bool = True
+
     # VGA output
     vga_mirror_enabled:  bool = False
     screensaver_timeout: int  = 300

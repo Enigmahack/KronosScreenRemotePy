@@ -49,6 +49,7 @@ from mode_detector import CombiProgramEditDetector, ModeDetector, is_frame_mostl
 from models import CalBiasDot, CalHistEntry, CalHistKind, CalMesh, HistEntry, PaletteEntry
 from overlay_renderer import OverlayRenderer
 from stream_receiver import StreamReceiver
+from sysex_service import SysExService
 
 
 # ── ICMP ping (matches C# System.Net.NetworkInformation.Ping) ─────────────────
@@ -1084,6 +1085,10 @@ class MainWindow(QMainWindow):
         self._mirror_state = False
         self._perf_window  = None   # PerformanceWindow singleton (lazy)
         self._file_manager_win = None
+        self._sysex_tool_win = None
+        self._setlist_viewer_win = None
+        self._sysex_service = SysExService(self)
+        self._sync_all_cancel: Optional[threading.Event] = None
         self._shutting_down = False
 
         # Ping
@@ -1308,6 +1313,12 @@ class MainWindow(QMainWindow):
             a.setCheckable(True)
             self._act_grid[n] = a
         self._act_grid[5].setChecked(True)
+        tools_menu.addSeparator()
+        self._act_sysex_tool = tools_menu.addAction("Open &SysEx Tool…")
+        self._act_setlist_viewer = tools_menu.addAction("Set List &Viewer…")
+        self._act_sync_names = tools_menu.addAction("Sync &Program/Combi Names…")
+        self._act_sync_all = tools_menu.addAction("Sync &All (Names + Set Lists)…")
+        tools_menu.addSeparator()
         self._act_test_mode   = tools_menu.addAction("Enter Kronos &Test Mode")
         tools_menu.addSeparator()
         self._act_screenshot  = tools_menu.addAction("Save &Screenshot…")
@@ -1316,6 +1327,7 @@ class MainWindow(QMainWindow):
         self._act_open_ss_dir = tools_menu.addAction("Open Screenshots &Folder")
         tools_menu.addSeparator()
         self._act_keyboard_info = tools_menu.addAction("&Keyboard Info…")
+        tools_menu.addSeparator()
         self._act_disable_kbd = tools_menu.addAction("&Disable Keyboard Send")
         self._act_disable_kbd.setCheckable(True)
 
@@ -1388,6 +1400,10 @@ class MainWindow(QMainWindow):
         self._act_copy_frame.triggered.connect(self._copy_frame_to_clipboard)
         self._act_open_ss_dir.triggered.connect(self._open_screenshots_folder)
         self._act_keyboard_info.triggered.connect(self._open_keyboard_info)
+        self._act_sysex_tool.triggered.connect(self._open_sysex_tool)
+        self._act_setlist_viewer.triggered.connect(self._open_setlist_viewer)
+        self._act_sync_names.triggered.connect(self._open_sync_names)
+        self._act_sync_all.triggered.connect(self._open_sync_all)
         self._act_disable_kbd.toggled.connect(self._on_disable_kbd_toggled)
 
         # Frame widget context menu
@@ -1526,6 +1542,7 @@ class MainWindow(QMainWindow):
             self._receiver.dispose()
             self._receiver = None
         self._ctrl.reset()
+        self._sysex_service.stop()
         self._stop_ping()
         self._frame_w._is_connected = False
         self._frame_w._frame_pixmap = None
@@ -1705,6 +1722,9 @@ class MainWindow(QMainWindow):
         self._mirror_state = self._settings.vga_mirror_enabled
         self._ctrl_send("MIRROR_ON" if self._mirror_state else "MIRROR_OFF")
         self._ctrl_send(f"SS_TIMEOUT {self._settings.screensaver_timeout}")
+        # MIDI bridge (SysEx tool / Set List viewer / name caching) — port 9875
+        if self._settings.midi_monitor_enabled:
+            self._sysex_service.start(self._host)
         # Update perf window if open
         if self._perf_window:
             self._perf_window.update_host(self._host, self._ctrl_port)
@@ -2567,6 +2587,124 @@ class MainWindow(QMainWindow):
         self._perf_window.update_host(self._host, self._ctrl_port)
         self._perf_window.show()
         self._perf_window.raise_()
+
+    # ── SysEx Tool ───────────────────────────────────────────────────────────────
+
+    def _open_sysex_tool(self):
+        if self._sysex_tool_win is not None:
+            self._sysex_tool_win.raise_()
+            self._sysex_tool_win.activateWindow()
+            return
+        if not self._host:
+            QMessageBox.warning(self, "SysEx Tool",
+                                "No Kronos host configured. Set it in Settings first.")
+            return
+        if not self._settings.midi_monitor_enabled or not self._sysex_service.can_dump:
+            QMessageBox.warning(self, "SysEx Tool",
+                                "MIDI monitoring is off or not connected. Enable "
+                                "'MIDI bridge' and connect to the Kronos first.")
+            return
+        from sysex_tool_window import SysExToolWindow
+        self._sysex_tool_win = SysExToolWindow(
+            self._host, self._sysex_service.bridge, self._sysex_service, self)
+        self._sysex_tool_win.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self._sysex_tool_win.destroyed.connect(lambda: setattr(self, '_sysex_tool_win', None))
+        self._sysex_tool_win.show()
+
+    # ── Set List Viewer ──────────────────────────────────────────────────────────
+
+    def _open_setlist_viewer(self):
+        if self._setlist_viewer_win is not None:
+            self._setlist_viewer_win.raise_()
+            self._setlist_viewer_win.activateWindow()
+            return
+        host = self._host or self._settings.kronos_host
+        if not host:
+            QMessageBox.warning(self, "Set List Viewer",
+                                "No Kronos host configured. Set it in Settings first.")
+            return
+        from setlist_window import SetListWindow
+        self._setlist_viewer_win = SetListWindow(host, self._sysex_service, self)
+        self._setlist_viewer_win.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self._setlist_viewer_win.destroyed.connect(lambda: setattr(self, '_setlist_viewer_win', None))
+        self._setlist_viewer_win.show()
+
+    # ── Sync Program/Combi Names ─────────────────────────────────────────────────
+
+    def _open_sync_names(self):
+        if not self._settings.midi_monitor_enabled or not self._sysex_service.can_dump:
+            QMessageBox.warning(self, "Sync Names",
+                                "MIDI monitoring is off or not connected. Enable "
+                                "'MIDI bridge' and connect to the Kronos first.")
+            return
+
+        from PySide6.QtWidgets import QProgressDialog
+        dlg = QProgressDialog("Syncing program/combi names…", "Cancel", 0, 100, self)
+        dlg.setWindowTitle("Sync Names")
+        dlg.setWindowModality(Qt.WindowModality.WindowModal)
+        dlg.setMinimumDuration(0)
+        dlg.setValue(0)
+
+        cancel_event = threading.Event()
+        dlg.canceled.connect(cancel_event.set)
+
+        def names_progress(done, total, names):
+            QTimer.singleShot(0, self, lambda: dlg.setLabelText(
+                f"Syncing names… {done}/{total} banks, {names} name(s) cached"))
+            QTimer.singleShot(0, self, lambda: dlg.setValue(int(done * 100 / max(total, 1))))
+
+        def worker():
+            self._sysex_service.sync_names(names_progress, cancel_event)
+            QTimer.singleShot(0, self, dlg.close)
+
+        threading.Thread(target=worker, daemon=True, name="SyncNames").start()
+        dlg.exec()
+
+    # ── Sync All (Names + Set Lists) ─────────────────────────────────────────────
+
+    def _open_sync_all(self):
+        if not self._settings.midi_monitor_enabled or not self._sysex_service.can_dump:
+            QMessageBox.warning(self, "Sync All",
+                                "MIDI monitoring is off or not connected. Enable "
+                                "'MIDI bridge' and connect to the Kronos first.")
+            return
+
+        from PySide6.QtWidgets import QProgressDialog
+        dlg = QProgressDialog("Syncing program/combi names…", "Cancel", 0, 100, self)
+        dlg.setWindowTitle("Sync All")
+        dlg.setWindowModality(Qt.WindowModality.WindowModal)
+        dlg.setMinimumDuration(0)
+        dlg.setValue(0)
+
+        cancel_event = threading.Event()
+        self._sync_all_cancel = cancel_event
+        dlg.canceled.connect(cancel_event.set)
+
+        def names_progress(done, total, names):
+            QTimer.singleShot(0, self, lambda: dlg.setLabelText(
+                f"Syncing names… {done}/{total} banks, {names} name(s) cached"))
+            QTimer.singleShot(0, self, lambda: dlg.setValue(int(done * 50 / max(total, 1))))
+
+        def setlists_progress(done, total, found):
+            QTimer.singleShot(0, self, lambda: dlg.setLabelText(
+                f"Syncing Set Lists… {done}/{total}, {found} with content"))
+            QTimer.singleShot(0, self, lambda: dlg.setValue(50 + int(done * 50 / max(total, 1))))
+
+        def worker():
+            self._sysex_service.sync_names(names_progress, cancel_event)
+            if not cancel_event.is_set():
+                result = self._sysex_service.dump_all_set_lists(setlists_progress, cancel_event)
+                cached = storage.load_setlists(self._host)
+                cached.update(result.found)
+                for n in result.confirmed_empty:
+                    cached.pop(n, None)
+                storage.save_setlists(self._host, cached)
+                if self._setlist_viewer_win is not None:
+                    QTimer.singleShot(0, self, self._setlist_viewer_win._reload_cache)
+            QTimer.singleShot(0, self, dlg.close)
+
+        threading.Thread(target=worker, daemon=True, name="SyncAll").start()
+        dlg.exec()
 
     # ── Macro playback ─────────────────────────────────────────────────────────
 
