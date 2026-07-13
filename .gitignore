@@ -2,3 +2,6 @@ __pycache__
 settings.json
 palette_override.json
 palette_lock.json
+name_cache.json
+setlist_cache.json
+dumped_banks.json

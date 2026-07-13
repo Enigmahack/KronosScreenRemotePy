@@ -30,8 +30,8 @@ from PySide6.QtCore import (
     QEvent, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal, Slot,
 )
 from PySide6.QtGui import (
-    QAction, QClipboard, QColor, QFont, QIcon, QImage, QKeyEvent, QMouseEvent,
-    QPainter, QPixmap, QResizeEvent, QWheelEvent,
+    QAction, QActionGroup, QClipboard, QColor, QFont, QIcon, QImage, QKeyEvent, QMouseEvent,
+    QPainter, QPainterPath, QPixmap, QResizeEvent, QWheelEvent,
 )
 from PySide6.QtWidgets import (
     QApplication, QDialog, QFileDialog, QFrame, QHBoxLayout, QInputDialog,
@@ -40,8 +40,10 @@ from PySide6.QtWidgets import (
 )
 
 import ctrl_client as CtrlClient
+import image_adjust
 import key_map
 import storage
+import theme as T
 from app_settings import AppSettings, get_rebindable
 from boot_phase_detector import BootPhaseDetector, Phase as BootPhase
 from control_surface import KronosControlSurface
@@ -160,6 +162,23 @@ _NUMPAD_MAP: dict[int, str] = {
 # Mode index 0 = none; 1–7 = Setlist…Disk
 _MODE_NAMES = ("", "Setlist", "Combi", "Program", "Sequence", "Sampling", "Global", "Disk")
 _MODE_CMDS  = ("", "SETLIST", "COMBI",  "PROGRAM", "SEQUENCE", "SAMPLING", "GLOBAL", "DISK")
+# Mode-menu display labels carrying the C# accelerator mnemonics (index-aligned to
+# _MODE_NAMES). Kept separate so _MODE_NAMES stays clean for keybind/command lookups.
+_MODE_MENU_LABELS = ("", "&Setlist", "&Combi", "&Program", "S&equence", "S&ampling", "&Global", "&Disk")
+
+# Keys eligible for held-key auto-repeat when forwarded to the Kronos (mirrors the
+# C# RepeatableKeys set): letters, digits, edit/nav keys, common punctuation.
+# Deliberately excludes Escape, function keys, etc. so a held Escape can't spam EXIT.
+_REPEATABLE_KEYS = frozenset(
+    list(range(int(Qt.Key_A), int(Qt.Key_Z) + 1)) +
+    list(range(int(Qt.Key_0), int(Qt.Key_9) + 1)) +
+    [int(k) for k in (
+        Qt.Key_Backspace, Qt.Key_Delete, Qt.Key_Space, Qt.Key_Tab,
+        Qt.Key_Return, Qt.Key_Enter, Qt.Key_Up, Qt.Key_Down, Qt.Key_Left,
+        Qt.Key_Right, Qt.Key_Home, Qt.Key_End, Qt.Key_PageUp, Qt.Key_PageDown,
+        Qt.Key_Minus, Qt.Key_Plus, Qt.Key_Equal, Qt.Key_Comma, Qt.Key_Period,
+        Qt.Key_Slash, Qt.Key_BracketLeft, Qt.Key_BracketRight, Qt.Key_Backslash,
+        Qt.Key_Semicolon, Qt.Key_Apostrophe, Qt.Key_QuoteLeft)])
 
 # Control-surface button name → (daemon command, mode index or 0)
 _CTRL_BTN_CMD: dict[str, tuple[str, int]] = {
@@ -227,9 +246,18 @@ class FrameWidget(QWidget):
 
         self._frame_image: Optional[QImage]   = None   # Format_Indexed8
         self._frame_pixmap: Optional[QPixmap] = None   # converted for drawPixmap
-        self._lut: list[int] = [0] * 256               # packed 0xRRGGBB
-        self._cached_ct: list[int] = []                # cached QImage color table
+        self._lut: list[int] = [0] * 256               # packed 0xRRGGBB — UNADJUSTED (detection/editor)
+        self._cached_ct: list[int] = []                # base (unadjusted) QImage color table
+        self._display_ct: list[int] = []               # tone/saturation-adjusted table (display only)
         self._ct_dirty = True                          # rebuild color table on next frame
+        # Image adjustments applied to the *displayed* frame. The detection LUT
+        # (_lut) stays unadjusted so boot black-detection isn't skewed by them.
+        self._img_bri   = 0
+        self._img_con   = 0
+        self._img_gam   = 1.0
+        self._img_sat   = 0
+        self._img_sharp = 0
+        self._scale_mode = "HighQuality"   # Sharp | Smooth | HighQuality
         self._aspect_lock    = True
         self._frame_rect     = QRectF()
         self._palette: list[PaletteEntry] = []
@@ -295,24 +323,57 @@ class FrameWidget(QWidget):
 
     # ── Frame update ───────────────────────────────────────────────────────────
 
+    def _rebuild_color_tables(self, palette: list[PaletteEntry],
+                              overrides: Dict[int, PaletteEntry]):
+        """Build the base (unadjusted) colour table + detection LUT, then the
+        adjusted display table."""
+        ct = []
+        for i, e in enumerate(palette):
+            entry = overrides.get(i, e)
+            ct.append(0xFF000000 | (entry.r << 16) | (entry.g << 8) | entry.b)
+        self._cached_ct = ct
+        for i, c in enumerate(ct):
+            self._lut[i] = c & 0xFFFFFF     # UNADJUSTED — boot black-detection reads this
+        self._rebuild_display_ct()
+
+    def _rebuild_display_ct(self):
+        """Fold brightness/contrast/gamma/saturation into a display-only colour
+        table (mirrors C# RebuildLut). Identity → reuse the base table."""
+        if not self._cached_ct:
+            self._display_ct = []
+            return
+        if (image_adjust.tone_is_identity(self._img_bri, self._img_con, self._img_gam)
+                and self._img_sat == 0):
+            self._display_ct = self._cached_ct
+            return
+        curve = image_adjust.build_tone_curve(self._img_bri, self._img_con, self._img_gam)
+        sat   = image_adjust.saturation_factor(self._img_sat)
+        self._display_ct = [
+            0xFF000000 | image_adjust.apply_to_channel(
+                (c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF, curve, sat)
+            for c in self._cached_ct
+        ]
+
+    def _make_pixmap(self, indexed_img: QImage) -> QPixmap:
+        """Indexed8 → RGB32, then optional unsharp-mask (spatial, once per frame)."""
+        rgb = indexed_img.convertToFormat(QImage.Format_RGB32)
+        if self._img_sharp > 0:
+            rgb = image_adjust.sharpen_rgb32(
+                rgb, self._img_sharp / 100.0 * image_adjust.MAX_SHARPEN)
+        return QPixmap.fromImage(rgb)
+
     def on_frame(self, raw: bytes, palette: list[PaletteEntry],
                  overrides: Dict[int, PaletteEntry], locked: Set[int]):
         """Called from main thread with a new 8bpp frame and current palette."""
         self._overrides = overrides
         self._locked    = locked
         if self._ct_dirty or not self._cached_ct:
-            ct = []
-            for i, e in enumerate(palette):
-                entry = overrides.get(i, e)
-                ct.append(0xFF000000 | (entry.r << 16) | (entry.g << 8) | entry.b)
-            self._cached_ct = ct
-            for i, c in enumerate(ct):
-                self._lut[i] = c & 0xFFFFFF
+            self._rebuild_color_tables(palette, overrides)
             self._ct_dirty = False
         img = QImage(raw, _FRAME_W, _FRAME_H, _FRAME_W, QImage.Format_Indexed8)
-        img.setColorTable(self._cached_ct)
+        img.setColorTable(self._display_ct)
         self._frame_image  = img
-        self._frame_pixmap = QPixmap.fromImage(img.convertToFormat(QImage.Format_RGB32))
+        self._frame_pixmap = self._make_pixmap(img)
         self.update()
 
     def set_palette(self, palette: list[PaletteEntry],
@@ -320,23 +381,30 @@ class FrameWidget(QWidget):
         """Rebuild LUT after palette or override change without new frame."""
         if not self._frame_image:
             return
-        ct = []
-        for i, e in enumerate(palette):
-            entry = overrides.get(i, e)
-            ct.append(0xFF000000 | (entry.r << 16) | (entry.g << 8) | entry.b)
-            self._lut[i] = ct[-1] & 0xFFFFFF
-        self._cached_ct = ct
+        self._rebuild_color_tables(palette, overrides)
         self._ct_dirty  = False
-        self._frame_image.setColorTable(ct)
-        self._frame_pixmap = QPixmap.fromImage(
-            self._frame_image.convertToFormat(QImage.Format_RGB32))
+        self._frame_image.setColorTable(self._display_ct)
+        self._frame_pixmap = self._make_pixmap(self._frame_image)
         self.update()
+
+    def set_image_adjust(self, brightness: int, contrast: int, gamma: float,
+                         saturation: int, sharpen: int):
+        """Update image-adjust params and re-render the current frame (live)."""
+        self._img_bri, self._img_con, self._img_gam = brightness, contrast, gamma
+        self._img_sat, self._img_sharp = saturation, sharpen
+        self._rebuild_display_ct()
+        if self._frame_image and self._display_ct:
+            self._frame_image.setColorTable(self._display_ct)
+            self._frame_pixmap = self._make_pixmap(self._frame_image)
+            self.update()
 
     # ── Paint ──────────────────────────────────────────────────────────────────
 
     def paintEvent(self, _event):
         p = QPainter(self)
-        p.setRenderHint(QPainter.SmoothPixmapTransform)
+        # Scaling quality: Sharp = nearest-neighbour (no smoothing); Smooth/HQ =
+        # bilinear (Qt has no Fant equivalent, so those two render identically).
+        p.setRenderHint(QPainter.SmoothPixmapTransform, self._scale_mode != "Sharp")
         p.fillRect(self.rect(), Qt.black)
 
         fr = self._compute_frame_rect()
@@ -775,7 +843,7 @@ class FrameWidget(QWidget):
 
 class _StatusDot(QWidget):
     """Colored circle indicating connection state."""
-    _COLORS = {"disconnected": "#444444", "connecting": "#CCAA00", "connected": "#44BB44"}
+    _COLORS = {"disconnected": T.TEXT_FAINT, "connecting": T.WARN, "connected": T.OK}
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -791,8 +859,50 @@ class _StatusDot(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor(self._COLORS.get(self._state, "#444444")))
+        p.setBrush(QColor(self._COLORS.get(self._state, T.TEXT_FAINT)))
         p.drawEllipse(1, 1, 10, 10)
+        p.end()
+
+
+class _NotifyBubble(QWidget):
+    """Chat-bubble notification indicator — a filled speech bubble that recolors
+    by state (idle gray / info amber / error red). Vector shape mirrors the C#
+    NotifyBubblePath. Click/right-click is handled by the main window's
+    eventFilter (installed on this widget)."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(18, 15)
+        self._color = T.TEXT_FAINT
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def set_color(self, color: str):
+        if color != self._color:
+            self._color = color
+            self.update()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(self._color))
+        # 14×13 bubble from the C# NotifyBubblePath, offset to centre in 18×15.
+        ox, oy = 2.0, 1.0
+        path = QPainterPath()
+        path.moveTo(ox + 1.5, oy)
+        path.lineTo(ox + 12, oy)
+        path.quadTo(ox + 14, oy, ox + 14, oy + 2)
+        path.lineTo(ox + 14, oy + 8.5)
+        path.quadTo(ox + 14, oy + 10, ox + 12, oy + 10)
+        path.lineTo(ox + 5.5, oy + 10)
+        path.lineTo(ox + 2.5, oy + 13)
+        path.lineTo(ox + 3.5, oy + 10)
+        path.lineTo(ox + 2, oy + 10)
+        path.quadTo(ox, oy + 10, ox, oy + 8.5)
+        path.lineTo(ox, oy + 2)
+        path.quadTo(ox, oy, ox + 1.5, oy)
+        path.closeSubpath()
+        p.drawPath(path)
         p.end()
 
 
@@ -864,7 +974,7 @@ class KronosValueSliderPanel(QWidget):
         if self._bg_pixmap:
             p.drawPixmap(QRect(-33, -113, 349, 713), self._bg_pixmap)
         else:
-            p.fillRect(0, 0, self._DS_W, self._DS_H, QColor("#2A2A2A"))
+            p.fillRect(0, 0, self._DS_W, self._DS_H, QColor(T.PANEL_ALT))
 
         if self._btn_pixmap:
             inc_off = 2 if self._pressed_btn == "INC" else 0
@@ -963,8 +1073,8 @@ class _CollapseBar(QWidget):
     def paintEvent(self, _):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
-        p.fillRect(self.rect(), QColor("#1A1A1A"))
-        p.setPen(QColor("#333"))
+        p.fillRect(self.rect(), QColor(T.BG))
+        p.setPen(QColor(T.BORDER))
         if self._right_side:
             p.drawLine(0, 0, 0, self.height())
         else:
@@ -973,9 +1083,9 @@ class _CollapseBar(QWidget):
             arrow = "‹" if self._expanded else "›"
         else:
             arrow = "›" if self._expanded else "‹"
-        p.setPen(QColor("#AAA"))
+        p.setPen(QColor(T.TEXT))
         f = p.font()
-        f.setPixelSize(12)
+        f.setPixelSize(T.FS_BODY)
         p.setFont(f)
         p.drawText(self.rect(), Qt.AlignCenter, arrow)
         p.end()
@@ -1038,6 +1148,10 @@ class MainWindow(QMainWindow):
         self._current_mode   = 0
         self._prev_mode      = 0
         self._pending_mode   = 0   # user-requested mode awaiting detection confirmation
+        # True from a user-initiated mode change until detection confirms it —
+        # suppresses the footer performance name flashing the pre-change mode's
+        # identity while the switch's MIDI is still in flight.
+        self._mode_switch_pending = False
         self._combi_prog_edit_active = False
         self._combi_prog_flash_state = False
         self._combi_exit_gone_at: float = 0.0
@@ -1045,6 +1159,16 @@ class MainWindow(QMainWindow):
         self._kbd_capture   = False
         self._kbd_send_en   = True
         self._shift_held    = False
+
+        # Held-key auto-repeat while forwarding to the Kronos. OS auto-repeat is
+        # ignored (as before); this drives re-triggers ourselves so a held key
+        # (e.g. backspace) repeats — 400 ms initial delay, then ~40 ms rate,
+        # mirroring the C# repeat timer.
+        self._kbd_repeat_code  = 0
+        self._kbd_repeat_key   = 0
+        self._kbd_repeat_phase = False
+        self._kbd_repeat_timer = QTimer(self)
+        self._kbd_repeat_timer.timeout.connect(self._on_kbd_repeat_tick)
 
         self._mode_poll_timer = QTimer(self)
         self._mode_poll_timer.setInterval(_MODE_POLL_INTERVAL_MS)
@@ -1096,6 +1220,13 @@ class MainWindow(QMainWindow):
         self._ping_timer = QTimer(self)
         self._ping_timer.setInterval(3000)
         self._ping_timer.timeout.connect(self._ping_once)
+
+        # MIDI footer activity (RX/TX flash, coalesced by a 50 ms dim timer)
+        self._midi_rx_at = 0.0
+        self._midi_tx_at = 0.0
+        self._midi_dim_timer = QTimer(self)
+        self._midi_dim_timer.setInterval(50)
+        self._midi_dim_timer.timeout.connect(self._update_midi_dots)
 
         # Notification state
         self._notify_count = 0
@@ -1155,6 +1286,7 @@ class MainWindow(QMainWindow):
         # Control surface (800 design units wide)
         self._ctrl_surface = KronosControlSurface()
         self._ctrl_surface.button_pressed.connect(self._on_ctrl_button)
+        self._ctrl_surface.button_released.connect(self._on_ctrl_button_released)
         self._ctrl_surface.wheel_step.connect(self._on_wheel_step)
         layout.addWidget(self._ctrl_surface, 800)
 
@@ -1171,102 +1303,171 @@ class MainWindow(QMainWindow):
         self._frame_w.touch_up.connect(self._on_touch_up)
         self._frame_w.frame_clicked_for_kbd.connect(self._set_kbd_capture)
 
-        # Status bar
+        # Status bar (base look comes from the app-wide stylesheet; only the
+        # per-instance content margins are set here)
         self._status_bar = QStatusBar()
-        self._status_bar.setStyleSheet(
-            "QStatusBar { background: #1A1A1A; color: #888; font-size: 11px; }"
-            "QStatusBar::item { border: none; }"
-        )
+        self._status_bar.setContentsMargins(0, 0, 0, 0)
         self.setStatusBar(self._status_bar)
 
-        # Left: connection dot + status text
-        self._conn_dot = _StatusDot()
-        self._status_label = QLabel("Not connected")
-        self._status_label.setStyleSheet("color: #888; padding-left: 4px;")
-        self._status_bar.addWidget(self._conn_dot)
-        self._status_bar.addWidget(self._status_label)
-
         def _sep():
-            s = QFrame()
-            s.setFrameShape(QFrame.Shape.VLine)
-            s.setStyleSheet("color: #333; margin: 2px 0;")
+            """Vertical divider — a 1px widget coloured via background (a QFrame
+            VLine's colour is not reliably settable through the CSS `color`)."""
+            s = QWidget()
+            s.setFixedWidth(1)
+            s.setFixedHeight(14)
+            s.setStyleSheet(f"background-color: {T.BORDER};")
             return s
 
-        # Permanent widgets (left → right)
-        self._kbd_label = QLabel("⌨︎")
-        self._kbd_label.setStyleSheet("color: #888; font-family: 'Segoe UI Symbol';")
-        self._kbd_label.setToolTip("Keyboard capture — click in frame to capture")
+        # Symbol font set once, in code — a real QFont resolves the glyph (with
+        # Qt fallback) reliably, unlike a QSS font-family list. setFont is not
+        # wiped by later setStyleSheet("color: …") calls, so the size survives.
+        icon_font = QFont(T.FONT_SYMBOL)
+        icon_font.setPixelSize(T.FS_ICON)
 
-        self._fps_label = QLabel("")
-        self._fps_label.setStyleSheet("color: #666;")
+        def _icon(glyph: str, color: str, tooltip: str, clickable: bool = False) -> QLabel:
+            """A footer glyph icon: enlarged/one-font via QFont so it reads as an
+            icon; colour set via stylesheet (dynamic setters change colour only)."""
+            lbl = QLabel(glyph)
+            lbl.setObjectName("footerIcon")
+            lbl.setFont(icon_font)
+            lbl.setStyleSheet(f"color: {color};")
+            lbl.setToolTip(tooltip)
+            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            if clickable:
+                lbl.setCursor(Qt.CursorShape.PointingHandCursor)
+            return lbl
 
-        self._ping_label = QLabel("⇄ —")
-        self._ping_label.setStyleSheet("color: #555;")
-        self._ping_label.setToolTip("Round-trip latency to Kronos")
+        def _text(color: str, tooltip: str = "", min_w: int = 0) -> QLabel:
+            """A footer text/value label at the status-bar body size. A fixed
+            min-width stops neighbours jittering as the value changes."""
+            lbl = QLabel("")
+            lbl.setStyleSheet(f"color: {color}; font-size: {T.FS_SMALL}px;")
+            if tooltip:
+                lbl.setToolTip(tooltip)
+            if min_w:
+                lbl.setMinimumWidth(min_w)
+                lbl.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+            return lbl
 
-        self._notify_label = QLabel("●")
-        self._notify_label.setStyleSheet("color: #444;")
+        # ── Left cluster: connection health + input icons ───────────────────
+        # Everything left-justified except the VU meter (right, below).
+        self._conn_dot = _StatusDot()
+        self._status_label = QLabel("Not connected")
+        self._status_label.setStyleSheet(f"color: {T.TEXT_DIM}; font-size: {T.FS_SMALL}px;")
+        self._status_label.setContentsMargins(T.PAD, 0, 0, 0)
+
+        self._fps_label = _text(T.TEXT_DIM, "Live stream frame rate", min_w=54)
+        self._ping_label = _text(T.TEXT_IDLE, "Round-trip latency to Kronos", min_w=56)
+        self._ping_label.setText("⇄ —")
+
+        self._kbd_label = _icon("⌨", T.TEXT_DIM,
+                                 "Keyboard capture — click in frame to capture")
+        self._notify_label = _NotifyBubble()
         self._notify_label.setToolTip("No notifications")
-        self._notify_label.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._kbd_info_btn = _icon("▦", T.TEXT_IDLE,
+                                   "Keyboard Info / Performance Meter", clickable=True)
+        self._conn_mode_label = _text(T.TEXT_DIM, "Streaming mode", min_w=48)
+        self._mode_label = _text(T.ACCENT, "Current Kronos mode", min_w=88)
 
-        self._kbd_info_btn = QLabel("⊞")
-        self._kbd_info_btn.setStyleSheet("color: #556; padding: 0 2px;")
-        self._kbd_info_btn.setToolTip("Keyboard Info / Performance Meter")
-        self._kbd_info_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        # MIDI link badge — "TCP" when the MIDI bridge (:9875) is connected, else "—".
+        self._midi_badge = QLabel("—")
+        self._midi_badge.setToolTip("Active MIDI link — TCP: network daemon (:9875)")
+        self._midi_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._set_midi_badge(False)
 
-        self._conn_mode_label = QLabel("")
-        self._conn_mode_label.setStyleSheet("color: #888;")
-        self._conn_mode_label.setToolTip("Streaming mode")
+        # MIDI activity — RX (↓ + green dot), TX (red dot + ↑); flash on traffic,
+        # dim at rest. Arrow + dot recolor together (mirrors the C# SysEx dots).
+        arrow_font = QFont(T.FONT_SYMBOL); arrow_font.setPixelSize(T.FS_H2)
+        dot_font   = QFont(T.FONT_SYMBOL); dot_font.setPixelSize(T.FS_SMALL)
+        self._midi_rx_arrow = QLabel("↓")
+        self._midi_rx_dot   = QLabel("●")
+        self._midi_tx_dot   = QLabel("●")
+        self._midi_tx_arrow = QLabel("↑")
+        _rx_tip = "MIDI received (client ← Kronos)"
+        _tx_tip = "MIDI transmitted (client → Kronos)"
+        for w in (self._midi_rx_arrow, self._midi_tx_arrow):
+            w.setFont(arrow_font)
+        for w in (self._midi_rx_dot, self._midi_tx_dot):
+            w.setFont(dot_font)
+        for w, dim, tip in ((self._midi_rx_arrow, T.MIDI_RX_DIM, _rx_tip),
+                            (self._midi_rx_dot,   T.MIDI_RX_DIM, _rx_tip),
+                            (self._midi_tx_dot,   T.MIDI_TX_DIM, _tx_tip),
+                            (self._midi_tx_arrow, T.MIDI_TX_DIM, _tx_tip)):
+            w.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            w.setStyleSheet(f"color: {dim};")
+            w.setToolTip(tip)
+        _midi_io = QWidget()
+        _midi_io_lay = QHBoxLayout(_midi_io)
+        _midi_io_lay.setContentsMargins(0, 0, 0, 0)
+        _midi_io_lay.setSpacing(1)
+        for w in (self._midi_rx_arrow, self._midi_rx_dot,
+                  self._midi_tx_dot, self._midi_tx_arrow):
+            _midi_io_lay.addWidget(w)
 
+        # Current performance (bank/number/name via SysEx). No min-width — it can
+        # be long, so it takes remaining space at the end of the cluster.
+        self._perf_label = QLabel("")
+        self._perf_label.setStyleSheet(f"color: {T.ACCENT}; font-size: {T.FS_SMALL}px;")
+        self._perf_label.setToolTip("Current performance — bank, number and name (via SysEx)")
+
+        self._status_bar.addWidget(self._conn_dot)
+        self._status_bar.addWidget(self._status_label)
+        for w in (_sep(), self._fps_label, _sep(), self._ping_label,
+                  _sep(), self._midi_badge, _sep(), _midi_io,
+                  _sep(), self._kbd_label, _sep(), self._notify_label,
+                  _sep(), self._kbd_info_btn, _sep(), self._conn_mode_label,
+                  _sep(), self._mode_label, _sep(), self._perf_label):
+            self._status_bar.addWidget(w)
+
+        # ── Right cluster: audio VU meter (the only right-justified item) ────
         from vu_meter import VuMeterWidget
         self._vu_widget = VuMeterWidget()
-        self._vu_picker_btn = QLabel("▾")
-        self._vu_picker_btn.setStyleSheet("color: #555; padding: 0 2px;")
-        self._vu_picker_btn.setToolTip("Select audio monitoring device")
-        self._vu_picker_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._vu_picker_btn = _icon("▾", T.TEXT_IDLE,
+                                    "Select audio monitoring device", clickable=True)
         _vu_box = QWidget()
         _vu_lay = QHBoxLayout(_vu_box)
-        _vu_lay.setContentsMargins(2, 0, 2, 0)
-        _vu_lay.setSpacing(2)
+        _vu_lay.setContentsMargins(T.PAD_TIGHT, 0, T.PAD_TIGHT, 0)
+        _vu_lay.setSpacing(T.PAD)
         _vu_lay.addWidget(self._vu_widget)
         _vu_lay.addWidget(self._vu_picker_btn)
 
-        self._mode_label = QLabel("")
-        self._mode_label.setStyleSheet("color: #88AADD;")
-
-        for w in (_sep(), self._kbd_label, _sep(),
-                  self._fps_label, _sep(),
-                  self._ping_label, _sep(),
-                  self._notify_label, _sep(),
-                  self._kbd_info_btn):
-            self._status_bar.addWidget(w)
-
-        for w in (_vu_box, _sep(),
-                  self._conn_mode_label, _sep(),
-                  self._mode_label):
-            self._status_bar.addPermanentWidget(w)
+        self._status_bar.addPermanentWidget(_vu_box)
 
         self._build_menu()
 
     def _build_menu(self):
+        # Menu bar mirrors the C# MainWindow.xaml layout exactly:
+        #   File | Connection | View | Tools | Mode Select | Bank Select | Help
+        # Accelerator mnemonics (&) copied from the XAML '_' positions.
         mb = self.menuBar()
 
-        # Connection — matches C# menu order
+        # ── File (MENU_File) ────────────────────────────────────────────────
+        file_menu = mb.addMenu("&File")
+        self._act_settings_dlg = file_menu.addAction("&Settings…")
+        file_menu.addSeparator()
+        self._act_import_settings = file_menu.addAction("&Import Settings…")
+        self._act_export_settings = file_menu.addAction("&Export Settings…")
+        file_menu.addSeparator()
+        self._act_screenshot  = file_menu.addAction("Sa&ve Screenshot…")
+        self._act_quick_save  = file_menu.addAction("Q&uick Save Screenshot")
+        self._act_copy_frame  = file_menu.addAction("&Copy Frame to Clipboard")
+        self._act_open_ss_dir = file_menu.addAction("Open Screenshots &Folder")
+        file_menu.addSeparator()
+        self._act_quit        = file_menu.addAction("&Quit")
+
+        # ── Connection (MENU_Connection) ────────────────────────────────────
         conn_menu = mb.addMenu("&Connection")
         self._act_connect    = conn_menu.addAction("&Connect")
+        self._act_disconnect = conn_menu.addAction("&Disconnect")
+        self._act_disconnect.setEnabled(False)
         conn_menu.addSeparator()
         self._recent_menu = conn_menu.addMenu("&Recent Connections")
         self._rebuild_recent_menu()
         self._act_copy_ip = conn_menu.addAction("Copy &IP Address")
         conn_menu.addSeparator()
         self._act_file_mgr   = conn_menu.addAction("File &Manager…")
-        conn_menu.addSeparator()
-        self._act_disconnect = conn_menu.addAction("&Disconnect")
-        self._act_disconnect.setEnabled(False)
-        conn_menu.addSeparator()
-        self._act_quit       = conn_menu.addAction("&Quit")
 
-        # View
+        # ── View (MENU_View) ────────────────────────────────────────────────
         view_menu = mb.addMenu("&View")
         self._act_aspect   = view_menu.addAction("&Aspect Lock")
         self._act_aspect.setCheckable(True)
@@ -1284,6 +1485,19 @@ class MainWindow(QMainWindow):
         self._act_on_top.setChecked(self._settings.always_on_top)
         self._act_refresh  = view_menu.addAction("Re&fresh Display")
         view_menu.addSeparator()
+        scaling_menu = view_menu.addMenu("Scaling &Quality")
+        self._act_scale_sharp  = scaling_menu.addAction("&Sharp (crisp pixels)")
+        self._act_scale_smooth = scaling_menu.addAction("S&mooth (bilinear)")
+        self._act_scale_hq     = scaling_menu.addAction("&High Quality (default)")
+        # Exclusive group so exactly one quality is checked at a time. Held on
+        # self so it isn't garbage-collected.
+        self._scale_group = QActionGroup(self)
+        self._scale_group.setExclusive(True)
+        for a in (self._act_scale_sharp, self._act_scale_smooth, self._act_scale_hq):
+            a.setCheckable(True)
+            self._scale_group.addAction(a)
+        self._act_image_adjust = view_menu.addAction("&Image Adjustments…")
+        view_menu.addSeparator()
         preset_menu = view_menu.addMenu("Layout &Preset")
         self._act_preset_full    = preset_menu.addAction("&Full")
         self._act_preset_focused = preset_menu.addAction("F&ocused")
@@ -1292,18 +1506,18 @@ class MainWindow(QMainWindow):
         view_menu.addSeparator()
         size_menu = view_menu.addMenu("Window &Size")
         self._act_sz = {}
-        for label, scale in (("Small (75%)", 0.75), ("Normal (100%)", 1.0),
-                              ("Large (125%)", 1.25), ("Extra Large (150%)", 1.50),
-                              ("Huge (200%)", 2.00)):
+        for label, scale in (("&Small (75%)", 0.75), ("&Normal (100%)", 1.0),
+                              ("&Large (125%)", 1.25), ("&Extra Large (150%)", 1.50),
+                              ("&Huge (200%)", 2.00)):
             a = size_menu.addAction(label)
             a.setCheckable(True)
             self._act_sz[scale] = a
 
-        # Tools
+        # ── Tools (MENU_Tools) ──────────────────────────────────────────────
         tools_menu = mb.addMenu("&Tools")
         self._act_palette = tools_menu.addAction("&Palette Editor")
         self._act_palette.setCheckable(True)
-        self._act_palette.setVisible(False)  # palette editor disabled — matches C# version
+        self._act_palette.setVisible(False)  # hidden at runtime — matches C# MainWindow.xaml.cs:615
         self._act_cal     = tools_menu.addAction("&Calibration")
         self._act_cal.setCheckable(True)
         cal_grid_menu = tools_menu.addMenu("Calibration &Grid Size")
@@ -1319,34 +1533,26 @@ class MainWindow(QMainWindow):
         self._act_sync_names = tools_menu.addAction("Sync &Program/Combi Names…")
         self._act_sync_all = tools_menu.addAction("Sync &All (Names + Set Lists)…")
         tools_menu.addSeparator()
-        self._act_test_mode   = tools_menu.addAction("Enter Kronos &Test Mode")
-        tools_menu.addSeparator()
-        self._act_screenshot  = tools_menu.addAction("Save &Screenshot…")
-        self._act_quick_save  = tools_menu.addAction("&Quick Save Screenshot")
-        self._act_copy_frame  = tools_menu.addAction("&Copy Frame to Clipboard")
-        self._act_open_ss_dir = tools_menu.addAction("Open Screenshots &Folder")
-        tools_menu.addSeparator()
         self._act_keyboard_info = tools_menu.addAction("&Keyboard Info…")
+        self._act_input_tester  = tools_menu.addAction("&Input Tester…")
+        self._act_input_tester.setVisible(False)  # collapsed — matches C# XAML
+        self._act_test_mode   = tools_menu.addAction("Enter Kronos &Test Mode")
         tools_menu.addSeparator()
         self._act_disable_kbd = tools_menu.addAction("&Disable Keyboard Send")
         self._act_disable_kbd.setCheckable(True)
 
-        # Mode select
+        # ── Mode select (MENU_ModeSelect) ───────────────────────────────────
         mode_menu = mb.addMenu("&Mode Select")
         self._act_modes: list[QAction] = []
-        for name in _MODE_NAMES[1:]:
-            a = mode_menu.addAction(name)
+        for label in _MODE_MENU_LABELS[1:]:
+            a = mode_menu.addAction(label)
             self._act_modes.append(a)
 
-        # Bank select
+        # ── Bank select (MENU_BankSelect) ───────────────────────────────────
         bank_menu = mb.addMenu("Ban&k Select")
         self._build_bank_menu(bank_menu)
 
-        # Settings
-        settings_menu = mb.addMenu("&Settings")
-        self._act_settings_dlg = settings_menu.addAction("&Settings…")
-
-        # Help
+        # ── Help ────────────────────────────────────────────────────────────
         help_menu = mb.addMenu("&Help")
         self._act_show_help   = help_menu.addAction("&Show Help")
         self._act_cmd_palette = help_menu.addAction("&Command Palette")
@@ -1406,6 +1612,17 @@ class MainWindow(QMainWindow):
         self._act_sync_all.triggered.connect(self._open_sync_all)
         self._act_disable_kbd.toggled.connect(self._on_disable_kbd_toggled)
 
+        # Footer MIDI indicators + performance name — connect ONCE to the stable
+        # sysex_service (the underlying bridge is rebuilt on every reconnect).
+        self._sysex_service.rx_activity.connect(self._on_midi_rx)
+        self._sysex_service.tx_activity.connect(self._on_midi_tx)
+        self._sysex_service.link_changed.connect(self._on_midi_link_changed)
+        self._sysex_service.performance_changed.connect(self._on_performance_changed)
+        # Seed from current state (in case events fired before this wiring).
+        br = self._sysex_service.bridge
+        self._set_midi_badge(bool(br and br.is_connected))
+        self._on_performance_changed(self._sysex_service.performance_display)
+
         # Frame widget context menu
         self._frame_w.context_menu_requested.connect(self._show_frame_context_menu)
 
@@ -1433,6 +1650,26 @@ class MainWindow(QMainWindow):
         self._act_cmd_palette.triggered.connect(self._open_command_palette)
         self._act_about.triggered.connect(self._open_about)
 
+        # New C#-parity menu items whose backing features are not implemented
+        # yet. Wired to _todo so testing surfaces exactly which are missing;
+        # each is filled in one at a time per the feature-parity plan.
+        self._act_import_settings.triggered.connect(lambda: self._todo("Import Settings"))
+        self._act_export_settings.triggered.connect(lambda: self._todo("Export Settings"))
+        self._act_scale_sharp.triggered.connect(lambda: self._set_scale_quality("Sharp"))
+        self._act_scale_smooth.triggered.connect(lambda: self._set_scale_quality("Smooth"))
+        self._act_scale_hq.triggered.connect(lambda: self._set_scale_quality("HighQuality"))
+        self._act_image_adjust.triggered.connect(lambda: self._open_settings(initial_tab="Image"))
+        self._act_input_tester.triggered.connect(lambda: self._todo("Input Tester"))
+
+    def _todo(self, feature: str):
+        """Placeholder for C#-parity menu items not yet ported. Makes a missing
+        feature unmistakable during testing so it can be implemented next."""
+        logging.info("Menu feature not yet implemented: %s", feature)
+        QMessageBox.information(
+            self, "Not Implemented Yet",
+            f"“{feature}” is on the menu for C# parity but isn’t wired up yet.\n\n"
+            "It will be implemented in an upcoming step.")
+
     def _apply_settings_to_ui(self):
         self._act_aspect.setChecked(self._aspect_lock)
         self._frame_w._aspect_lock = self._aspect_lock
@@ -1440,6 +1677,34 @@ class MainWindow(QMainWindow):
         self._act_preset_full.setChecked(not focused)
         self._act_preset_focused.setChecked(focused)
         self._apply_layout(self._layout_preset)
+        self._apply_image_adjust()
+        self._apply_scale_quality()
+
+    def _apply_image_adjust(self):
+        """Push the saved image-adjustment settings into the frame widget."""
+        s = self._settings
+        self._frame_w.set_image_adjust(
+            s.image_brightness, s.image_contrast, s.image_gamma,
+            s.image_saturation, s.image_sharpen)
+
+    def _apply_scale_quality(self):
+        """Reflect the saved scaling quality in the menu check + frame widget."""
+        mode = self._settings.scaling_quality
+        if mode not in ("Sharp", "Smooth", "HighQuality"):
+            mode = "HighQuality"
+        {"Sharp": self._act_scale_sharp, "Smooth": self._act_scale_smooth,
+         "HighQuality": self._act_scale_hq}[mode].setChecked(True)
+        self._frame_w._scale_mode = mode
+        self._frame_w.update()
+
+    def _set_scale_quality(self, mode: str):
+        """User picked a scaling quality from the menu."""
+        self._settings.scaling_quality = mode
+        storage.save_settings(self._settings)
+        {"Sharp": self._act_scale_sharp, "Smooth": self._act_scale_smooth,
+         "HighQuality": self._act_scale_hq}[mode].setChecked(True)  # exclusive group unchecks others
+        self._frame_w._scale_mode = mode
+        self._frame_w.update()
 
     # ── Connection ─────────────────────────────────────────────────────────────
 
@@ -1538,12 +1803,20 @@ class MainWindow(QMainWindow):
         self._current_mode = 0
         self._prev_mode    = 0
         self._pending_mode = 0
+        self._mode_switch_pending = False   # so the perf-clear below isn't suppressed
         if self._receiver:
             self._receiver.dispose()
             self._receiver = None
         self._ctrl.reset()
         self._sysex_service.stop()
         self._stop_ping()
+        # Reset footer MIDI/performance indicators. sysex_service.stop() clears
+        # its state by direct field assignment (no signal), and bridge teardown
+        # may not emit connection_changed(False), so reset here explicitly.
+        self._on_performance_changed("")
+        self._set_midi_badge(False)
+        self._midi_rx_at = self._midi_tx_at = 0.0
+        self._update_midi_dots()          # dims RX/TX + stops the dim timer
         self._frame_w._is_connected = False
         self._frame_w._frame_pixmap = None
         self._frame_w._frame_image  = None
@@ -1733,6 +2006,11 @@ class MainWindow(QMainWindow):
         """Record a user-requested mode without lighting the button immediately.
         Detection in _on_frame is authoritative; this falls back after 3 seconds."""
         self._pending_mode = mode
+        # Gate the perf-name footer until the switch completes, so the Kronos's
+        # in-flight MIDI (a Program-Change decoded against the not-yet-updated
+        # mode) doesn't flash the previous mode's identity. Cleared in
+        # _set_mode_button (detection or the 3 s timeout below — the backstop).
+        self._mode_switch_pending = True
         QTimer.singleShot(3000, lambda m=mode: self._pending_mode_timeout(m))
 
     def _pending_mode_timeout(self, mode: int):
@@ -1742,8 +2020,14 @@ class MainWindow(QMainWindow):
 
     def _set_mode_button(self, mode: int):
         self._pending_mode = 0   # detection is authoritative — clear any pending request
+        self._mode_switch_pending = False   # switch complete → allow perf updates again
         if mode != self._current_mode:
             self._prev_mode = self._current_mode
+            # Mode changed → re-query the current performance identity so the
+            # footer shows the NEW mode's program/combi, not the previous mode's
+            # (a bank/patch switch alone sends a Program Change and updates it via
+            # the stream; a bare mode switch does not). Mirrors C# RefreshNow().
+            self._sysex_service.refresh_now()
         self._current_mode = mode
         self._detected_mode_ever = True
         if self._boot_phase:
@@ -1924,11 +2208,27 @@ class MainWindow(QMainWindow):
     @Slot(str)
     def _on_ctrl_button(self, name: str):
         entry = _CTRL_BTN_CMD.get(name)
-        if entry:
-            cmd, mode = entry
+        if not entry:
+            return
+        cmd, mode = entry
+        if mode > 0:
+            # Mode buttons act on mouse-UP (see _on_ctrl_button_released) so the
+            # footer shows only the outcome, not the pre-change mode's identity
+            # flashing while the switch is in flight. Re-light the current mode:
+            # the surface's radio group unlit it on press, and a drag-off cancel
+            # would otherwise strand it dark until the next real mode change.
+            self._ctrl_surface.set_mode(self._current_mode)
+            return
+        self._ctrl_send(cmd)
+
+    def _on_ctrl_button_released(self, name: str):
+        entry = _CTRL_BTN_CMD.get(name)
+        if not entry:
+            return
+        cmd, mode = entry
+        if mode > 0:
             self._ctrl_send(cmd)
-            if mode > 0:
-                self._set_pending_mode(mode)
+            self._set_pending_mode(mode)
 
     @Slot(int)
     def _on_wheel_step(self, delta: int):
@@ -1961,18 +2261,19 @@ class MainWindow(QMainWindow):
 
     def _release_kbd_capture(self):
         self._kbd_capture = False
+        self._stop_kbd_repeat()   # never leave a repeat running after capture ends
         self._update_kbd_indicator()
 
     def _update_kbd_indicator(self):
-        _kbd_font = "font-family: 'Segoe UI Symbol';"
+        # Colour only — size/font come from the QLabel#footerIcon app rule.
         if not self._kbd_send_en:
-            self._kbd_label.setStyleSheet(f"color: #CC4444; {_kbd_font}")
+            self._kbd_label.setStyleSheet(f"color: {T.ERROR};")
             self._kbd_label.setToolTip("Keyboard send disabled")
         elif self._kbd_capture:
-            self._kbd_label.setStyleSheet(f"color: #44BB44; {_kbd_font}")
+            self._kbd_label.setStyleSheet(f"color: {T.OK};")
             self._kbd_label.setToolTip("Keyboard captured — keys forwarded to Kronos")
         else:
-            self._kbd_label.setStyleSheet(f"color: #888; {_kbd_font}")
+            self._kbd_label.setStyleSheet(f"color: {T.TEXT_DIM};")
             self._kbd_label.setToolTip("Keyboard capture — click in frame to capture")
 
     def keyPressEvent(self, event: QKeyEvent):
@@ -2079,10 +2380,38 @@ class MainWindow(QMainWindow):
         if name:
             self._ctrl_surface.release_button(name)
 
+    # ── Held-key auto-repeat ─────────────────────────────────────────────────
+    def _start_kbd_repeat(self, qt_key: int, linux_code: int):
+        self._kbd_repeat_key   = qt_key
+        self._kbd_repeat_code  = linux_code
+        self._kbd_repeat_phase = False
+        self._kbd_repeat_timer.start(400)   # initial delay before repeat kicks in
+
+    def _stop_kbd_repeat(self):
+        self._kbd_repeat_timer.stop()
+        self._kbd_repeat_code = 0
+        self._kbd_repeat_key  = 0
+
+    def _on_kbd_repeat_tick(self):
+        if not self._kbd_repeat_phase:
+            self._kbd_repeat_phase = True
+            self._kbd_repeat_timer.setInterval(40)   # switch to fast repeat rate
+        if self._kbd_repeat_code == 0 or not self._kbd_capture or not self._kbd_send_en:
+            self._stop_kbd_repeat()
+            return
+        code = self._kbd_repeat_code
+        self._ctrl_send(f"KEY {code} 1")
+        self._ctrl_send(f"KEY {code} 0")
+
     def _forward_key(self, event: QKeyEvent, pressed: bool):
         key  = event.key()
         mods = event.modifiers()
         val  = 1 if pressed else 0
+
+        # Releasing the key that started a repeat stops it (regardless of which
+        # forward path below handles the release).
+        if not pressed and key == self._kbd_repeat_key:
+            self._stop_kbd_repeat()
 
         # Numpad digits → BUTTON NUM0..9 + control surface animation
         name = _numpad_btn(key, mods)
@@ -2111,6 +2440,7 @@ class MainWindow(QMainWindow):
                 self._ctrl_send(f"KEY {raw.raw_code} 0")
                 if raw.send_shift:
                     self._ctrl_send("KEY 42 0")
+                self._start_kbd_repeat(key, raw.raw_code)
             return
 
         # Shifted overrides
@@ -2130,6 +2460,8 @@ class MainWindow(QMainWindow):
         lc = key_map.to_linux(key)
         if lc:
             self._ctrl_send(f"KEY {lc} {val}")
+            if pressed and int(key) in _REPEATABLE_KEYS:
+                self._start_kbd_repeat(key, lc)
 
     def _matches_keybind(self, event: QKeyEvent, action: str) -> bool:
         kb = self._settings.get_keybind(action)
@@ -2478,14 +2810,18 @@ class MainWindow(QMainWindow):
 
     # ── Settings dialog ────────────────────────────────────────────────────────
 
-    def _open_settings(self):
+    def _open_settings(self, initial_tab: str = ""):
         from settings_window import SettingsWindow
         mirror_before  = self._settings.vga_mirror_enabled
         ss_before      = self._settings.screensaver_timeout
         debug_before   = self._settings.debug_logging
         hide_data_before  = self._settings.hide_data_input
         hide_value_before = self._settings.hide_value_input
-        dlg = SettingsWindow(self._settings, self)
+        img_before = (self._settings.image_brightness, self._settings.image_contrast,
+                      self._settings.image_gamma, self._settings.image_saturation,
+                      self._settings.image_sharpen)
+        dlg = SettingsWindow(self._settings, self, initial_tab=initial_tab,
+                             on_image_preview=self._preview_image_adjust)
         if dlg.exec() == QDialog.Accepted:
             storage.save_settings(self._settings)
             self._host        = self._settings.kronos_host
@@ -2499,6 +2835,8 @@ class MainWindow(QMainWindow):
             self._frame_w._zoom_level = self._zoom_level
             # Apply boot screen setting
             self._frame_w._disable_boot_screen = self._settings.disable_boot_screen
+            # Apply image adjustments (brightness/contrast/gamma/saturation/sharpen)
+            self._apply_image_adjust()
             # Apply hide data/value input only if visibility changed
             if (self._settings.hide_data_input != hide_data_before or
                     self._settings.hide_value_input != hide_value_before):
@@ -2515,6 +2853,15 @@ class MainWindow(QMainWindow):
             # Update perf window host if open
             if self._perf_window:
                 self._perf_window.update_host(self._host, self._ctrl_port)
+        else:
+            # Cancelled — revert any live image-adjust preview to pre-dialog state.
+            self._frame_w.set_image_adjust(*img_before)
+
+    def _preview_image_adjust(self, brightness: int, contrast: int, gamma: float,
+                              saturation: int, sharpen: int):
+        """Live preview from the Settings Image tab — frame widget only, never
+        touches self._settings (so Cancel reverts cleanly)."""
+        self._frame_w.set_image_adjust(brightness, contrast, gamma, saturation, sharpen)
 
     # ── Command palette (simplified) ───────────────────────────────────────────
 
@@ -2744,6 +3091,8 @@ class MainWindow(QMainWindow):
         a_asp.triggered.connect(lambda chk: self._act_aspect.setChecked(chk))
         a_fs = menu.addAction("Fullscreen")
         a_fs.triggered.connect(self._toggle_fullscreen)
+        menu.addAction("Image Adjustments…",
+                       lambda: self._open_settings(initial_tab="Image"))
         menu.addSeparator()
 
         menu.addAction("Keyboard Info…", self._open_keyboard_info)
@@ -2821,9 +3170,10 @@ class MainWindow(QMainWindow):
         """Update connection dot + status label text together."""
         self._conn_dot.set_state(state)
         self._status_label.setText(text)
-        color = {"disconnected": "#888888", "connecting": "#CCAA00", "connected": "#88DD88"}.get(
-            state, "#888888")
-        self._status_label.setStyleSheet(f"color: {color}; padding-left: 4px;")
+        color = {"disconnected": T.TEXT_DIM, "connecting": T.WARN,
+                 "connected": T.OK_TEXT}.get(state, T.TEXT_DIM)
+        # Left padding comes from the label's contentsMargins, not CSS.
+        self._status_label.setStyleSheet(f"color: {color}; font-size: {T.FS_SMALL}px;")
 
     def _restore_conn_status(self):
         """Restore status to actual connection state after a temporary message."""
@@ -2834,19 +3184,63 @@ class MainWindow(QMainWindow):
         else:
             self._set_conn_state("disconnected", "Not connected")
 
+    # ── Footer MIDI indicators ──────────────────────────────────────────────────
+
+    def _set_midi_badge(self, connected: bool):
+        txt, col = ("TCP", T.ACCENT) if connected else ("—", T.TEXT_IDLE)
+        self._midi_badge.setText(txt)
+        self._midi_badge.setStyleSheet(
+            f"color: {col}; font-family: {T.FONT_MONO}; font-size: {T.FS_CAPTION}px; "
+            f"font-weight: bold; border: 1px solid {col}; border-radius: 3px; padding: 0 4px;")
+
+    def _on_midi_link_changed(self, connected: bool):
+        self._set_midi_badge(connected)
+
+    def _on_midi_rx(self):
+        # Cheap slot — just stamp the time; the 50 ms timer recolors (coalesced).
+        self._midi_rx_at = time.monotonic()
+        if not self._midi_dim_timer.isActive():
+            self._midi_dim_timer.start()
+
+    def _on_midi_tx(self):
+        self._midi_tx_at = time.monotonic()
+        if not self._midi_dim_timer.isActive():
+            self._midi_dim_timer.start()
+
+    def _update_midi_dots(self):
+        now = time.monotonic()
+        rx_on = (now - self._midi_rx_at) < 0.25
+        tx_on = (now - self._midi_tx_at) < 0.25
+        rx = T.MIDI_RX if rx_on else T.MIDI_RX_DIM
+        tx = T.MIDI_TX if tx_on else T.MIDI_TX_DIM
+        self._midi_rx_arrow.setStyleSheet(f"color: {rx};")
+        self._midi_rx_dot.setStyleSheet(f"color: {rx};")
+        self._midi_tx_dot.setStyleSheet(f"color: {tx};")
+        self._midi_tx_arrow.setStyleSheet(f"color: {tx};")
+        if not rx_on and not tx_on:
+            self._midi_dim_timer.stop()
+
+    def _on_performance_changed(self, display: str):
+        # While a user-initiated mode switch is in flight, hold the previous
+        # value rather than flashing the pre-change mode's identity; the
+        # authoritative refresh after _set_mode_button repopulates it.
+        if self._mode_switch_pending:
+            return
+        self._perf_label.setText(display or "")
+
     def _update_conn_mode_label(self):
         if self._pull_mode:
             self._conn_mode_label.setText("Pull")
-            self._conn_mode_label.setStyleSheet("color: #88AADD;")
+            self._conn_mode_label.setStyleSheet(f"color: {T.ACCENT}; font-size: {T.FS_SMALL}px;")
         else:
             self._conn_mode_label.setText("Change")
-            self._conn_mode_label.setStyleSheet("color: #888;")
+            self._conn_mode_label.setStyleSheet(f"color: {T.TEXT_DIM}; font-size: {T.FS_SMALL}px;")
 
     # ── Ping ───────────────────────────────────────────────────────────────────
 
     def _start_ping(self):
         self._ping_label.setText("⇄ —")
-        self._ping_label.setStyleSheet("color: #555;")
+        self._ping_label.setStyleSheet(f"color: {T.TEXT_IDLE}; font-size: {T.FS_SMALL}px;")
         self._ping_inflight = False
         self._ping_timer.start()
         self._ping_once()
@@ -2855,7 +3249,7 @@ class MainWindow(QMainWindow):
         self._ping_timer.stop()
         self._ping_inflight = False
         self._ping_label.setText("⇄ —")
-        self._ping_label.setStyleSheet("color: #555;")
+        self._ping_label.setStyleSheet(f"color: {T.TEXT_IDLE}; font-size: {T.FS_SMALL}px;")
 
     def _ping_once(self):
         if self._ping_inflight or not self._host:
@@ -2873,16 +3267,16 @@ class MainWindow(QMainWindow):
     def _ping_result(self, ms: float):
         if ms < 0:
             self._ping_label.setText("⇄ ×")
-            self._ping_label.setStyleSheet("color: #CC3333;")
+            self._ping_label.setStyleSheet(f"color: {T.ERROR}; font-size: {T.FS_SMALL}px;")
         else:
             if ms <= 15:
-                color = "#44CC44"
+                color = T.OK
             elif ms <= 50:
-                color = "#CCCC44"
+                color = T.WARN
             else:
-                color = "#CC4444"
+                color = T.ERROR
             self._ping_label.setText(f"⇄ {int(ms)}ms")
-            self._ping_label.setStyleSheet(f"color: {color};")
+            self._ping_label.setStyleSheet(f"color: {color}; font-size: {T.FS_SMALL}px;")
 
     # ── Notifications ──────────────────────────────────────────────────────────
 
@@ -2890,12 +3284,12 @@ class MainWindow(QMainWindow):
         self._notify_msgs.append(msg)
         self._notify_count += 1
         self._notify_label.setToolTip(f"{self._notify_count} notification(s)\nLast: {msg}")
-        self._notify_label.setStyleSheet("color: #CC3333;" if is_error else "color: #CCAA00;")
+        self._notify_label.set_color(T.ERROR if is_error else T.WARN)
 
     def _clear_notification(self):
         self._notify_count = 0
         self._notify_msgs.clear()
-        self._notify_label.setStyleSheet("color: #444;")
+        self._notify_label.set_color(T.TEXT_FAINT)
         self._notify_label.setToolTip("No notifications")
 
     def _open_notify_log(self):
@@ -2905,7 +3299,7 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(dlg)
         txt = QTextEdit()
         txt.setReadOnly(True)
-        txt.setStyleSheet("background: #111; color: #CCC; font-family: monospace;")
+        txt.setStyleSheet(f"background: {T.INSET}; color: {T.TEXT}; font-family: {T.FONT_MONO};")
         txt.setPlainText(
             "\n".join(self._notify_msgs) if self._notify_msgs else "(no notifications)")
         layout.addWidget(txt)

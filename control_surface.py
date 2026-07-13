@@ -85,11 +85,12 @@ _WHEEL_X, _WHEEL_Y, _WHEEL_W, _WHEEL_H = 41, 222, 202, 218
 
 class KronosControlSurface(QWidget):
     """
-    Emits button_pressed(name) when a button is clicked.
-    Emits wheel_step(delta) with +n for CW, -n for CCW.
+    Emits button_pressed(name) on mouse-down, button_released(name) on mouse-up
+    (only if released over the same button). Wheel_step(delta) is +n CW / -n CCW.
     """
-    button_pressed = Signal(str)
-    wheel_step     = Signal(int)   # positive=CW, negative=CCW
+    button_pressed  = Signal(str)
+    button_released = Signal(str)
+    wheel_step      = Signal(int)   # positive=CW, negative=CCW
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -243,8 +244,14 @@ class KronosControlSurface(QWidget):
                 self._wheel_dragging = False
                 self.releaseMouse()
             if self._pressed_btn is not None:
+                btn = self._pressed_btn
                 self._pressed_btn = None
                 self.update()
+                # Fire release only if the cursor is still over the pressed
+                # button (so a drag-off cancels it).
+                ds = self._to_design(event.position())
+                if btn.rect.contains(int(ds.x()), int(ds.y())):
+                    self.button_released.emit(btn.name)
 
     def wheelEvent(self, event: QWheelEvent):
         delta = event.angleDelta().y()

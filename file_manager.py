@@ -100,12 +100,13 @@ QHeaderView::section {
     background: #2E2E2E; color: #CCCCCC; border: 1px solid #555555;
     padding: 4px 6px; font-weight: bold;
 }
+/* Aligned to the app-wide QPushButton tokens (theme.PANEL_ALT / BORDER_STRONG). */
 QPushButton {
-    background: #3A3A3A; color: white; border: 1px solid #666666;
-    padding: 4px 10px;
+    background: #2A2A2A; color: #CCCCCC; border: 1px solid #444444;
+    border-radius: 3px; padding: 4px 10px;
 }
-QPushButton:hover { background: #4A4A4A; }
-QPushButton:disabled { color: #555555; }
+QPushButton:hover { background: #333333; border-color: #555555; }
+QPushButton:disabled { color: #555555; border-color: #333333; }
 QLineEdit {
     background: #1A1A1A; color: #CCCCCC; border: none; padding: 2px;
 }

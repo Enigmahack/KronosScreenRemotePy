@@ -21,10 +21,11 @@ from PySide6.QtWidgets import (
 import storage
 from app_settings import AppSettings, MacroDef, RawKeyMap, get_rebindable
 from models import Keybind
+import theme as T
 
-_DIM  = "#888888"
-_HEAD = "#88AADD"
-_RED  = "#CC4444"
+_DIM  = T.TEXT_DIM
+_HEAD = T.ACCENT
+_RED  = T.ERROR
 
 
 def _section(text: str) -> QLabel:
@@ -44,18 +45,30 @@ def _hint(text: str) -> QLabel:
 
 
 class SettingsWindow(QDialog):
-    def __init__(self, settings: AppSettings, parent=None):
+    def __init__(self, settings: AppSettings, parent=None, initial_tab: str = "",
+                 on_image_preview=None):
         super().__init__(parent)
         self.setWindowTitle("Settings")
         self.setMinimumSize(540, 580)
         self.resize(560, 620)
         self._settings = settings
+        # Live preview callback for the Image tab (writes to the frame widget
+        # only, never to settings — so Cancel can cleanly revert).
+        self._on_image_preview = on_image_preview
         self._recording_macro_idx: Optional[int] = None
         self._recording_steps: List[str] = []
         self._editing_raw_idx: Optional[int] = None
         self._capture_raw_key_mode = False
         self._build_ui()
         self._load()
+        if initial_tab:
+            self.select_tab(initial_tab)
+
+    def select_tab(self, name: str):
+        for i in range(self._tabs.count()):
+            if self._tabs.tabText(i) == name:
+                self._tabs.setCurrentIndex(i)
+                return
 
     # ── UI construction ────────────────────────────────────────────────────────
 
@@ -71,6 +84,7 @@ class SettingsWindow(QDialog):
         self._tabs.addTab(self._build_connection_tab(), "Connection")
         self._tabs.addTab(self._build_streaming_tab(),  "Streaming")
         self._tabs.addTab(self._build_view_tab(),       "View")
+        self._tabs.addTab(self._build_image_tab(),      "Image")
         self._tabs.addTab(self._build_keybinds_tab(),   "Key Bindings")
         self._tabs.addTab(self._build_macros_tab(),     "Macros")
         self._tabs.addTab(self._build_debug_tab(),      "Debug")
@@ -291,6 +305,77 @@ class SettingsWindow(QDialog):
 
         vb.addStretch()
         return w
+
+    # ── Image tab ────────────────────────────────────────────────────────────────
+
+    def _build_image_tab(self) -> QWidget:
+        w = QWidget()
+        vb = QVBoxLayout(w)
+        vb.setSpacing(6)
+
+        vb.addWidget(_section("Image Adjustments"))
+        vb.addWidget(_hint("Applied to the streamed Kronos screen in real time. "
+                           "These affect only what you see here — not the Kronos itself."))
+        vb.addSpacing(6)
+
+        def _adj_row(name: str, lo: int, hi: int, fmt) -> QSlider:
+            row = QHBoxLayout()
+            name_lbl = QLabel(name)
+            name_lbl.setFixedWidth(84)
+            sl = QSlider(Qt.Horizontal)
+            sl.setRange(lo, hi)
+            val = QLabel("")
+            val.setFixedWidth(48)
+            val.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            sl.valueChanged.connect(lambda v: val.setText(fmt(v)))
+            val.setText(fmt(sl.value()))
+            row.addWidget(name_lbl)
+            row.addWidget(sl, 1)
+            row.addWidget(val)
+            vb.addLayout(row)
+            return sl
+
+        self._img_bri_slider = _adj_row("Brightness", -100, 100, lambda v: str(v))
+        self._img_con_slider = _adj_row("Contrast",   -100, 100, lambda v: str(v))
+        self._img_gam_slider = _adj_row("Gamma",        40, 250, lambda v: f"{v/100:.2f}")
+        self._img_sat_slider = _adj_row("Saturation", -100, 100, lambda v: str(v))
+        self._img_shp_slider = _adj_row("Sharpen",       0, 100, lambda v: str(v))
+        # Live preview: any slider change re-renders the frame immediately.
+        for sl in (self._img_bri_slider, self._img_con_slider, self._img_gam_slider,
+                   self._img_sat_slider, self._img_shp_slider):
+            sl.valueChanged.connect(lambda _=0: self._emit_image_preview())
+
+        vb.addWidget(_hint("Brightness / Contrast / Gamma / Saturation are folded into the "
+                           "colour lookup (free per pixel). Sharpen is a 3×3 unsharp mask run "
+                           "once per frame."))
+
+        vb.addSpacing(8)
+        reset_row = QHBoxLayout()
+        btn_reset = QPushButton("Reset to defaults")
+        btn_reset.setToolTip("Brightness 0, Contrast 0, Gamma 1.00, Saturation 0, Sharpen 0.")
+        btn_reset.clicked.connect(self._reset_image_adjust)
+        reset_row.addWidget(btn_reset)
+        reset_row.addStretch()
+        vb.addLayout(reset_row)
+
+        vb.addStretch()
+        return w
+
+    def _reset_image_adjust(self):
+        self._img_bri_slider.setValue(0)
+        self._img_con_slider.setValue(0)
+        self._img_gam_slider.setValue(100)
+        self._img_sat_slider.setValue(0)
+        self._img_shp_slider.setValue(0)
+
+    def _emit_image_preview(self):
+        if self._on_image_preview:
+            self._on_image_preview(
+                self._img_bri_slider.value(),
+                self._img_con_slider.value(),
+                self._img_gam_slider.value() / 100.0,
+                self._img_sat_slider.value(),
+                self._img_shp_slider.value())
 
     # ── Key Bindings tab ───────────────────────────────────────────────────────
 
@@ -530,6 +615,13 @@ class SettingsWindow(QDialog):
         self._zoom_win_slider.setValue(int(s.zoom_window_size * 10))
         self._zoom_win_lbl.setText(f"{s.zoom_window_size:.1f}×")
 
+        # Image
+        self._img_bri_slider.setValue(s.image_brightness)
+        self._img_con_slider.setValue(s.image_contrast)
+        self._img_gam_slider.setValue(int(round(s.image_gamma * 100)))
+        self._img_sat_slider.setValue(s.image_saturation)
+        self._img_shp_slider.setValue(s.image_sharpen)
+
         # Key bindings
         for action, edit in self._kb_edits.items():
             kb = s.get_keybind(action)
@@ -574,6 +666,13 @@ class SettingsWindow(QDialog):
         # View
         s.zoom_default_level = self._zoom_level_slider.value() / 10.0
         s.zoom_window_size   = self._zoom_win_slider.value()   / 10.0
+
+        # Image
+        s.image_brightness = self._img_bri_slider.value()
+        s.image_contrast   = self._img_con_slider.value()
+        s.image_gamma      = self._img_gam_slider.value() / 100.0
+        s.image_saturation = self._img_sat_slider.value()
+        s.image_sharpen    = self._img_shp_slider.value()
 
         # Debug
         s.debug_logging = self._debug_logging.isChecked()
@@ -960,4 +1059,9 @@ class SettingsWindow(QDialog):
         s.boot_screen_threshold  = self._boot_thresh_slider.value()
         s.zoom_default_level     = self._zoom_level_slider.value() / 10.0
         s.zoom_window_size       = self._zoom_win_slider.value()   / 10.0
+        s.image_brightness       = self._img_bri_slider.value()
+        s.image_contrast         = self._img_con_slider.value()
+        s.image_gamma            = self._img_gam_slider.value() / 100.0
+        s.image_saturation       = self._img_sat_slider.value()
+        s.image_sharpen          = self._img_shp_slider.value()
         s.debug_logging          = self._debug_logging.isChecked()

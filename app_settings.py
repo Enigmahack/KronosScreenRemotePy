@@ -95,6 +95,14 @@ class AppSettings:
     # View
     zoom_default_level: float = 2.5
     zoom_window_size:   float = 1.0
+    scaling_quality:    str   = "HighQuality"   # "Sharp" | "Smooth" | "HighQuality"
+
+    # Image adjustments (applied to the streamed frame) — mirrors AppSettings.cs
+    image_brightness: int   = 0     # -100..100  (0 = none)
+    image_contrast:   int   = 0     # -100..100  (0 = none)
+    image_gamma:      float = 1.0   # 0.4..2.5   (1.0 = none)
+    image_saturation: int   = 0     # -100..100  (0 = none)
+    image_sharpen:    int   = 0     # 0..100     (0 = off)
 
     # Debug
     debug_logging: bool = False

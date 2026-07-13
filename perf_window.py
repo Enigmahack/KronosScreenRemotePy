@@ -19,17 +19,19 @@ from PySide6.QtWidgets import (
 
 from PySide6.QtCore import QPointF
 
-_BG        = "#1E1E1E"
-_PANEL_BG  = "#252525"
-_GRID_LINE = "#333333"
-_CPU_LINE  = "#88AADD"
-_CPU_AREA  = "#1A3055"
-_TEXT_DIM  = "#888888"
-_TEXT_NORM = "#C8C8C8"
-_GREEN     = "#55CC55"
-_RED       = "#CC4444"
-_AMBER     = "#CCAA33"
-_BAR_BG    = "#333333"
+import theme as T
+
+_BG        = "#1E1E1E"     # window-specific elevation (kept)
+_PANEL_BG  = "#252525"     # window-specific elevation (kept)
+_GRID_LINE = T.BORDER
+_CPU_LINE  = T.ACCENT
+_CPU_AREA  = "#1A3055"     # graph fill (kept)
+_TEXT_DIM  = T.TEXT_DIM
+_TEXT_NORM = T.TEXT
+_GREEN     = T.OK
+_RED       = T.ERROR
+_AMBER     = T.WARN
+_BAR_BG    = T.BORDER
 
 _GRAPH_SAMPLES = 60
 

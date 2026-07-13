@@ -33,6 +33,11 @@ class SysExService(QObject):
     performance_changed = Signal(str)   # human-readable "BANK:NNN Name"
     mode_changed = Signal(int)          # STATE-equivalent mode (1-7)
     available_changed = Signal(bool)    # SysEx capability probe result
+    # Footer MIDI indicators — stable signals the UI connects to ONCE (the
+    # bridge is rebuilt on every reconnect; these outlive it).
+    rx_activity = Signal()              # a MIDI message was received
+    tx_activity = Signal()              # a MIDI message was sent
+    link_changed = Signal(bool)         # bridge TCP connection state
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -46,6 +51,7 @@ class SysExService(QObject):
         self._bank_lsb = 0
         self._have_bank_context = False
         self._last_bank_id: Optional[ksx.BankId] = None
+        self._last_rx_emit = 0.0        # throttle rx_activity (coalesce dump floods)
 
         self._stream_names: Dict[Tuple[int, int, int], str] = {}
         self._dumped_banks: Set[Tuple[int, int]] = set()
@@ -77,6 +83,7 @@ class SysExService(QObject):
         self._bridge = MidiBridgeClient(host, port)
         self._bridge.add_raw_listener(self._on_raw_message)
         self._bridge.connection_changed.connect(self._on_connection_changed)
+        self._bridge.message_sent.connect(lambda _n: self.tx_activity.emit())
         self._bridge.start()
         self._dump = SysExDumpCollector(self._bridge)
 
@@ -162,6 +169,7 @@ class SysExService(QObject):
             bridge.remove_raw_listener(on_msg)
 
     def _on_connection_changed(self, connected: bool):
+        self.link_changed.emit(connected)
         if not connected:
             self._is_available = False
             self.available_changed.emit(False)
@@ -204,6 +212,12 @@ class SysExService(QObject):
         """Called synchronously on the bridge's network thread."""
         if not raw:
             return
+        # Throttle to ~25 Hz so a bank dump doesn't queue thousands of GUI events
+        # (the footer flash only needs to be refreshed, not per-message).
+        now = time.monotonic()
+        if now - self._last_rx_emit > 0.04:
+            self._last_rx_emit = now
+            self.rx_activity.emit()   # queued → footer RX flash on the GUI thread
         status = raw[0]
 
         # Bank Digest (func 0x38): pushed on any bank-storage change.

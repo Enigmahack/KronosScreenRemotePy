@@ -12,6 +12,8 @@ from PySide6.QtWidgets import (
     QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout,
 )
 
+import theme as T
+
 APP_VERSION = "1.6.3"
 APP_NAME    = "Kronos ScreenRemote (Python)"
 
@@ -87,7 +89,7 @@ class AboutDialog(QDialog):
 
         note = QLabel("Protocol compatible with the C# Windows client.")
         note.setAlignment(Qt.AlignCenter)
-        note.setStyleSheet("color: #888;")
+        note.setStyleSheet(f"color: {T.TEXT_DIM};")
         layout.addWidget(note)
 
         layout.addSpacing(8)

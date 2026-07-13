@@ -17,10 +17,11 @@ import sys
 
 import pathlib
 
-from PySide6.QtGui import QIcon
+from PySide6.QtGui import QFont, QIcon
 from PySide6.QtWidgets import QApplication, QInputDialog
 
 import storage
+import theme as T
 from app_settings import AppSettings
 from main_window import MainWindow
 # Trigger lazy Qt key-name build after Qt is initialised
@@ -60,10 +61,10 @@ def main():
     app_icon = QIcon(str(_ico if _ico.exists() else _png))
     app.setWindowIcon(app_icon)
 
-    app.setStyleSheet(
-        "QToolTip { color: #CCCCCC; background-color: #2A2A2A;"
-        " border: 1px solid #555; padding: 3px; }"
-    )
+    # Consistent base UI font (per-widget stylesheets override where needed,
+    # e.g. monospace readouts). Then the app-wide token stylesheet.
+    app.setFont(QFont(T.FONT_UI_FAMILY, 9))
+    app.setStyleSheet(T.app_stylesheet())
 
     # Build Qt key name cache now that Qt is up
     models._build_key_names()

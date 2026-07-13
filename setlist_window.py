@@ -21,9 +21,10 @@ from PySide6.QtWidgets import (
 import storage
 from setlist_data import SetListData, MAX_COUNT
 from sysex_service import SysExService
+import theme as T
 
-_WIN_BG = "#1A1A1A"
-_WIN_FG = "#D0D0D0"
+_WIN_BG = T.BG
+_WIN_FG = T.TEXT
 
 # 16-color slot palette, approximating the Kronos's Set List slot colors
 # (same role as the C# DataGridTemplateColumn color swatch).

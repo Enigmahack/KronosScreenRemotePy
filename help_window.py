@@ -10,15 +10,17 @@ from PySide6.QtWidgets import (
 )
 
 # Color scheme (mirrors C# HelpWindow)
-_C_BODY  = "#C8C8C8"
-_C_HEAD  = "#88AADD"
-_C_KEY   = "#FFD246"
-_C_DIM   = "#888888"
-_C_TITLE = "#DDEEFF"
-_C_GREEN = "#AACC88"
-_C_RED   = "#FF8888"
+import theme as T
 
-_BG = "#1A1A1A"
+_C_BODY  = T.TEXT
+_C_HEAD  = T.ACCENT
+_C_KEY   = "#FFD246"     # key-cap highlight (intentional, kept)
+_C_DIM   = T.TEXT_DIM
+_C_TITLE = "#DDEEFF"     # title tint (intentional, kept)
+_C_GREEN = "#AACC88"     # muted informational green (kept)
+_C_RED   = "#FF8888"     # bright warning red (kept)
+
+_BG = T.BG
 
 
 def _h1(text: str) -> str:
@@ -194,21 +196,15 @@ def _build_html() -> str:
         _p("Corrects for touchscreen coordinate offset on the Kronos display. "
            "Use this if tap positions feel consistently shifted relative to the image. "
            "Enable with " + _key("C") + " or <b>Tools → Calibration</b>."),
-        _h2("Observe mode"),
         _kbd_table(
-            _kb_row("Click",       "Send a touch tap to the Kronos. Current calibration applies."),
-            _kb_row("Right-click", "Add an indicator dot at that position, or remove the nearest."),
-            _kb_row("W",           "Enter Warp mode to edit the correction mesh."),
-            _kb_row(_key("C"),     "Exit calibration mode."),
-        ),
-        _h2("Warp mode"),
-        _kbd_table(
+            _kb_row("Click",           "Send a touch tap to the Kronos. Current calibration applies."),
             _kb_row("Drag blue nodes", "Shift mesh nodes to correct systematic positional offsets."),
-            _kb_row("Right-click",     "Remove the nearest bias dot."),
-            _kb_row("S",              "Save the mesh to disk."),
-            _kb_row("R",              "Reset the mesh to identity (no correction)."),
-            _kb_row("X",              "Clear all bias dots."),
-            _kb_row("W",              "Return to Observe mode."),
+            _kb_row("Right-click",     "Add an indicator dot at that position, or remove the nearest."),
+            _kb_row("S",               "Save the mesh to disk."),
+            _kb_row("R",               "Reset the mesh to identity (no correction)."),
+            _kb_row("X",               "Clear all bias dots."),
+            _kb_row("Ctrl+Z / Ctrl+Y", "Undo / redo a mesh edit."),
+            _kb_row(_key("C"),         "Exit calibration mode."),
         ),
         _p(_dim("Grid size (3×3, 4×4, 5×5) can be changed in "
                 "Tools → Calibration Grid Size. Changing the grid size clears "

@@ -27,10 +27,12 @@ import kronos_sysex as ksx
 from midi_bridge import MidiBridgeClient
 from sysex_service import SysExService
 
+import theme as T
+
 _MAX_ENTRIES = 1000
 
-_WIN_BG = "#1A1A1A"
-_WIN_FG = "#D0D0D0"
+_WIN_BG = T.BG
+_WIN_FG = T.TEXT
 
 # Message-type -> text color, verbatim from SysExMessageItem.TypeToBrush.
 _TYPE_COLORS = {
@@ -57,7 +59,7 @@ _ON, _SOLO, _OFF = "on", "solo", "off"
 
 def _style(bg: str, border: str, fg: str) -> str:
     return (f"background-color: {bg}; border: 1px solid {border}; color: {fg}; "
-            f"font-family: Consolas, monospace; font-size: 11px; font-weight: bold; "
+            f"font-family: {T.FONT_MONO}; font-size: {T.FS_SMALL}px; font-weight: bold; "
             f"padding: 2px 10px; border-radius: 3px;")
 
 
@@ -382,8 +384,13 @@ class _PianoWidget(QWidget):
 
     def _build_piano(self):
         # Matches BuildPiano(): A0(21), B0(23) before octave 0, C8(108) after octave 6.
+        # Black-key x values are *white-key-boundary* coordinates: a black key's
+        # centre sits at wx * _WW, on the seam between two white keys (so it
+        # overlaps them), matching C# BuildPiano() which uses (wBase+lw+3)*WW.
+        # A#0 sits on the A0/B0 seam (wx=1.0); each octave black sits on the
+        # seam to the right of its left white (left_w + 3, not + 2.5).
         whites: List[Tuple[float, int]] = [(0, 21)]
-        blacks: List[Tuple[float, int]] = [(0.5, 22)]
+        blacks: List[Tuple[float, int]] = [(1.0, 22)]
         whites.append((1, 23))
 
         for octv in range(7):
@@ -392,7 +399,7 @@ class _PianoWidget(QWidget):
             for i, semitone in enumerate(_WHITE_SEMITONES):
                 whites.append((w_base + i + 2, 24 + m_base + semitone))
             for left_w, semitone in _BLACK_KEYS:
-                blacks.append((w_base + left_w + 2.5, 24 + m_base + semitone))
+                blacks.append((w_base + left_w + 3.0, 24 + m_base + semitone))
 
         whites.append((len(whites), 108))
 

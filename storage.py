@@ -62,6 +62,12 @@ def load_settings() -> AppSettings:
         s.disable_boot_screen    = root.get("disable_boot_screen",    s.disable_boot_screen)
         s.zoom_default_level     = float(root.get("zoom_default_level", s.zoom_default_level))
         s.zoom_window_size       = float(root.get("zoom_window_size",   s.zoom_window_size))
+        s.scaling_quality        = root.get("scaling_quality",         s.scaling_quality)
+        s.image_brightness       = int(root.get("image_brightness",    s.image_brightness))
+        s.image_contrast         = int(root.get("image_contrast",      s.image_contrast))
+        s.image_gamma            = float(root.get("image_gamma",       s.image_gamma))
+        s.image_saturation       = int(root.get("image_saturation",    s.image_saturation))
+        s.image_sharpen          = int(root.get("image_sharpen",       s.image_sharpen))
         s.debug_logging          = root.get("debug_logging",          s.debug_logging)
         s.always_on_top          = root.get("always_on_top",          s.always_on_top)
         s.recent_hosts           = list(root.get("recent_hosts",      []))
@@ -121,6 +127,12 @@ def save_settings(s: AppSettings):
             "disable_boot_screen":    s.disable_boot_screen,
             "zoom_default_level":     s.zoom_default_level,
             "zoom_window_size":       s.zoom_window_size,
+            "scaling_quality":        s.scaling_quality,
+            "image_brightness":       s.image_brightness,
+            "image_contrast":         s.image_contrast,
+            "image_gamma":            s.image_gamma,
+            "image_saturation":       s.image_saturation,
+            "image_sharpen":          s.image_sharpen,
             "debug_logging":          s.debug_logging,
             "always_on_top":          s.always_on_top,
             "recent_hosts":           s.recent_hosts,

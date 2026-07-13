@@ -146,6 +146,7 @@ class MidiBridgeClient(QThread):
     """
 
     message_received = Signal(bytes)
+    message_sent = Signal(int)          # bytes injected toward the Kronos (TX)
     connection_changed = Signal(bool)
 
     def __init__(self, host: str, port: int = MIDI_BRIDGE_PORT, parent=None):
@@ -201,6 +202,8 @@ class MidiBridgeClient(QThread):
         try:
             for i in range(0, len(data), 4096):
                 sock.sendall(data[i:i + 4096])
+            # Queued cross-thread signal → safe to emit from the caller's thread.
+            self.message_sent.emit(len(data))
             return True
         except OSError:
             return False
