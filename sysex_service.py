@@ -23,7 +23,9 @@ from typing import Callable, Dict, List, Optional, Set, Tuple
 from PySide6.QtCore import QObject, QTimer, Signal
 
 import kronos_sysex as ksx
+import librarian_sysex as lsx
 import storage
+from librarian_sysex import ObjectDump, parse_bank_digest, parse_object_dump
 from midi_bridge import MidiBridgeClient
 from setlist_data import SetListData, SetListSyncResult, MAX_COUNT
 from sysex_dump_collector import SysExDumpCollector
@@ -445,3 +447,139 @@ class SysExService(QObject):
         bridge = self._bridge
         b = ksx.hex_to_bytes(hex_bytes)
         return bridge is not None and b is not None and bridge.send_bytes(b)
+
+    # ── Librarian primitives (satisfy librarian_model.MoveExecutor) ──────────
+    # All of these BLOCK on the bridge and must be called from a worker thread.
+    # Writes/stores are serialized against their func-0x24 Reply so a rejection
+    # (wrong bank type, protected, overflow) is caught before the next step.
+
+    def dump_object(self, obj: int, bank: int, index: int,
+                    no_response_ms: int = 10000) -> Optional[bytes]:
+        """Fetch one full object (raw func-0x73 message) from a specific slot."""
+        dump = self._dump
+        if dump is None or not self.can_dump:
+            return None
+        req = ksx.object_dump_request(obj, bank, index)
+        msgs = dump.collect(req, obj, expected_count=1, no_response_ms=no_response_ms)
+        return msgs[0] if msgs else None
+
+    def dump_object_parsed(self, obj: int, bank: int, index: int,
+                           **kw) -> Optional[ObjectDump]:
+        raw = self.dump_object(obj, bank, index, **kw)
+        return parse_object_dump(raw) if raw else None
+
+    def _send_expect_reply(self, data: bytes, timeout_s: float) -> Optional[int]:
+        """Send raw bytes, wait for the next func-0x24 Reply, return its code
+        (0 = OK). None on timeout / no link."""
+        bridge = self._bridge
+        if bridge is None or not bridge.is_connected:
+            return None
+        result: List[Optional[int]] = [None]
+        done = threading.Event()
+
+        def on_msg(m: bytes):
+            if (len(m) >= 6 and m[0] == 0xF0 and m[1] == 0x42 and (m[2] & 0xF0) == 0x30
+                    and m[3] == 0x68 and m[4] == 0x24 and result[0] is None):
+                result[0] = m[5]
+                done.set()
+
+        bridge.add_raw_listener(on_msg)
+        try:
+            if not bridge.send_bytes(data):
+                return None
+            done.wait(timeout_s)
+            return result[0]
+        finally:
+            bridge.remove_raw_listener(on_msg)
+
+    def write_object(self, op, timeout_s: float = 6.0) -> int:
+        """Send a re-addressed func-0x73 Object Dump (volatile). Returns the
+        Reply code (0 OK); -1 on timeout."""
+        msg = lsx.object_dump_write(op.obj, op.bank, op.index, op.version, op.body)
+        code = self._send_expect_reply(msg, timeout_s)
+        return -1 if code is None else code
+
+    def store_bank(self, obj: int, bank: int, timeout_s: float = 20.0) -> int:
+        """Commit a bank to non-volatile storage (func 0x76). Returns Reply code
+        (0 OK); -1 on timeout. Longer timeout — flash commit can be slow."""
+        msg = lsx.store_bank_request(obj, bank)
+        code = self._send_expect_reply(msg, timeout_s)
+        return -1 if code is None else code
+
+    def bank_digest(self, obj: int, bank: int, timeout_s: float = 5.0) -> Optional[bytes]:
+        """Request (func 0x37) and return the 20-byte SHA-1 storage digest for a
+        bank (func 0x38 reply), matched on obj+bank. None on timeout."""
+        bridge = self._bridge
+        if bridge is None or not bridge.is_connected:
+            return None
+        result: List[Optional[bytes]] = [None]
+        done = threading.Event()
+
+        def on_msg(m: bytes):
+            bd = parse_bank_digest(m)
+            if bd is not None and bd.obj == obj and bd.bank == bank and result[0] is None:
+                result[0] = bd.sha1
+                done.set()
+
+        bridge.add_raw_listener(on_msg)
+        try:
+            if not bridge.send_bytes(lsx.bank_digest_request(obj, bank)):
+                return None
+            done.wait(timeout_s)
+            return result[0]
+        finally:
+            bridge.remove_raw_listener(on_msg)
+
+    def backup_objects(self, ops, path: str) -> None:
+        """Serialize the given object pre-images to a .syx file as func-0x73
+        Object Dumps. Restore = replay this file's messages, then Store the
+        affected banks."""
+        with open(path, "wb") as f:
+            for op in ops:
+                f.write(lsx.object_dump_write(op.obj, op.bank, op.index,
+                                              op.version, op.body))
+
+    def backup_bank_to_syx(self, obj: int, bank: int, path: str,
+                           slot_count: int = 128,
+                           progress: Optional[Callable[[int, int, int], None]] = None,
+                           cancel_event: Optional[threading.Event] = None) -> int:
+        """Full per-slot func-0x72 sweep of one bank into a .syx (for the paranoid
+        pre-spike snapshot / an explicit 'Backup bank' action). Note: func 0x77's
+        whole-bank enum is preset-only, so USER banks REQUIRE this per-slot path.
+        Blocking — worker thread only. Returns number of objects saved."""
+        dump = self._dump
+        if dump is None or not self.can_dump:
+            return 0
+        saved = 0
+        self._dumping = True
+        try:
+            with open(path, "wb") as f:
+                for i in range(slot_count):
+                    if cancel_event is not None and cancel_event.is_set():
+                        break
+                    raw = self.dump_object(obj, bank, i, no_response_ms=4000)
+                    if raw:
+                        f.write(raw)
+                        saved += 1
+                    if progress:
+                        progress(i + 1, slot_count, saved)
+        finally:
+            self._dumping = False
+        return saved
+
+    def send_raw(self, data: bytes) -> None:
+        """Fire-and-forget raw bytes (e.g. live 0x43 edit-buffer preview)."""
+        bridge = self._bridge
+        if bridge is not None:
+            bridge.send_bytes(data)
+
+    def current_performance_loc(self):
+        """Best-effort current performance as a librarian_model.ObjLoc, for the
+        live dual-write path. None if unknown."""
+        bid = self._last_bank_id
+        if bid is None:
+            return None
+        from librarian_model import ObjLoc
+        from librarian_sysex import OBJ_COMBI, OBJ_PROGRAM
+        obj_type = OBJ_PROGRAM if bid.type == 1 else OBJ_COMBI
+        return ObjLoc(obj_type, bid.obj_bank, bid.number)

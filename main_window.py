@@ -1211,6 +1211,7 @@ class MainWindow(QMainWindow):
         self._file_manager_win = None
         self._sysex_tool_win = None
         self._setlist_viewer_win = None
+        self._librarian_win = None
         self._sysex_service = SysExService(self)
         self._sync_all_cancel: Optional[threading.Event] = None
         self._shutting_down = False
@@ -1530,6 +1531,7 @@ class MainWindow(QMainWindow):
         tools_menu.addSeparator()
         self._act_sysex_tool = tools_menu.addAction("Open &SysEx Tool…")
         self._act_setlist_viewer = tools_menu.addAction("Set List &Viewer…")
+        self._act_librarian = tools_menu.addAction("&Librarian…")
         self._act_sync_names = tools_menu.addAction("Sync &Program/Combi Names…")
         self._act_sync_all = tools_menu.addAction("Sync &All (Names + Set Lists)…")
         tools_menu.addSeparator()
@@ -1608,6 +1610,7 @@ class MainWindow(QMainWindow):
         self._act_keyboard_info.triggered.connect(self._open_keyboard_info)
         self._act_sysex_tool.triggered.connect(self._open_sysex_tool)
         self._act_setlist_viewer.triggered.connect(self._open_setlist_viewer)
+        self._act_librarian.triggered.connect(self._open_librarian)
         self._act_sync_names.triggered.connect(self._open_sync_names)
         self._act_sync_all.triggered.connect(self._open_sync_all)
         self._act_disable_kbd.toggled.connect(self._on_disable_kbd_toggled)
@@ -2957,6 +2960,28 @@ class MainWindow(QMainWindow):
         self._sysex_tool_win.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self._sysex_tool_win.destroyed.connect(lambda: setattr(self, '_sysex_tool_win', None))
         self._sysex_tool_win.show()
+
+    # ── Librarian ─────────────────────────────────────────────────────────────────
+
+    def _open_librarian(self):
+        if self._librarian_win is not None:
+            self._librarian_win.raise_()
+            self._librarian_win.activateWindow()
+            return
+        if not self._host:
+            QMessageBox.warning(self, "Librarian",
+                                "No Kronos host configured. Set it in Settings first.")
+            return
+        if not self._settings.midi_monitor_enabled or not self._sysex_service.can_dump:
+            QMessageBox.warning(self, "Librarian",
+                                "MIDI monitoring is off or not connected. Enable "
+                                "'MIDI bridge' and connect to the Kronos first.")
+            return
+        from librarian_window import LibrarianWindow
+        self._librarian_win = LibrarianWindow(self._host, self._sysex_service, self)
+        self._librarian_win.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self._librarian_win.destroyed.connect(lambda: setattr(self, '_librarian_win', None))
+        self._librarian_win.show()
 
     # ── Set List Viewer ──────────────────────────────────────────────────────────
 

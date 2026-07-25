@@ -10,6 +10,15 @@ A Python application for remotely viewing and controlling a **Korg Kronos** synt
 | [KronosScreenRemotePy](https://github.com/Enigmahack/KronosScreenRemotePy) | This repo — Python Desktop Client |
 | [KronosScreenRemoteDaemon](https://github.com/Enigmahack/KronosScreenRemoteDaemon) | Kronos-side daemon (required) |
 
+> **Shared context**: this project is part of a larger Kronos RE/modding
+> ecosystem (this client + [KronosScreenRemote](../KronosScreenRemote/) (C#,
+> the feature-parity reference) + [kronosology](../kronosology/) +
+> [KronosScreenRemoteDaemon](../KronosScreenRemoteDaemon/)). Cross-project
+> architecture, shared dev environments, credentials/access pointers, and
+> agent/tooling policy live in
+> [`/home/share/PROJECT_BRAIN/BRAIN.md`](../PROJECT_BRAIN/BRAIN.md) —
+> check there before duplicating knowledge into this repo.
+
 ---
 
 ## Features
