@@ -26,12 +26,14 @@ import theme as T
 _WIN_BG = T.BG
 _WIN_FG = T.TEXT
 
-# 16-color slot palette, approximating the Kronos's Set List slot colors
-# (same role as the C# DataGridTemplateColumn color swatch).
+# 16-color slot palette — authentic Kronos Set List slot colors, ported from
+# Tools/SetListColors.cs (same role as the C# DataGridTemplateColumn color
+# swatch). Order: Default, Charcoal, Brick, Burgundy, Ivy, Olive, Gold, Cacao,
+# Indigo, Navy, Rose, Lavender, Azure, Denim, Silver, Slate.
 _SLOT_COLORS = [
-    "#E06C75", "#E5C07B", "#98C379", "#56B6C2", "#61AFEF", "#C678DD",
-    "#D19A66", "#BE5046", "#528BFF", "#98C379", "#E5C07B", "#56B6C2",
-    "#C678DD", "#D19A66", "#E06C75", "#61AFEF",
+    "#4D4D4D", "#2F2F2F", "#B23F3F", "#691B1B", "#91A730", "#374520",
+    "#AA842A", "#7F4236", "#5360A5", "#1A2B88", "#AB81A2", "#9267BA",
+    "#88A4C5", "#6A7F96", "#808080", "#626262",
 ]
 
 _HINT_TEXT = ("Dumps are read from the Kronos once and cached. Requires MIDI "

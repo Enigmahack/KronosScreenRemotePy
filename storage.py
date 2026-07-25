@@ -31,6 +31,13 @@ def _path(name: str) -> pathlib.Path:
     return _data_dir() / name
 
 
+def data_dir() -> pathlib.Path:
+    """Public accessor for the same data directory _path() resolves against,
+    for callers (e.g. input_tester_window.py) that persist their own file
+    there without adding a dedicated load_/save_ pair to this module."""
+    return _data_dir()
+
+
 # ── Settings ───────────────────────────────────────────────────────────────────
 
 def load_settings() -> AppSettings:

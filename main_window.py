@@ -34,11 +34,13 @@ from PySide6.QtGui import (
     QPainter, QPainterPath, QPixmap, QResizeEvent, QWheelEvent,
 )
 from PySide6.QtWidgets import (
-    QApplication, QDialog, QFileDialog, QFrame, QHBoxLayout, QInputDialog,
-    QLabel, QMainWindow, QMenu, QMenuBar, QMessageBox, QSizePolicy,
-    QStatusBar, QTextEdit, QVBoxLayout, QWidget,
+    QApplication, QCheckBox, QDialog, QFileDialog, QFormLayout, QFrame,
+    QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMainWindow, QMenu,
+    QMenuBar, QMessageBox, QPushButton, QSizePolicy, QStatusBar, QTextEdit,
+    QVBoxLayout, QWidget,
 )
 
+import char_map
 import ctrl_client as CtrlClient
 import image_adjust
 import key_map
@@ -1124,6 +1126,139 @@ def _setup_logging(debug: bool):
     logging.getLogger().setLevel(level)
 
 
+def _verify_ftp_login(host: str, port: int, user: str, password: str) -> Tuple[bool, str]:
+    """Attempt a real FTP login (connect + login + disconnect). Reuses
+    file_manager's ftplib wrapper rather than a bespoke client."""
+    from file_manager import _FtpWorker
+    worker = _FtpWorker(host, port, user, password)
+    try:
+        worker.connect()
+        worker.disconnect()
+        return True, ""
+    except Exception as e:
+        return False, str(e)
+
+
+class _FtpLoginDialog(QDialog):
+    """Kronos FTP login prompt — port of Views/LoginDialog.xaml(.cs).
+
+    Verifies the entered credentials against the real FTP server on a
+    background thread before accepting, and locks out after 3 failed
+    attempts (matches KronosFtpSession's attempt-lockout constant).
+    """
+
+    _ATTEMPTS_ALLOWED = 3
+
+    def __init__(self, host: str, port: int, existing_user: str, existing_pass: str,
+                 parent=None):
+        super().__init__(parent)
+        self._host = host
+        self._port = port
+        self._attempts_failed = 0
+        self.username = ""
+        self.password = ""
+        self.save_password = True
+        self.exhausted_attempts = False
+
+        self.setWindowTitle("Kronos FTP Login")
+        self.setFixedWidth(340)
+        self.setStyleSheet(f"QDialog {{ background-color: {T.BG}; color: {T.TEXT}; }}")
+
+        layout = QVBoxLayout(self)
+        subtitle = QLabel(f"FTP credentials for {host}:{port}:")
+        subtitle.setStyleSheet(f"color: {T.TEXT_DIM}; font-size: {T.FS_SMALL}px;")
+        layout.addWidget(subtitle)
+
+        form = QFormLayout()
+        self._user_edit = QLineEdit(existing_user)
+        self._user_edit.setPlaceholderText("root")
+        self._pass_edit = QLineEdit(existing_pass)
+        self._pass_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        form.addRow("Username:", self._user_edit)
+        form.addRow("Password:", self._pass_edit)
+        layout.addLayout(form)
+
+        self._save_chk = QCheckBox("Save password")
+        self._save_chk.setChecked(True)
+        layout.addWidget(self._save_chk)
+
+        self._error_label = QLabel("")
+        self._error_label.setStyleSheet(f"color: {T.ERROR_TEXT};")
+        self._error_label.setWordWrap(True)
+        self._error_label.setVisible(False)
+        layout.addWidget(self._error_label)
+
+        btn_row = QHBoxLayout()
+        self._clear_btn = QPushButton("Clear")
+        self._clear_btn.setToolTip("Clear both fields so you can enter fresh credentials")
+        self._clear_btn.clicked.connect(self._on_clear)
+        btn_row.addWidget(self._clear_btn)
+        btn_row.addStretch(1)
+        self._cancel_btn = QPushButton("Cancel")
+        self._cancel_btn.clicked.connect(self.reject)
+        self._ok_btn = QPushButton("OK")
+        self._ok_btn.setDefault(True)
+        self._ok_btn.clicked.connect(self._on_ok)
+        btn_row.addWidget(self._cancel_btn)
+        btn_row.addWidget(self._ok_btn)
+        layout.addLayout(btn_row)
+
+        if existing_user:
+            self._pass_edit.setFocus()
+        else:
+            self._user_edit.setFocus()
+
+    def _on_clear(self):
+        self._user_edit.clear()
+        self._pass_edit.clear()
+        self._user_edit.setFocus()
+
+    def _show_error(self, msg: str):
+        self._error_label.setText(msg)
+        self._error_label.setVisible(True)
+
+    def _on_ok(self):
+        user = self._user_edit.text().strip()
+        if not user:
+            self._show_error("Username is required.")
+            return
+
+        self._ok_btn.setEnabled(False)
+        self._cancel_btn.setEnabled(False)
+        self._ok_btn.setText("Verifying…")
+        self._error_label.setVisible(False)
+
+        password = self._pass_edit.text()
+
+        def worker():
+            ok, error = _verify_ftp_login(self._host, self._port, user, password)
+            QTimer.singleShot(0, self, lambda: self._on_verify_done(ok, error, user, password))
+
+        threading.Thread(target=worker, daemon=True, name="FtpVerify").start()
+
+    def _on_verify_done(self, ok: bool, error: str, user: str, password: str):
+        if ok:
+            self.username = user
+            self.password = password
+            self.save_password = self._save_chk.isChecked()
+            self.accept()
+            return
+
+        self._ok_btn.setEnabled(True)
+        self._cancel_btn.setEnabled(True)
+        self._ok_btn.setText("OK")
+
+        self._attempts_failed += 1
+        if self._attempts_failed >= self._ATTEMPTS_ALLOWED:
+            self.exhausted_attempts = True
+            self.reject()
+            return
+
+        remaining = self._ATTEMPTS_ALLOWED - self._attempts_failed
+        plural = "s" if remaining != 1 else ""
+        self._show_error(f"{error} ({remaining} attempt{plural} remaining)")
+
+
 class MainWindow(QMainWindow):
     def __init__(self, settings: AppSettings):
         super().__init__()
@@ -1212,6 +1347,7 @@ class MainWindow(QMainWindow):
         self._sysex_tool_win = None
         self._setlist_viewer_win = None
         self._librarian_win = None
+        self._input_tester_win = None
         self._sysex_service = SysExService(self)
         self._sync_all_cancel: Optional[threading.Event] = None
         self._shutting_down = False
@@ -1537,11 +1673,11 @@ class MainWindow(QMainWindow):
         tools_menu.addSeparator()
         self._act_keyboard_info = tools_menu.addAction("&Keyboard Info…")
         self._act_input_tester  = tools_menu.addAction("&Input Tester…")
-        self._act_input_tester.setVisible(False)  # collapsed — matches C# XAML
         self._act_test_mode   = tools_menu.addAction("Enter Kronos &Test Mode")
         tools_menu.addSeparator()
         self._act_disable_kbd = tools_menu.addAction("&Disable Keyboard Send")
         self._act_disable_kbd.setCheckable(True)
+        self._act_paste_clipboard = tools_menu.addAction("&Paste Clipboard to Kronos")
 
         # ── Mode select (MENU_ModeSelect) ───────────────────────────────────
         mode_menu = mb.addMenu("&Mode Select")
@@ -1614,6 +1750,7 @@ class MainWindow(QMainWindow):
         self._act_sync_names.triggered.connect(self._open_sync_names)
         self._act_sync_all.triggered.connect(self._open_sync_all)
         self._act_disable_kbd.toggled.connect(self._on_disable_kbd_toggled)
+        self._act_paste_clipboard.triggered.connect(self._paste_clipboard_to_kronos)
 
         # Footer MIDI indicators + performance name — connect ONCE to the stable
         # sysex_service (the underlying bridge is rebuilt on every reconnect).
@@ -1662,7 +1799,7 @@ class MainWindow(QMainWindow):
         self._act_scale_smooth.triggered.connect(lambda: self._set_scale_quality("Smooth"))
         self._act_scale_hq.triggered.connect(lambda: self._set_scale_quality("HighQuality"))
         self._act_image_adjust.triggered.connect(lambda: self._open_settings(initial_tab="Image"))
-        self._act_input_tester.triggered.connect(lambda: self._todo("Input Tester"))
+        self._act_input_tester.triggered.connect(self._open_input_tester)
 
     def _todo(self, feature: str):
         """Placeholder for C#-parity menu items not yet ported. Makes a missing
@@ -1672,6 +1809,45 @@ class MainWindow(QMainWindow):
             self, "Not Implemented Yet",
             f"“{feature}” is on the menu for C# parity but isn’t wired up yet.\n\n"
             "It will be implemented in an upcoming step.")
+
+    def _paste_clipboard_to_kronos(self):
+        """Port of MainWindow.Input.cs's PasteClipboardToKronos()."""
+        clipboard = QApplication.clipboard()
+        raw = clipboard.text()
+        if not raw:
+            return
+
+        chars: list[str] = []
+        skipped = 0
+        for c in raw:
+            if c in ("\r", "\n") or (ord(c) < 0x20 and c != "\t") or ord(c) >= 0x80:
+                skipped += 1
+                continue
+            if char_map.get_commands(c) is None:
+                skipped += 1
+                continue
+            chars.append(c)
+
+        if not chars:
+            logging.info("[paste] nothing sendable after filtering%s",
+                         f" ({skipped} chars stripped)" if skipped else "")
+            return
+
+        char_count = len(chars)
+        logging.info("[paste] typing %d chars via KEY%s", char_count,
+                     f", {skipped} stripped" if skipped else "")
+
+        def worker():
+            for c in chars:
+                cmds = char_map.get_commands(c)
+                if cmds is None:
+                    continue
+                for cmd in cmds:
+                    self._ctrl_send(cmd)
+                time.sleep(0.05)
+            logging.info("[paste] %d chars typed", char_count)
+
+        threading.Thread(target=worker, daemon=True, name="PasteClipboard").start()
 
     def _apply_settings_to_ui(self):
         self._act_aspect.setChecked(self._aspect_lock)
@@ -1724,33 +1900,22 @@ class MainWindow(QMainWindow):
         self._connect_async()
 
     def _ensure_ftp_credentials(self) -> bool:
-        """Prompt for FTP credentials if not saved. Returns False if user cancelled."""
+        """Prompt for FTP credentials if not saved, verifying them against the
+        real FTP server before accepting. Returns False if the user cancelled
+        or exhausted the 3-attempt lockout."""
         if self._settings.ftp_username:
             return True
-        from PySide6.QtWidgets import (
-            QDialog, QDialogButtonBox, QFormLayout, QLabel, QLineEdit, QVBoxLayout)
-        dlg = QDialog(self)
-        dlg.setWindowTitle("Kronos Login")
-        dlg.setMinimumWidth(320)
-        layout = QVBoxLayout(dlg)
-        layout.addWidget(QLabel(f"FTP credentials for {self._host}:"))
-        form = QFormLayout()
-        user_edit = QLineEdit()
-        user_edit.setPlaceholderText("root")
-        pass_edit = QLineEdit()
-        pass_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        form.addRow("Username:", user_edit)
-        form.addRow("Password:", pass_edit)
-        layout.addLayout(form)
-        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        btns.accepted.connect(dlg.accept)
-        btns.rejected.connect(dlg.reject)
-        layout.addWidget(btns)
+        dlg = _FtpLoginDialog(self._host, self._settings.ftp_port,
+                              self._settings.ftp_username, self._settings.ftp_password, self)
         if dlg.exec() != QDialog.Accepted:
+            if dlg.exhausted_attempts:
+                QMessageBox.critical(self, "Authentication Failed",
+                                     "Too many failed FTP login attempts.")
             return False
-        self._settings.ftp_username = user_edit.text()
-        self._settings.ftp_password = pass_edit.text()
-        storage.save_settings(self._settings)
+        self._settings.ftp_username = dlg.username
+        self._settings.ftp_password = dlg.password
+        if dlg.save_password:
+            storage.save_settings(self._settings)
         return True
 
     def _connect_async(self):
@@ -2866,18 +3031,17 @@ class MainWindow(QMainWindow):
         touches self._settings (so Cancel reverts cleanly)."""
         self._frame_w.set_image_adjust(brightness, contrast, gamma, saturation, sharpen)
 
-    # ── Command palette (simplified) ───────────────────────────────────────────
+    # ── Command palette ──────────────────────────────────────────────────────────
 
     def _open_command_palette(self):
-        # Simple implementation: show QInputDialog with action list
-        actions = [(a, l) for a, l, _ in get_rebindable()]
-        items   = [f"{l}  [{self._settings.get_key_name(a)}]" for a, l in actions]
-        item, ok = QInputDialog.getItem(self, "Command Palette", "Action:", items, 0, False)
-        if ok and item:
-            idx = items.index(item)
-            action = actions[idx][0]
-            # Trigger the action
-            self._run_action(action)
+        from command_palette import CommandEntry, CommandPalette
+        entries = [
+            CommandEntry(action, label, self._settings.get_key_name(action),
+                        lambda a=action: self._run_action(a))
+            for action, label, _ in get_rebindable()
+        ]
+        dlg = CommandPalette(entries, self)
+        dlg.show()
 
     def _run_action(self, action: str):
         cmds: dict = {
@@ -2960,6 +3124,19 @@ class MainWindow(QMainWindow):
         self._sysex_tool_win.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self._sysex_tool_win.destroyed.connect(lambda: setattr(self, '_sysex_tool_win', None))
         self._sysex_tool_win.show()
+
+    # ── Input Tester ─────────────────────────────────────────────────────────────
+
+    def _open_input_tester(self):
+        if self._input_tester_win is not None:
+            self._input_tester_win.raise_()
+            self._input_tester_win.activateWindow()
+            return
+        from input_tester_window import InputTesterWindow
+        self._input_tester_win = InputTesterWindow(self._settings, self._ctrl_send, self)
+        self._input_tester_win.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self._input_tester_win.destroyed.connect(lambda: setattr(self, '_input_tester_win', None))
+        self._input_tester_win.show()
 
     # ── Librarian ─────────────────────────────────────────────────────────────────
 

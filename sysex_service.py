@@ -31,6 +31,83 @@ from setlist_data import SetListData, SetListSyncResult, MAX_COUNT
 from sysex_dump_collector import SysExDumpCollector
 
 
+class DumpGate:
+    """Pauses refresh_now() (this port's one-shot stand-in for the C# func-33
+    poll loop) while a bulk dump/write is in flight, so it can't steal one of
+    the dump's 0x73/0x24 replies off the shared bridge stream. Port of
+    Networking/DumpGate.cs. A plain bool `_dumping` (the prior state here) is
+    racy in two ways:
+      1. Overlap — two dumps can be in flight at once (Sync Names, a Set List
+         sweep, a Librarian write, all triggered independently). A bool lets
+         whichever finishes FIRST un-pause the loop while the other is still
+         mid-dump. A refcount instead stays paused until the LAST one ends.
+      2. Transport switch — if the bridge is torn down and rebuilt mid-dump
+         (reconnect), the orphaned old dump's End() must not un-pause the NEW
+         generation. Each dump captures an epoch at begin(); end() is a no-op
+         once new_generation() has moved the epoch on.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._epoch = 0
+        self._depth = 0
+
+    def begin(self) -> int:
+        with self._lock:
+            self._depth += 1
+            return self._epoch
+
+    def end(self, epoch: int) -> None:
+        with self._lock:
+            if epoch == self._epoch:
+                self._depth -= 1
+
+    def new_generation(self) -> None:
+        with self._lock:
+            self._epoch += 1
+            self._depth = 0
+
+    @property
+    def active(self) -> bool:
+        with self._lock:
+            return self._depth > 0
+
+
+_NO_REPLY = object()  # sentinel: distinct from any real reply value (0, False, b"", ...)
+
+
+def _await_reply(bridge: Optional[MidiBridgeClient], send: Callable[[], bool],
+                  match: Callable[[bytes], Optional[object]], timeout_s: float):
+    """Subscribe, send, wait up to timeout_s for the first raw message where
+    match() returns non-None, then unsubscribe. Returns the matched value, or
+    the _NO_REPLY sentinel on send failure or timeout. Port of the scaffold in
+    MidiTransportReplyExtensions.cs — that file exists because a naive generic
+    `default(T)` timeout return once yielded reply-code 0 (a genuine success
+    code) for a Store Bank that never actually replied. Python's None already
+    isn't 0/False, but callers here use `is None`, not truthiness, precisely so
+    a real reply of 0/False/b"" is never mistaken for "no reply"."""
+    if bridge is None or not bridge.is_connected:
+        return _NO_REPLY
+    result = [_NO_REPLY]
+    done = threading.Event()
+
+    def on_msg(m: bytes):
+        if result[0] is _NO_REPLY:
+            v = match(m)
+            if v is not None:
+                result[0] = v
+                done.set()
+
+    bridge.add_raw_listener(on_msg)
+    try:
+        if not send():
+            return _NO_REPLY
+        done.wait(timeout_s)
+        return result[0]
+    finally:
+        bridge.remove_raw_listener(on_msg)
+
+
 class SysExService(QObject):
     performance_changed = Signal(str)   # human-readable "BANK:NNN Name"
     mode_changed = Signal(int)          # STATE-equivalent mode (1-7)
@@ -46,7 +123,7 @@ class SysExService(QObject):
         self._bridge: Optional[MidiBridgeClient] = None
         self._dump: Optional[SysExDumpCollector] = None
         self._cache_key = ""
-        self._dumping = False
+        self._dump_gate = DumpGate()
 
         self._state_mode = 0
         self._bank_msb = 0
@@ -92,6 +169,10 @@ class SysExService(QObject):
         threading.Thread(target=self._probe, daemon=True, name="SysExProbe").start()
 
     def stop(self):
+        # New transport generation: any dump/write still in flight against the
+        # outgoing bridge is now orphaned — its later end() must be a no-op so it
+        # can't un-pause the next connection's refresh_now() (see DumpGate).
+        self._dump_gate.new_generation()
         if self._persist_timer is not None:
             self._persist_timer.cancel()
             self._persist_timer = None
@@ -149,26 +230,18 @@ class SysExService(QObject):
         """Blocking request/response over the bridge, matched on the Korg reply
         header F0 42 3g 68 <func>. Used only for the one-shot probe/refresh."""
         bridge = self._bridge
-        if bridge is None or not bridge.is_connected:
+        req = ksx.hex_to_bytes(request_hex)
+        if req is None:
             return None
-        result: List[Optional[bytes]] = [None]
-        done = threading.Event()
 
-        def on_msg(m: bytes):
+        def match(m: bytes) -> Optional[bytes]:
             if (len(m) >= 5 and m[0] == 0xF0 and m[1] == 0x42 and (m[2] & 0xF0) == 0x30
-                    and m[3] == 0x68 and m[4] == expect_func and result[0] is None):
-                result[0] = m
-                done.set()
+                    and m[3] == 0x68 and m[4] == expect_func):
+                return m
+            return None
 
-        bridge.add_raw_listener(on_msg)
-        try:
-            req = ksx.hex_to_bytes(request_hex)
-            if req is None or not bridge.send_bytes(req):
-                return None
-            done.wait(timeout_s)
-            return result[0]
-        finally:
-            bridge.remove_raw_listener(on_msg)
+        result = _await_reply(bridge, lambda: bridge.send_bytes(req), match, timeout_s)
+        return None if result is _NO_REPLY else result
 
     def _on_connection_changed(self, connected: bool):
         self.link_changed.emit(connected)
@@ -182,7 +255,8 @@ class SysExService(QObject):
         threading.Thread(target=self._refresh_worker, daemon=True, name="SysExRefresh").start()
 
     def _refresh_worker(self):
-        if self._dumping:
+        # Never inject a probe query into a bulk dump's 0x73/0x24 reply stream.
+        if self._dump_gate.active:
             return
         resp = self._query(ksx.perf_id_request_hex(), 0x33, timeout_s=3.0)
         if resp is None:
@@ -345,7 +419,7 @@ class SysExService(QObject):
         if not todo:
             return self.current_name_count()
 
-        self._dumping = True
+        gate_epoch = self._dump_gate.begin()   # pause refresh_now() for the whole sweep
         ledger_dirty = False
         try:
             for type_, obj_bank in todo:
@@ -381,7 +455,7 @@ class SysExService(QObject):
                 if progress:
                     progress(now_done, total, self.current_name_count())
         finally:
-            self._dumping = False
+            self._dump_gate.end(gate_epoch)
             if ledger_dirty:
                 storage.save_dumped_banks(self._cache_key, self._snapshot_dumped())
             self._persist_names()
@@ -394,11 +468,11 @@ class SysExService(QObject):
         dump = self._dump
         if dump is None or not self.can_dump:
             return None
-        self._dumping = True
+        gate_epoch = self._dump_gate.begin()
         try:
             return self._dump_one_set_list(dump, number)
         finally:
-            self._dumping = False
+            self._dump_gate.end(gate_epoch)
             self.refresh_now()
 
     def dump_all_set_lists(self, progress: Optional[Callable[[int, int, int], None]] = None,
@@ -415,7 +489,7 @@ class SysExService(QObject):
 
         total = MAX_COUNT
         attempted = 0
-        self._dumping = True
+        gate_epoch = self._dump_gate.begin()
         try:
             for n in range(total):
                 if cancel_event.is_set():
@@ -430,7 +504,7 @@ class SysExService(QObject):
                 if progress:
                     progress(attempted, total, len(found))
         finally:
-            self._dumping = False
+            self._dump_gate.end(gate_epoch)
             self.refresh_now()
         return SetListSyncResult(found, empty, attempted, cancel_event.is_set())
 
@@ -470,27 +544,19 @@ class SysExService(QObject):
 
     def _send_expect_reply(self, data: bytes, timeout_s: float) -> Optional[int]:
         """Send raw bytes, wait for the next func-0x24 Reply, return its code
-        (0 = OK). None on timeout / no link."""
+        (0 = OK — a real reply value the sentinel in _await_reply keeps distinct
+        from "no reply"). None on timeout / no link."""
         bridge = self._bridge
-        if bridge is None or not bridge.is_connected:
-            return None
-        result: List[Optional[int]] = [None]
-        done = threading.Event()
 
-        def on_msg(m: bytes):
+        def match(m: bytes) -> Optional[int]:
             if (len(m) >= 6 and m[0] == 0xF0 and m[1] == 0x42 and (m[2] & 0xF0) == 0x30
-                    and m[3] == 0x68 and m[4] == 0x24 and result[0] is None):
-                result[0] = m[5]
-                done.set()
+                    and m[3] == 0x68 and m[4] == 0x24):
+                return m[5]
+            return None
 
-        bridge.add_raw_listener(on_msg)
-        try:
-            if not bridge.send_bytes(data):
-                return None
-            done.wait(timeout_s)
-            return result[0]
-        finally:
-            bridge.remove_raw_listener(on_msg)
+        result = _await_reply(bridge, lambda: bridge is not None and bridge.send_bytes(data),
+                               match, timeout_s)
+        return None if result is _NO_REPLY else result
 
     def write_object(self, op, timeout_s: float = 6.0) -> int:
         """Send a re-addressed func-0x73 Object Dump (volatile). Returns the
@@ -510,25 +576,17 @@ class SysExService(QObject):
         """Request (func 0x37) and return the 20-byte SHA-1 storage digest for a
         bank (func 0x38 reply), matched on obj+bank. None on timeout."""
         bridge = self._bridge
-        if bridge is None or not bridge.is_connected:
-            return None
-        result: List[Optional[bytes]] = [None]
-        done = threading.Event()
 
-        def on_msg(m: bytes):
+        def match(m: bytes) -> Optional[bytes]:
             bd = parse_bank_digest(m)
-            if bd is not None and bd.obj == obj and bd.bank == bank and result[0] is None:
-                result[0] = bd.sha1
-                done.set()
+            if bd is not None and bd.obj == obj and bd.bank == bank:
+                return bd.sha1
+            return None
 
-        bridge.add_raw_listener(on_msg)
-        try:
-            if not bridge.send_bytes(lsx.bank_digest_request(obj, bank)):
-                return None
-            done.wait(timeout_s)
-            return result[0]
-        finally:
-            bridge.remove_raw_listener(on_msg)
+        result = _await_reply(
+            bridge, lambda: bridge is not None and bridge.send_bytes(lsx.bank_digest_request(obj, bank)),
+            match, timeout_s)
+        return None if result is _NO_REPLY else result
 
     def backup_objects(self, ops, path: str) -> None:
         """Serialize the given object pre-images to a .syx file as func-0x73
@@ -551,7 +609,7 @@ class SysExService(QObject):
         if dump is None or not self.can_dump:
             return 0
         saved = 0
-        self._dumping = True
+        gate_epoch = self._dump_gate.begin()
         try:
             with open(path, "wb") as f:
                 for i in range(slot_count):
@@ -564,7 +622,7 @@ class SysExService(QObject):
                     if progress:
                         progress(i + 1, slot_count, saved)
         finally:
-            self._dumping = False
+            self._dump_gate.end(gate_epoch)
         return saved
 
     def send_raw(self, data: bytes) -> None:
