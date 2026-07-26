@@ -385,14 +385,12 @@ def _store_label(obj: int, bank: int) -> str:
 # B's slot, B itself moves elsewhere in the same batch) resolve safely — see
 # the orphan gate below.
 #
-# ResolveSequentialFill (destination-slot auto-assignment for a drag-drop
-# fill) and the persisted BatchClipboard/ClipboardEntry/DTO cut-paste history
-# are NOT ported here — those are UI/session-state concerns for a future
-# clipboard module (distinct from Core/LocalLibrary/SessionDependencyClipboard.
-# cs's SessionDependencyEntry, which tracks unresolved PCG-import dependencies,
-# not batch-move displacement). This module only owns the pure placement
-# primitive: given already-decided (source, destination) pairs, plan the
-# writes.
+# The persisted BatchClipboard/ClipboardEntry/DTO cut-paste history is NOT ported here — that's
+# a UI/session-state concern for a future clipboard module (distinct from Core/LocalLibrary/
+# SessionDependencyClipboard.cs's SessionDependencyEntry, which tracks unresolved PCG-import
+# dependencies, not batch-move displacement). resolve_sequential_fill() below IS ported (it is
+# pure destination-slot arithmetic, no session state); this module otherwise only owns the pure
+# placement primitive: given already-decided (source, destination) pairs, plan the writes.
 
 
 @dataclass(frozen=True)
@@ -635,6 +633,98 @@ def plan_batch_move(catalog: LibraryCatalog, obj_type: int,
     plan.displaced = displaced
     plan.backup_label = backup_label
     return plan
+
+
+# ── Sequential fill (destination-slot auto-assignment for drag-drop / paste) ────
+#
+# Port of BatchLibrarian.ResolveSequentialFill (Core/BatchMoveModel.cs). Assigns consecutive
+# destination slots to a set of pending items dropped/pasted onto a bank starting at a single
+# slot (the exact slot the user right-clicked or dragged onto — NOT always 0; both real C#
+# call sites — LibrarianShellViewModel.BatchPlaceFromPcg and LocalLibraryPaneViewModel.
+# PasteBatch — pass the user's actual drop slot, sourced from FindNextFreeSlot() or dest.Number
+# respectively). Confirmed from BatchMoveModel.cs lines 101-141 (not guessed):
+#
+#   * Placement is PURE "start_slot + i" over the i-th still-placeable item, in order. It does
+#     NOT consult destination-slot occupancy at all — it never skips an already-occupied slot,
+#     never checks read-only-bank status, and never wraps into a different bank. (Read-only-
+#     bank refusal and occupied/orphan-referrer handling belong entirely to plan_batch_move,
+#     downstream of this function — ResolveSequentialFill itself has zero read-only-bank logic;
+#     only PlanBatchMove checks KronosBanks.IsReadOnlyProgramBank / _READONLY_PROGRAM_BANKS.)
+#   * A Program whose HD-1/EXi bank type is PROVABLY different from the destination bank's is
+#     filtered OUT before slot numbering — it never consumes a slot number, it is just left
+#     pending with a reason. An unverifiable type on either side (bank_type_of returns None) is
+#     treated as PLACEABLE here — PlanBatchMove's own CHECK-only cross-bank warning is the
+#     backstop for that case, exactly as its own comment says ("bankTypeOf — same lookup as
+#     ResolveSequentialFill; defense-in-depth only").
+#   * Once assigning slots runs past the last slot (>= BANK_SLOT_COUNT), EVERY remaining
+#     placeable item — not just the one that first overflowed — is left pending. It never wraps
+#     to another bank.
+#   * Both real call sites construct their resulting placement with `From: null` — this is
+#     always a fresh/copy placement (PCG import or clipboard Copy), never a move that repoints
+#     the source's own referrers — so the BatchPlacement objects returned here always carry
+#     `src=None`.
+
+
+BANK_SLOT_COUNT = 128   # every Program/Combi bank is exactly 128 slots (BatchMoveModel.cs's BankSlotCount)
+
+
+@dataclass(frozen=True)
+class SequentialFillItem:
+    """One item awaiting a sequential destination slot — the fields ResolveSequentialFill
+    actually reads off a ClipboardEntry: Origin (bank-type gate + label fallback) and the
+    object body to place. `label` defaults to origin.label() if not given (matches both real
+    C# call sites, which always pass Origin.Label())."""
+    origin: ObjLoc
+    dump: ObjectDump
+    label: str = ""
+
+    def describe(self) -> str:
+        return self.label or self.origin.label()
+
+
+def resolve_sequential_fill(items: List[SequentialFillItem], obj_type: int, dest_bank: int,
+                            start_slot: int,
+                            bank_type_of: Optional[Callable[[int], Optional[bool]]] = None
+                            ) -> Tuple[List[BatchPlacement], List[Tuple[SequentialFillItem, str]]]:
+    """Assign consecutive destination slots (dest_bank, start_slot, start_slot+1, ...) to
+    `items`, in order. Pure — no hardware access, no catalog lookups.
+
+    Returns (placed, still_pending):
+      placed        — List[BatchPlacement], src=None, ready to hand straight to
+                      plan_batch_move(catalog, obj_type, placed, dest_occupants, ...) for the
+                      actual validation/planning (read-only banks, duplicates, orphan referrers
+                      — none of that is this function's job).
+      still_pending — items that didn't make it in, each paired with a human-readable reason
+                      (bank-type mismatch or destination bank full), for surfacing to the user
+                      and/or leaving in a clipboard for a later retry.
+    """
+    still_pending: List[Tuple[SequentialFillItem, str]] = []
+    placeable: List[SequentialFillItem] = []
+
+    if obj_type == OBJ_PROGRAM and bank_type_of is not None:
+        dest_type = bank_type_of(dest_bank)
+        for it in items:
+            src_type = bank_type_of(it.origin.bank)
+            if dest_type is not None and src_type is not None and dest_type != src_type:
+                still_pending.append((it,
+                    f"type mismatch: entry is {'EXi' if src_type else 'HD-1'}, destination "
+                    f"bank is {'EXi' if dest_type else 'HD-1'}"))
+            else:
+                placeable.append(it)   # includes the "can't verify" case (I-G/unknown)
+    else:
+        placeable.extend(items)
+
+    placed: List[BatchPlacement] = []
+    for i, it in enumerate(placeable):
+        slot = start_slot + i
+        if slot >= BANK_SLOT_COUNT:
+            still_pending.append((it,
+                f"destination bank full — slot {slot} is past the last slot "
+                f"({BANK_SLOT_COUNT - 1}) starting from {start_slot}"))
+        else:
+            dst = ObjLoc(obj_type, dest_bank, slot)
+            placed.append(BatchPlacement(dst, it.dump, it.describe(), src=None))
+    return placed, still_pending
 
 
 # ── Execution ────────────────────────────────────────────────────────────────
@@ -988,6 +1078,71 @@ def _selftest() -> None:
     check("setlist-batch-no-referrer-writes", len(sl_plan.referrers) == 0)
     check("setlist-batch-one-write", len(sl_plan.writes) == 1)
     check("setlist-batch-check-on-overwrite", any(w.startswith("CHECK:") for w in sl_plan.warnings))
+
+    # ── resolve_sequential_fill ──────────────────────────────────────────────
+
+    def _seq_item(obj_type, bank, number, body=b"\x00" * 16):
+        return SequentialFillItem(ObjLoc(obj_type, bank, number),
+                                  ObjectDump(obj_type, bank, number, 1, body))
+
+    # 1. Plain fill: N sources -> N consecutive slots from a given start, no type gate for Combis.
+    combi_items = [_seq_item(OBJ_COMBI, 0x00, i, bytes(7810)) for i in (1, 2, 3)]
+    placed_c, pend_c = resolve_sequential_fill(combi_items, OBJ_COMBI, 0x40, 0)
+    check("seq-combi-count", len(placed_c) == 3 and len(pend_c) == 0)
+    check("seq-combi-slots",
+          [p.dst for p in placed_c] == [ObjLoc(OBJ_COMBI, 0x40, s) for s in (0, 1, 2)])
+    check("seq-combi-src-none", all(p.src is None for p in placed_c))
+
+    # 1b. Start at a non-zero slot (the real UI case — exact slot the user dropped onto).
+    placed_s, pend_s = resolve_sequential_fill(combi_items, OBJ_COMBI, 0x40, 12)
+    check("seq-start-slot",
+          [p.dst for p in placed_s] == [ObjLoc(OBJ_COMBI, 0x40, s) for s in (12, 13, 14)]
+          and len(pend_s) == 0)
+
+    # 2. Capacity overflow: 130 items, 128 slots, from slot 0 -> 128 placed, 2 pending.
+    many_items = [_seq_item(OBJ_COMBI, 0x00, i, bytes(7810)) for i in range(130)]
+    placed_many, pend_many = resolve_sequential_fill(many_items, OBJ_COMBI, 0x40, 0)
+    check("seq-overflow", len(placed_many) == 128 and len(pend_many) == 2)
+
+    # 2b. Overflow triggers earlier starting mid-bank: 10 items from slot 120 only fit 8.
+    ten_items = [_seq_item(OBJ_COMBI, 0x00, i, bytes(7810)) for i in range(10)]
+    placed_mid, pend_mid = resolve_sequential_fill(ten_items, OBJ_COMBI, 0x40, 120)
+    check("seq-overflow-mid-start",
+          len(placed_mid) == 8 and len(pend_mid) == 2 and placed_mid[-1].dst.number == 127)
+
+    # 3. Program HD-1/EXi bank-type mismatch: filtered out BEFORE slot numbering (does not
+    # consume a slot), left pending with a reason; the matching-type item still lands at slot 0.
+    def _bank_type(bank):
+        return True if bank == 0x00 else False if bank == 0x40 else None   # True=EXi, False=HD-1
+
+    prog_items = [_seq_item(OBJ_PROGRAM, 0x00, 1), _seq_item(OBJ_PROGRAM, 0x40, 2)]
+    placed_p, pend_p = resolve_sequential_fill(prog_items, OBJ_PROGRAM, 0x40, 0, _bank_type)
+    check("seq-type-mismatch",
+          len(placed_p) == 1 and placed_p[0].dst == ObjLoc(OBJ_PROGRAM, 0x40, 0)
+          and len(pend_p) == 1 and pend_p[0][0] is prog_items[0]
+          and "type mismatch" in pend_p[0][1])
+
+    # 4. Read-only-bank boundary — confirmed from BatchMoveModel.cs's ResolveSequentialFill
+    # (Core/BatchMoveModel.cs lines 101-141): the function has NO read-only-bank awareness
+    # whatsoever, so it does none of stop/skip-to-next-writable-bank/wrap — it places every
+    # item consecutively into the read-only bank exactly as asked. The refusal is entirely
+    # plan_batch_move's job downstream (its own _READONLY_PROGRAM_BANKS check).
+    ro_items = [_seq_item(OBJ_PROGRAM, 0x00, i) for i in (1, 2, 3)]
+    placed_ro, pend_ro = resolve_sequential_fill(ro_items, OBJ_PROGRAM, 0x10, 0)
+    check("seq-readonly-not-gated-here",
+          len(placed_ro) == 3 and len(pend_ro) == 0
+          and [p.dst for p in placed_ro] == [ObjLoc(OBJ_PROGRAM, 0x10, s) for s in (0, 1, 2)])
+    ro_plan = plan_batch_move(LibraryCatalog(), OBJ_PROGRAM, placed_ro, {})
+    check("seq-readonly-refused-by-plan-batch-move",
+          ro_plan.is_refusable and any("read-only" in w for w in ro_plan.warnings))
+
+    # 5. Output feeds straight into plan_batch_move and produces a valid plan for a simple,
+    # non-conflicting case (empty catalog, no occupants -> no referrers, no displacement).
+    good_plan = plan_batch_move(LibraryCatalog(), OBJ_COMBI, placed_c, {})
+    check("seq-feeds-plan-batch-move",
+          not good_plan.is_refusable and len(good_plan.writes) == 3
+          and len(good_plan.referrers) == 0
+          and (OBJ_COMBI, 0x40) in good_plan.stores)
 
     if fails:
         print("FAIL:", ", ".join(fails))
