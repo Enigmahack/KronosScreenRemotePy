@@ -1347,6 +1347,7 @@ class MainWindow(QMainWindow):
         self._sysex_tool_win = None
         self._setlist_viewer_win = None
         self._librarian_win = None
+        self._librarian_shell_win = None
         self._input_tester_win = None
         self._sysex_service = SysExService(self)
         self._sync_all_cancel: Optional[threading.Event] = None
@@ -1668,6 +1669,7 @@ class MainWindow(QMainWindow):
         self._act_sysex_tool = tools_menu.addAction("Open &SysEx Tool…")
         self._act_setlist_viewer = tools_menu.addAction("Set List &Viewer…")
         self._act_librarian = tools_menu.addAction("&Librarian…")
+        self._act_librarian_shell = tools_menu.addAction("Librarian &Shell (Local Library)…")
         self._act_sync_names = tools_menu.addAction("Sync &Program/Combi Names…")
         self._act_sync_all = tools_menu.addAction("Sync &All (Names + Set Lists)…")
         tools_menu.addSeparator()
@@ -1747,6 +1749,7 @@ class MainWindow(QMainWindow):
         self._act_sysex_tool.triggered.connect(self._open_sysex_tool)
         self._act_setlist_viewer.triggered.connect(self._open_setlist_viewer)
         self._act_librarian.triggered.connect(self._open_librarian)
+        self._act_librarian_shell.triggered.connect(self._open_librarian_shell)
         self._act_sync_names.triggered.connect(self._open_sync_names)
         self._act_sync_all.triggered.connect(self._open_sync_all)
         self._act_disable_kbd.toggled.connect(self._on_disable_kbd_toggled)
@@ -3159,6 +3162,29 @@ class MainWindow(QMainWindow):
         self._librarian_win.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self._librarian_win.destroyed.connect(lambda: setattr(self, '_librarian_win', None))
         self._librarian_win.show()
+
+    def _open_librarian_shell(self):
+        """Local Library / Merge / PCG three-pane shell — a distinct, additive
+        tool from the existing single-purpose Librarian (live coherent-move)
+        window above. Offline local-library curation (Erase, Rename, PCG/Merge
+        staging, Local<->Local swap) needs only a host for the optional FTP
+        pull; Sync Library/Commit Changes additionally need the live MIDI
+        connection, gated inside the window itself."""
+        if self._librarian_shell_win is not None:
+            self._librarian_shell_win.raise_()
+            self._librarian_shell_win.activateWindow()
+            return
+        if not self._host:
+            QMessageBox.warning(self, "Librarian Shell",
+                                "No Kronos host configured. Set it in Settings first.")
+            return
+        from librarian_shell_window import LibrarianShellWindow
+        self._librarian_shell_win = LibrarianShellWindow(
+            self._host, self._sysex_service,
+            self._settings.ftp_port, self._settings.ftp_username, self._settings.ftp_password, self)
+        self._librarian_shell_win.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self._librarian_shell_win.destroyed.connect(lambda: setattr(self, '_librarian_shell_win', None))
+        self._librarian_shell_win.show()
 
     # ── Set List Viewer ──────────────────────────────────────────────────────────
 
