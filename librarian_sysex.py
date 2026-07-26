@@ -134,6 +134,19 @@ def store_bank_request(obj: int, bank: int) -> bytes:
     return bytes(_HDR) + bytes([0x76, obj & 0x7F, bank & 0x7F, _EOX])
 
 
+def change_program_bank_type_request(bank: int, is_exi: bool) -> bytes:
+    """0x7C Change Program Bank Type. Confirmed wire format from the C# source
+    (KronosSysEx.cs's BuildChangeProgramBankType — grepped for 0x7C across this whole
+    Python codebase before adding this: nothing built it yet): `F0 42 3g 68 7C bank type F7`,
+    type=1 for EXi, 0 for HD-1. If the new type differs from the bank's CURRENT type, the
+    instrument REFORMATS AND ERASES that whole bank before replying with a func-0x24 Reply
+    (a no-op reply if it's already that type) — only ever sent as the first step of a
+    changeset_sync.py `bank_type_changes` entry (see that module's own docstring), never
+    standalone. See sysex_service.SysExService.change_program_bank_type for the
+    send-and-await-reply half."""
+    return bytes(_HDR) + bytes([0x7C, bank & 0x7F, 1 if is_exi else 0, _EOX])
+
+
 def mode_change(mode: int) -> bytes:
     """0x4E Mode Change. mode: 0 Combi, 2 Program, 4 Seq, 6 Sampling, 7 Global,
     8 Disk, 9 Set List."""
@@ -377,6 +390,11 @@ def _selftest() -> None:
 
     sb = store_bank_request(OBJ_COMBI, 0x40)
     check("store", sb == bytes([0xF0, 0x42, 0x30, 0x68, 0x76, 0x01, 0x40, 0xF7]))
+
+    bt_exi = change_program_bank_type_request(0x02, True)
+    check("banktype-req-exi", bt_exi == bytes([0xF0, 0x42, 0x30, 0x68, 0x7C, 0x02, 0x01, 0xF7]))
+    bt_hd1 = change_program_bank_type_request(0x02, False)
+    check("banktype-req-hd1", bt_hd1 == bytes([0xF0, 0x42, 0x30, 0x68, 0x7C, 0x02, 0x00, 0xF7]))
 
     # param change: set list slot pid must be sent as 18/37 verbatim (decimal ids)
     pc = setlist_slot_pc(slot=3, type_=1, func33_bank=19, index=42)

@@ -572,6 +572,17 @@ class SysExService(QObject):
         code = self._send_expect_reply(msg, timeout_s)
         return -1 if code is None else code
 
+    def change_program_bank_type(self, bank: int, is_exi: bool, timeout_s: float = 30.0) -> int:
+        """Send a func-0x7C Change Program Bank Type (REFORMATS AND ERASES the given Program
+        bank if its type actually changes; a no-op reply otherwise). Returns the Reply code
+        (0 OK); -1 on timeout. Longer default timeout than store_bank's — a whole-bank
+        reformat is a bigger flash operation than committing a bank's already-written
+        contents. Backs changeset_sync.py's WriteBankTypeChange (see librarian_shell_window.py's
+        _write_bank_type_change adapter)."""
+        msg = lsx.change_program_bank_type_request(bank, is_exi)
+        code = self._send_expect_reply(msg, timeout_s)
+        return -1 if code is None else code
+
     def bank_digest(self, obj: int, bank: int, timeout_s: float = 5.0) -> Optional[bytes]:
         """Request (func 0x37) and return the 20-byte SHA-1 storage digest for a
         bank (func 0x38 reply), matched on obj+bank. None on timeout."""

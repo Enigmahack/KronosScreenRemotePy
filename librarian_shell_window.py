@@ -29,12 +29,27 @@ what changed and what is STILL cut:
     JSON over a custom mime type), for all three routes: PCG->Merge, Merge->Local, and
     Local<->Local. Every drop calls the SAME placement methods the toolbar buttons call
     (_place_merge_entry_at / _swap_local_at / _pull_pcg_address_into_merge /
-    _run_sequential_fill) — nothing is duplicated. STILL cut: PaneInteraction.cs's Cut/
-    Copy/Paste clipboard (Ctrl+X/C/V) and F2-to-rename keyboard shortcuts, and any custom
-    drag-ghost/insertion-indicator visuals beyond Qt's own default drag cursor. Multi-select
-    (Ctrl/Shift-click) on the Merge and PCG trees comes for free from Qt's
-    ExtendedSelection mode; the Local pane stays single-selection (its own actions —
-    Swap/Erase/Properties — are all inherently single-item).
+    _run_sequential_fill) — nothing is duplicated. STILL cut: F2-to-rename (Properties…
+    already covers renaming), and any custom drag-ghost/insertion-indicator visuals beyond
+    Qt's own default drag cursor. Multi-select (Ctrl/Shift-click) comes for free from Qt's
+    ExtendedSelection mode on all three trees now (the Local pane switched from single- to
+    ExtendedSelection to support multi-item Copy below) — Swap/Erase/Properties/Stage-for-
+    Batch stay inherently single-item (each already refuses via `_leaf_payload`'s own "exactly
+    one selected" guard if more than one Local item is selected, unchanged).
+  * PaneInteraction.cs's Cut/Copy/Paste clipboard is now wired: `batch_clipboard.BatchClipboard`
+    backs Ctrl+X/Ctrl+C/Ctrl+V (active while the Local tree has focus — see keyPressEvent)
+    plus a Local-pane right-click context menu with the same three actions. Cut refuses (with
+    a message, not a silent no-op) if more than one item is selected — the clipboard itself
+    enforces the cap (see batch_clipboard.py's own module docstring for why: a swap has no way
+    to vacate more than one source slot). Paste always goes through the SAME `_DestinationDialog`
+    bank+number picker every other placement action in this file already uses, rather than
+    porting PasteIntoSlot/PasteIntoBank's "target whatever node is right-clicked" distinction
+    — a deliberate simplification (one paste UX, not two) that still reaches every real
+    destination a bank+number picker can address. Cut's paste feeds `paste_swap_target()`'s
+    result into the EXISTING `_swap_local_at`/plan_move path; Copy's paste feeds
+    `paste_targets()`'s result into the EXISTING `_apply_batch_placements`/plan_batch_move path
+    (factored out of `_run_sequential_fill`, which now also uses it) — neither placement
+    codepath is duplicated for the clipboard.
   * Merge -> Local (and PCG -> Local, via Merge staging) placement is no longer single-item
     only: a "Fill Sequentially…" toolbar button on both the Merge and PCG panes, plus
     dragging a MULTI-selection onto the Local pane, both call librarian_model.py's
@@ -74,18 +89,34 @@ what changed and what is STILL cut:
     color (theme.py tokens), not the XAML's layered Border/DataTrigger Background scheme,
     and there is no separate green/red "dependency completeness" dot — that signal is
     folded into the Properties dialog's own read-out instead of a tree-row glyph.
-  * Rename is still supported for Local Library entries only (LocalIndexEntry.display_name,
-    logged as an OpLog "Rename" op). Category/Sub-Category (PropertiesDialog's
-    ForProgramOrCombi) and the Set-List slot list (ForSetList) are now SURFACED — read-only —
-    via the newly-landed object_body.py (parse_program_body/parse_combi_body/
-    parse_setlist_slot) against the selected item's own body bytes, for all three panes
-    (Local/Merge/PCG). STILL cut: editing them back into the body. object_body.py's own
-    module docstring is explicit that it ports only ProgramBody.cs/CombiBody.cs/
-    SetListBody.cs's READ side (no Write*/mutator methods exist there yet to port) — adding
-    a body-level codec that can safely round-trip a category nibble or a slot's name/color/
-    comments back into the wire bytes is real, separate work this UI-layer pass doesn't
-    take on, so a correct read-only display beats a half-wired editable one, per the task's
-    own guidance.
+  * Category/Sub-Category (PropertiesDialog's ForProgramOrCombi) and the Set-List slot list
+    (ForSetList) are now EDITABLE for Local Library entries, backed by object_body.py's now-
+    landed write_program_name/write_program_category/write_combi_name/write_combi_category/
+    write_setlist_name/write_setlist_slot_name/write_setlist_slot_color/
+    write_setlist_slot_comments. Confirmed Local-pane-only from the C# source itself, not
+    guessed: LibrarianShellWindow.xaml only ever wires MouseDoubleClick/"Properties…" to
+    `TV_Local` — TV_Merge and TV_Pcg have no PropertiesDialog call site at all — so Merge/PCG
+    keep the READ-ONLY-only treatment this dialog already had for them (extra_lines/list_rows,
+    unchanged); PropertiesDialog.xaml.cs itself has no "is this editable" flag of its own, it's
+    simply never constructed for those two panes. Saving folds every changed field (name,
+    category/sub-category, and/or one Set-List slot's name/color/comments) into the entry's
+    body bytes then advances current_hash (baseline_hash untouched, so it's correctly dirty —
+    the SAME `_advance_entry_after_write` pattern every other local write in this file already
+    uses) and appends one "PropertyEdit" OpLog entry — the exact op_kind LocalEditOps.cs's own
+    EditProperties/EditSetListSlot use (confirmed from source: NOT the separate, standalone
+    "Rename" op_kind LocalEditOps.Rename uses for an unrelated quick-rename gesture this
+    Properties dialog was never wired to). This also fixes a gap the PRE-this-pass rename path
+    had: it only ever touched LocalIndexEntry.display_name (a UI-cache field), never the body's
+    own name bytes — so a plain rename used to silently desync the display name from what
+    Sync/Commit would actually push. Folding rename into the same combined body-write path
+    this pass adds for Category/slots closes that for free. A Set-List rename and a slot edit
+    in the same dialog Accept are still two independent body writes (matching
+    LocalEditOps.EditProperties/EditSetListSlot being two separate calls in the C# source, the
+    second reading whatever the first just wrote), not one combined write like Program/Combi's
+    name+category. Set-List slot color has no name table ported here (raw 0-15 QSpinBox) —
+    same "no name table exists in this codebase" precedent object_body.py's own docstring
+    already established for Category (SetListColors' real names — Default/Charcoal/Brick/… —
+    live only in the C# source and were never ported to Python).
   * The "unresolved dependencies" dialog is reused for two distinct moments, matching the
     two real call sites in the C# source: (a) a blocking, OK-only notice at Sync/Commit
     time (build_changeset's own gate already refuses while the clipboard is non-empty —
@@ -99,20 +130,39 @@ what changed and what is STILL cut:
     librarian_sysex.py's own module docstring already documents as acceptable ("Program
     version depends on HD-1 vs EXi; both are 5 today"). Fixing this would mean changing
     changeset_sync's already-committed public signature, out of scope for a UI-layer task.
-  * Whole-bank HD-1<->EXi reformat: _get_live_bank_type (new) plugs into
-    changeset_sync.build_changeset's get_live_bank_type parameter the same way
-    _get_live_digest/_get_bank_objects/_write_to_hardware already adapt SysExService for
-    the rest of this pipeline — it derives a bank's live format from an actual Object Dump
-    reply (slot 0's body length against pcg_file.WIRE_SIZE_EXI), since SysExService has no
-    dedicated "query bank format" call. pending_bank_type_change/write_bank_type_change are
-    NOT wired (always None) — staging an intentional bank-type conversion is, by
-    ChangesetBuilder.cs's own design (see changeset_sync.py's module docstring), a distinct
-    UI flow this task's brief explicitly calls out of scope. The practical effect: a real
-    HD-1/EXi mismatch at Sync/Commit time now surfaces as a clear
-    "REFUSE: ... is currently formatted as ..." line in the existing warnings log instead of
-    either silently corrupting a bank or failing with no explanation — which is exactly the
-    "REFUSE case surfaces a clear message" requirement this bullet closes. Reformatting
-    itself remains a future, separate feature.
+  * Whole-bank HD-1<->EXi reformat: _get_live_bank_type plugs into changeset_sync.
+    build_changeset's get_live_bank_type parameter the same way _get_live_digest/
+    _get_bank_objects/_write_to_hardware already adapt SysExService for the rest of this
+    pipeline — it derives a bank's live format from an actual Object Dump reply (slot 0's
+    body length against pcg_file.WIRE_SIZE_EXI), since SysExService has no dedicated "query
+    bank format" call. A real HD-1/EXi mismatch with nothing staged still surfaces as a clear
+    "REFUSE: ... is currently formatted as ..." line in the warnings log, same as before.
+    pending_bank_type_change/write_bank_type_change ARE now wired: a "Stage Bank
+    Conversion…"/"Unstage Bank Conversion" pair on a Program bank node's right-click menu
+    calls LocalLibraryIndex.set_pending_bank_type_change/clear_pending_bank_type_change
+    directly (behind a confirmation dialog spelling out the func-0x7C whole-bank
+    erase/reformat), `index.get_pending_bank_type_change` is passed straight through as
+    build_changeset's `pending_bank_type_change` callable (the exact shape that method's own
+    docstring says it exists for), and `_write_bank_type_change` (new) is the
+    WriteBankTypeChange adapter — it sends a REAL func-0x7C Change Program Bank Type: neither
+    a wire-format builder nor a SysExService method for 0x7C existed ANYWHERE in this codebase
+    before this pass (grepped first, confirmed empty), so both were added
+    (librarian_sysex.change_program_bank_type_request + SysExService.change_program_bank_type),
+    with the wire bytes (`F0 42 3g 68 7C bank type F7`, func-0x24 Reply) confirmed against the
+    C# source's own KronosSysEx.cs.BuildChangeProgramBankType rather than guessed. On a fully
+    successful reformat (SyncResult.reformatted == the number of banks staged this push),
+    _on_sync_done clears the staged intent for each of those banks — mirroring
+    SyncPipeline.cs's own post-success `ClearPendingBankTypeChange` loop (see
+    local_library_store.py's bank_type_pending docstring: this class deliberately never clears
+    it automatically, that's the caller's job). Deliberate simplification vs the C# source:
+    the ONLY way the real app ever stages a bank-type change is as a side effect of a specific
+    whole-Program-bank Merge->Local placement flow (LibrarianShellViewModel.
+    PlaceMergeBankWithTypeChange, which also replaces every existing local Program in that
+    bank and places a Merge-Window group into it in one step) — there is no standalone
+    "just stage a conversion" command in the C# UI at all. Building that full combo flow is a
+    separate, larger feature; this pass's standalone Stage/Unstage action (matching the task's
+    own explicit "e.g. right-click on a Program bank node" ask) reaches the same underlying
+    changeset_sync/hardware plumbing without it.
   * The remote PCG file picker (RemoteFilePickerDialog port) navigates over FTP
     synchronously (blocking the dialog during each directory listing) rather than on a
     background thread — reuses file_manager._FtpWorker directly, no new FTP client. This
@@ -140,10 +190,11 @@ from PySide6.QtCore import QByteArray, QMimeData, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QDrag
 from PySide6.QtWidgets import (
     QAbstractItemView, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QGroupBox,
-    QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
+    QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMenu, QMessageBox,
     QPushButton, QSpinBox, QSplitter, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
+from batch_clipboard import BatchClipboard, ClipboardMode
 import dependency_scanner as depscan
 import kronos_sysex as ksx
 import object_body
@@ -259,21 +310,44 @@ def _advance_entry_after_write(existing: Optional[LocalIndexEntry], new_hash: st
 
 class _PropertiesDialog(QDialog):
     """Port of PropertiesDialog's Program/Combi/Set-List "real estate": name, bank/number,
-    dirty/conflicted/pending-delete, plus (now) a read-only Category/Sub-Category read-out
-    for Programs/Combis and a read-only Set-List slot list — both sourced from object_body.py
-    against the item's own body bytes (see module docstring for why editing them back into
-    the body is still cut). `extra_lines` renders as plain read-only labels (short,
-    fixed-count facts); `list_rows`, if given, renders in a small scrollable QListWidget
-    below them (same "long list" treatment _UnresolvedDependenciesDialog already uses) —
-    used for the Set-List slot summary, which can run to dozens of rows."""
+    dirty/conflicted/pending-delete, plus Category/Sub-Category (Program/Combi) and a
+    Set-List slot list, both sourced from object_body.py against the item's own body bytes.
+
+    Two distinct modes, matching what the caller passes (mirrors ForProgramOrCombi's fixed
+    two ints vs ForSetList's slot browser in the C# source):
+      * `category_choice=(category, sub_category)` — EDITABLE (Local pane only; see module
+        docstring for why Merge/PCG never pass this): two QSpinBoxes, raw ints, no name table
+        (object_body.py's own precedent — no such table exists in the documented format).
+      * `setlist_slots=[SetListSlotInfo, ...]` — EDITABLE (Local pane only): a selectable
+        QListWidget of non-empty slots; selecting one populates Name/Color/Comments fields
+        (color: raw 0-15 QSpinBox, no name table ported — see module docstring) enabled only
+        while a slot is selected, mirroring PropertiesDialog.xaml.cs's own OnSlotSelected/
+        SetSlotFieldsEnabled. `edited_slot` captures whichever slot was selected at Accept
+        time (all three fields, even if the user didn't touch them — matches the C# source's
+        own OnOk, which always re-sends the text boxes' current values for `_selectedSlotNumber`
+        rather than diffing against the original).
+
+    Read-only fallback (Merge/PCG, and any call that omits the two params above): `extra_lines`
+    renders as plain read-only labels; `list_rows`, if given, renders as a plain (non-
+    selectable-for-editing) QListWidget below them — the Set-List slot summary's original
+    read-only shape, still used for Merge/PCG."""
+
+    _MIN_CATEGORY, _MAX_CATEGORY = 0, 0x11
+    _MIN_SUB_CATEGORY, _MAX_SUB_CATEGORY = 0, 7
+    _MIN_SLOT_COLOR, _MAX_SLOT_COLOR = 0, 15
 
     def __init__(self, heading: str, name: str, editable_name: bool,
                  location: str, flag_lines: List[str], extra_lines: List[str],
-                 list_rows: Optional[List[str]] = None, parent=None):
+                 list_rows: Optional[List[str]] = None,
+                 category_choice: Optional[Tuple[int, int]] = None,
+                 setlist_slots: Optional[List["object_body.SetListSlotInfo"]] = None,
+                 parent=None):
         super().__init__(parent)
         self.setWindowTitle(heading)
         self.setStyleSheet(f"QDialog {{ background-color: {T.BG}; color: {T.TEXT}; }}")
         self.new_name: Optional[str] = None
+        self.new_category: Optional[Tuple[int, int]] = None
+        self.edited_slot: Optional[Tuple[int, str, int, str]] = None
 
         v = QVBoxLayout(self)
         row = QHBoxLayout()
@@ -299,6 +373,23 @@ class _PropertiesDialog(QDialog):
             lbl.setStyleSheet(f"color: {T.TEXT_IDLE}; font-size: {T.FS_SMALL}px;")
             v.addWidget(lbl)
 
+        self._cat_spin: Optional[QSpinBox] = None
+        self._subcat_spin: Optional[QSpinBox] = None
+        if category_choice is not None:
+            cat, sub = category_choice
+            cat_row = QHBoxLayout()
+            cat_row.addWidget(QLabel("Category:"))
+            self._cat_spin = QSpinBox()
+            self._cat_spin.setRange(self._MIN_CATEGORY, self._MAX_CATEGORY)
+            self._cat_spin.setValue(max(self._MIN_CATEGORY, min(cat, self._MAX_CATEGORY)))
+            cat_row.addWidget(self._cat_spin)
+            cat_row.addWidget(QLabel("Sub-Category:"))
+            self._subcat_spin = QSpinBox()
+            self._subcat_spin.setRange(self._MIN_SUB_CATEGORY, self._MAX_SUB_CATEGORY)
+            self._subcat_spin.setValue(max(self._MIN_SUB_CATEGORY, min(sub, self._MAX_SUB_CATEGORY)))
+            cat_row.addWidget(self._subcat_spin)
+            v.addLayout(cat_row)
+
         if list_rows:
             lst = QListWidget()
             lst.setStyleSheet(f"QListWidget {{ background: {T.INSET}; color: {T.TEXT}; "
@@ -308,13 +399,73 @@ class _PropertiesDialog(QDialog):
             lst.setMaximumHeight(220)
             v.addWidget(lst)
 
+        self._slot_list: Optional[QListWidget] = None
+        self._slot_numbers: List[int] = []
+        self._selected_slot_number: Optional[int] = None
+        self._setlist_slots: List["object_body.SetListSlotInfo"] = setlist_slots or []
+        if setlist_slots:
+            self._slot_list = QListWidget()
+            self._slot_list.setStyleSheet(f"QListWidget {{ background: {T.INSET}; color: {T.TEXT}; "
+                                          f"border: 1px solid {T.BORDER}; }}")
+            for slot in setlist_slots:
+                if slot.is_empty:
+                    continue
+                self._slot_numbers.append(slot.number)
+                self._slot_list.addItem(QListWidgetItem(f"{slot.number:03d}  {slot.name}"))
+            self._slot_list.setMaximumHeight(160)
+            v.addWidget(self._slot_list)
+
+            slot_row = QHBoxLayout()
+            slot_row.addWidget(QLabel("Slot name:"))
+            self._slot_name_edit = QLineEdit()
+            self._slot_name_edit.setEnabled(False)
+            slot_row.addWidget(self._slot_name_edit)
+            slot_row.addWidget(QLabel("Color:"))
+            self._slot_color_spin = QSpinBox()
+            self._slot_color_spin.setRange(self._MIN_SLOT_COLOR, self._MAX_SLOT_COLOR)
+            self._slot_color_spin.setEnabled(False)
+            slot_row.addWidget(self._slot_color_spin)
+            v.addLayout(slot_row)
+            v.addWidget(QLabel("Slot comments:"))
+            self._slot_comments_edit = QLineEdit()
+            self._slot_comments_edit.setEnabled(False)
+            v.addWidget(self._slot_comments_edit)
+
+            self._slot_list.itemSelectionChanged.connect(self._on_slot_selected)
+
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         btns.accepted.connect(self._on_accept)
         btns.rejected.connect(self.reject)
         v.addWidget(btns)
 
+    def _on_slot_selected(self) -> None:
+        row = self._slot_list.currentRow()
+        if row < 0 or row >= len(self._slot_numbers):
+            self._selected_slot_number = None
+            self._slot_name_edit.setEnabled(False)
+            self._slot_color_spin.setEnabled(False)
+            self._slot_comments_edit.setEnabled(False)
+            return
+        number = self._slot_numbers[row]
+        slot = next((s for s in self._setlist_slots if s.number == number), None)
+        if slot is None:
+            return
+        self._selected_slot_number = number
+        self._slot_name_edit.setText(slot.name)
+        self._slot_color_spin.setValue(
+            slot.color if self._MIN_SLOT_COLOR <= slot.color <= self._MAX_SLOT_COLOR else 0)
+        self._slot_comments_edit.setText(slot.comments)
+        self._slot_name_edit.setEnabled(True)
+        self._slot_color_spin.setEnabled(True)
+        self._slot_comments_edit.setEnabled(True)
+
     def _on_accept(self) -> None:
         self.new_name = self._name_edit.text().strip()
+        if self._cat_spin is not None and self._subcat_spin is not None:
+            self.new_category = (self._cat_spin.value(), self._subcat_spin.value())
+        if self._slot_list is not None and self._selected_slot_number is not None:
+            self.edited_slot = (self._selected_slot_number, self._slot_name_edit.text(),
+                               self._slot_color_spin.value(), self._slot_comments_edit.text())
         self.accept()
 
 
@@ -564,6 +715,7 @@ class LibrarianShellWindow(QDialog):
         self._oplog = OpLog()
         self._merge = MergeCache()
         self._clipboard = SessionDependencyClipboard()
+        self._batch_clip = BatchClipboard()
 
         self._pcg: Optional[PcgFile] = None
         self._pcg_source_label = ""
@@ -581,6 +733,24 @@ class LibrarianShellWindow(QDialog):
         self._refresh_merge_tree()
         self._refresh_pcg_tree()
         self._refresh_enable()
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802 - Qt override
+        """Ctrl+X/C/V for the Local pane's Cut/Copy/Paste — active only while the Local tree
+        has focus (Merge/PCG have no clipboard of their own), matching main_window.py's own
+        keyPressEvent-based (not QShortcut) accelerator convention elsewhere in this app."""
+        mods = event.modifiers()
+        if (mods & Qt.KeyboardModifier.ControlModifier) and self._tree_local.hasFocus():
+            key = event.key()
+            if key == Qt.Key.Key_X:
+                self._cut_local_selected()
+                return
+            if key == Qt.Key.Key_C:
+                self._copy_local_selected()
+                return
+            if key == Qt.Key.Key_V:
+                self._paste_local_selected()
+                return
+        super().keyPressEvent(event)
 
     # ── UI construction ──────────────────────────────────────────────────────
 
@@ -647,10 +817,17 @@ class LibrarianShellWindow(QDialog):
         v.addLayout(row)
         self._tree_local = _PaneTreeWidget("local", accepts_drop=True)
         self._tree_local.setHeaderHidden(True)
+        # ExtendedSelection (not the single-selection every other pane action here still
+        # assumes) so Copy can take more than one item — see module docstring. Swap/Erase/
+        # Properties/Stage-for-Batch are unaffected: `_leaf_payload` already refuses (not
+        # silently misbehaves) whenever more than one item is selected.
+        self._tree_local.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self._tree_local.itemDoubleClicked.connect(lambda *_: self._show_local_properties())
         self._tree_local.itemSelectionChanged.connect(
             lambda: self._update_object_dependencies("local", self._tree_local))
         self._tree_local.itemsDropped.connect(self._on_local_dropped)
+        self._tree_local.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._tree_local.customContextMenuRequested.connect(self._show_local_context_menu)
         v.addWidget(self._tree_local)
         return box
 
@@ -914,7 +1091,12 @@ class LibrarianShellWindow(QDialog):
                 if obj_type == OBJ_SET_LIST:
                     parent = root
                 else:
-                    parent = QTreeWidgetItem([_bank_label(obj_type, bank)])
+                    bank_label = _bank_label(obj_type, bank)
+                    if obj_type == OBJ_PROGRAM:
+                        pending = self._index.get_pending_bank_type_change(bank)
+                        if pending is not None:
+                            bank_label += f"  [staged -> {'EXi' if pending else 'HD-1'}]"
+                    parent = QTreeWidgetItem([bank_label])
                     # Tagged (distinct from a leaf's "local" tag) so a drag drop onto a whole
                     # bank — no specific slot — can still resolve a destination bank for
                     # _find_first_free_slot (see _handle_merge_to_local_drop).
@@ -1040,6 +1222,32 @@ class LibrarianShellWindow(QDialog):
                        f"vol={slot.volume}]" + (f"  — {slot.comments}" if slot.comments else ""))
         return rows
 
+    def _object_body_editable_fields(self, obj_type: int, body: Optional[bytes]
+                                     ) -> Tuple[Optional[Tuple[int, int]],
+                                               Optional[List["object_body.SetListSlotInfo"]]]:
+        """Local-pane-only editable counterpart to _object_body_readout — confirmed Local-only
+        from PropertiesDialog.xaml.cs's own call sites (see module docstring: Merge/PCG never
+        construct this dialog at all in the C# source, so they keep the read-only
+        extra_lines/list_rows shape unchanged). Returns (category_choice, setlist_slots) for
+        _PropertiesDialog's matching constructor params; (None, None) for a missing body."""
+        if body is None:
+            return None, None
+        if obj_type == OBJ_PROGRAM:
+            info = object_body.parse_program_body(body)
+            return (info.category, info.sub_category), None
+        if obj_type == OBJ_COMBI:
+            info = object_body.parse_combi_body(body)
+            return (info.category, info.sub_category), None
+        if obj_type == OBJ_SET_LIST:
+            slots: List[object_body.SetListSlotInfo] = []
+            for i in range(object_body.SLOT_COUNT):
+                slot = object_body.parse_setlist_slot(body, i)
+                if slot is None:
+                    break
+                slots.append(slot)
+            return None, slots
+        return None, None
+
     def _local_bank_type_of(self, bank: int) -> Optional[bool]:
         """Program HD-1/EXi lookup for librarian_model.py's bank_type_of convention
         (True=EXi/False=HD-1/None=unverifiable) — derived from whatever's already locally
@@ -1078,25 +1286,98 @@ class LibrarianShellWindow(QDialog):
         loc = ObjLoc(obj_type, bank, number)
         flags = [f"Dirty: {entry.is_dirty}", f"Conflicted: {entry.conflicted}",
                  f"Pending delete: {entry.pending_delete}"]
-        extra_lines, list_rows = self._object_body_readout(obj_type, self._blobs.get(entry.current_hash))
+        body = self._blobs.get(entry.current_hash)
+        category_choice, setlist_slots = self._object_body_editable_fields(obj_type, body)
         dlg = _PropertiesDialog(f"Properties — {loc.label()}", entry.display_name,
                                 editable_name=True, location=f"Location: {loc.label()}",
-                                flag_lines=flags, extra_lines=extra_lines, list_rows=list_rows,
+                                flag_lines=flags, extra_lines=[],
+                                category_choice=category_choice, setlist_slots=setlist_slots,
                                 parent=self)
-        if dlg.exec() == QDialog.DialogCode.Accepted and dlg.new_name and dlg.new_name != entry.display_name:
-            old_name = entry.display_name
-            entry.display_name = dlg.new_name
-            entry.modified_utc = _now_iso()
-            self._oplog.append({
-                "id": str(uuid.uuid4()), "timestamp_utc": _now_iso(), "op_kind": "Rename",
-                "targets": [{"obj_type": obj_type, "bank": bank, "number": number,
-                            "result_hash": entry.current_hash}],
-                "description": f"Renamed {loc.label()} '{old_name}' -> '{dlg.new_name}'",
-                "sync_batch_id": None, "synced_at_utc": None,
-            })
-            self._index.save()
-            self._log(f"Renamed {loc.label()} to '{dlg.new_name}'.")
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._apply_local_properties_edit(loc, obj_type, entry.display_name, dlg)
+
+    def _write_local_body_edit(self, loc: ObjLoc, new_body: bytes, description: str) -> None:
+        """Shared "apply one body mutation to a Local Library entry" step every Properties-
+        dialog edit funnels through — advances current_hash (baseline_hash untouched, so it's
+        correctly dirty; the SAME _advance_entry_after_write pattern every other local write
+        in this file already uses), re-derives display_name from the new body's own name bytes
+        (matches LocalLibraryCache.RecordEdit's ExtractDisplayName — the display name is
+        always a read of the body, never independently settable), and logs one "PropertyEdit"
+        OpLog entry (LocalEditOps.EditProperties/EditSetListSlot's own op_kind)."""
+        entry = self._index.get(loc.obj_type, loc.bank, loc.number)
+        if entry is None:
+            return
+        new_hash = self._blobs.put(new_body)
+        display_name = ksx._ascii_trim(new_body, 0, 24)
+        now = _now_iso()
+        new_entry = _advance_entry_after_write(entry, new_hash, display_name, entry.version, now)
+        self._index.set_entry(loc.obj_type, loc.bank, loc.number, new_entry)
+        self._oplog.append({
+            "id": str(uuid.uuid4()), "timestamp_utc": now, "op_kind": "PropertyEdit",
+            "targets": [{"obj_type": loc.obj_type, "bank": loc.bank, "number": loc.number,
+                        "result_hash": new_hash}],
+            "description": f"Edited {loc.label()}: {description}",
+            "sync_batch_id": None, "synced_at_utc": None,
+        })
+        self._index.save()
+        self._log(f"Edited {loc.label()}: {description}")
+
+    def _apply_local_properties_edit(self, loc: ObjLoc, obj_type: int, current_name: str,
+                                     dlg: "_PropertiesDialog") -> None:
+        """Applies whichever of Name/Category-Sub-Category (Program/Combi) or Set-List-slot
+        Name/Color/Comments the user actually changed in the Properties dialog. Program/Combi
+        combine name+category into ONE write (LocalEditOps.EditProperties's own single-call
+        semantics — a single `changes` list, single RecordEdit). Set List is two INDEPENDENT
+        writes if both a rename and a slot edit happened — matching EditProperties and
+        EditSetListSlot being two separate LocalEditOps calls in the C# source, the second
+        reading whatever body the first one just wrote (see module docstring)."""
+        if obj_type == OBJ_SET_LIST:
+            if dlg.new_name and dlg.new_name != current_name:
+                entry = self._index.get(loc.obj_type, loc.bank, loc.number)
+                body = self._blobs.get(entry.current_hash) if entry is not None else None
+                if body is not None:
+                    new_body = object_body.write_setlist_name(body, dlg.new_name)
+                    self._write_local_body_edit(loc, new_body, f'name to "{dlg.new_name}"')
+            if dlg.edited_slot is not None:
+                slot_number, slot_name, slot_color, slot_comments = dlg.edited_slot
+                entry = self._index.get(loc.obj_type, loc.bank, loc.number)
+                body = self._blobs.get(entry.current_hash) if entry is not None else None
+                if body is not None:
+                    new_body = object_body.write_setlist_slot_name(body, slot_number, slot_name)
+                    new_body = object_body.write_setlist_slot_color(new_body, slot_number, slot_color)
+                    new_body = object_body.write_setlist_slot_comments(new_body, slot_number, slot_comments)
+                    self._write_local_body_edit(
+                        loc, new_body,
+                        f'slot {slot_number} name to "{slot_name}", slot {slot_number} color '
+                        f"to {slot_color}, slot {slot_number} comments")
             self._refresh_local_tree()
+            return
+
+        entry = self._index.get(loc.obj_type, loc.bank, loc.number)
+        body = self._blobs.get(entry.current_hash) if entry is not None else None
+        if body is None:
+            return
+        new_body = body
+        changes: List[str] = []
+        if dlg.new_name and dlg.new_name != current_name:
+            writer = (object_body.write_program_name if obj_type == OBJ_PROGRAM
+                     else object_body.write_combi_name)
+            new_body = writer(new_body, dlg.new_name)
+            changes.append(f'name to "{dlg.new_name}"')
+        if dlg.new_category is not None:
+            cat, sub = dlg.new_category
+            reader = (object_body.parse_program_body if obj_type == OBJ_PROGRAM
+                     else object_body.parse_combi_body)
+            original = reader(body)
+            if cat != original.category or sub != original.sub_category:
+                writer = (object_body.write_program_category if obj_type == OBJ_PROGRAM
+                         else object_body.write_combi_category)
+                new_body = writer(new_body, cat, sub)
+                changes.append(f"category to {cat}/{sub}")
+        if not changes:
+            return
+        self._write_local_body_edit(loc, new_body, ", ".join(changes))
+        self._refresh_local_tree()
 
     def _erase_selected_local(self) -> None:
         payload = self._leaf_payload(self._tree_local)
@@ -1160,28 +1441,31 @@ class LibrarianShellWindow(QDialog):
         dst_bank, dst_number = dlg.selected()
         self._swap_local_at(src, ObjLoc(obj_type, dst_bank, dst_number))
 
-    def _swap_local_at(self, src: ObjLoc, dst: ObjLoc) -> None:
+    def _swap_local_at(self, src: ObjLoc, dst: ObjLoc) -> bool:
         """The actual Local<->Local swap — factored out of _swap_local_selected so the
-        Local pane's drag-drop handler (_handle_local_to_local_drop) can call the exact
-        same logic with a drop-computed destination instead of a dialog-chosen one."""
+        Local pane's drag-drop handler (_handle_local_to_local_drop) AND the Cut clipboard's
+        paste (_paste_local_cut) can call the exact same logic with a computed destination
+        instead of a dialog-chosen one. Returns True iff the swap actually wrote — the Cut
+        clipboard needs this to know whether it's safe to clear itself (matches
+        PasteSingle/FinishPaste's own "only clear on confirmed success" semantics)."""
         src_entry = self._index.get(src.obj_type, src.bank, src.number)
         if src_entry is None:
             self._log(f"Swap aborted: no local content at {src.label()}.")
-            return
+            return False
         if src == dst:
             self._log("Source and destination are the same location.")
-            return
+            return False
         dst_entry = self._index.get(dst.obj_type, dst.bank, dst.number)
         if dst_entry is None:
             QMessageBox.information(self, "Swap", f"{dst.label()} has no local content yet — "
                                     "place something there first (e.g. from the Merge Window) "
                                     "before swapping.")
-            return
+            return False
         src_body = self._blobs.get(src_entry.current_hash)
         dst_body = self._blobs.get(dst_entry.current_hash)
         if src_body is None or dst_body is None:
             self._log("Swap aborted: missing blob content for source or destination.")
-            return
+            return False
 
         catalog = self._build_local_catalog()
         src_dump = ObjectDump(src.obj_type, src.bank, src.number, src_entry.version, src_body)
@@ -1193,7 +1477,7 @@ class LibrarianShellWindow(QDialog):
             self._log("  ! " + w)
         if plan.is_refusable:
             self._log("Swap refused (see warnings above).")
-            return
+            return False
 
         now = _now_iso()
         targets = []
@@ -1213,6 +1497,7 @@ class LibrarianShellWindow(QDialog):
         self._index.save()
         self._log(f"Swapped {src.label()} <-> {dst.label()} (staged locally, pending Sync/Commit).")
         self._refresh_local_tree()
+        return True
 
     def _stage_local_selected_to_merge(self) -> None:
         """Requirement 2 / MergePaneViewModel.cs's PullFromLocal — stage a Local Library
@@ -1255,6 +1540,147 @@ class LibrarianShellWindow(QDialog):
         })
         self._index.save()
         self._log(f"Cleared {len(targets)} pending change(s).")
+        self._refresh_local_tree()
+
+    # ── Local pane: Cut / Copy / Paste (batch_clipboard.BatchClipboard) ─────────
+
+    def _selected_local_object_locs(self) -> List[ObjLoc]:
+        out: List[ObjLoc] = []
+        for p in self._tree_local.leaf_payloads():
+            if p and p[0] == "local":
+                _, obj_type, bank, number = p
+                out.append(ObjLoc(obj_type, bank, number))
+        return out
+
+    def _local_dump_of(self, loc: ObjLoc) -> Optional[ObjectDump]:
+        """BatchClipboard's DumpOf callable — the existence-only staleness re-check
+        cut()/paste_swap_target()/paste_targets() all use (see batch_clipboard.py's own
+        module docstring: no content-hash gate, just "does this still resolve locally")."""
+        entry = self._index.get(loc.obj_type, loc.bank, loc.number)
+        if entry is None:
+            return None
+        body = self._blobs.get(entry.current_hash)
+        if body is None:
+            return None
+        return ObjectDump(loc.obj_type, loc.bank, loc.number, entry.version, body)
+
+    def _cut_local_selected(self) -> None:
+        locs = self._selected_local_object_locs()
+        if len(locs) > 1:
+            QMessageBox.information(self, "Cut", "Cut only works on exactly one item at a "
+                                    "time — select a single Local Library entry, or use Copy "
+                                    "for multiple.")
+        ok, msg = self._batch_clip.cut(locs, self._local_dump_of)
+        self._log(msg if ok else f"Cut: {msg}")
+
+    def _copy_local_selected(self) -> None:
+        locs = self._selected_local_object_locs()
+        ok, msg = self._batch_clip.copy(locs, self._local_dump_of)
+        self._log(msg if ok else f"Copy: {msg}")
+
+    def _paste_local_selected(self) -> None:
+        """Paste always prompts the same `_DestinationDialog` bank+number picker every other
+        placement action in this file already uses — a deliberate simplification vs
+        PasteIntoSlot/PasteIntoBank's "target whatever tree node is right-clicked" split (see
+        module docstring): one paste UX, still able to reach any real destination."""
+        if self._batch_clip.is_empty:
+            self._log("Nothing to paste — Cut or Copy something first.")
+            return
+        obj_type = self._batch_clip.entries[0].loc.obj_type
+        dlg = _DestinationDialog(obj_type, "Paste at…", self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        dest_bank, dest_number = dlg.selected()
+        if self._batch_clip.mode == ClipboardMode.CUT:
+            self._paste_local_cut(ObjLoc(obj_type, dest_bank, dest_number))
+        else:
+            self._paste_local_copy(obj_type, dest_bank, dest_number)
+
+    def _paste_local_cut(self, dest: ObjLoc) -> None:
+        src, err = self._batch_clip.paste_swap_target(dest, self._local_dump_of)
+        if src is None:
+            self._log(f"Paste: {err}")
+            return
+        # paste_swap_target() never clears the clipboard itself (mirrors FinishPaste, which
+        # only clears on a confirmed-successful apply) — clear it here only if _swap_local_at
+        # actually wrote something.
+        if self._swap_local_at(src, dest):
+            self._batch_clip.clear()
+
+    def _paste_local_copy(self, obj_type: int, dest_bank: int, start_slot: int) -> None:
+        placed, pending = self._batch_clip.paste_targets(
+            obj_type, dest_bank, start_slot, self._local_dump_of,
+            bank_type_of=self._local_bank_type_of)
+        if not placed:
+            self._log("Paste: nothing placeable.")
+            for entry, reason in pending:
+                self._log(f"  pending: {entry.loc.label()} — {reason}")
+            return
+        ok = self._apply_batch_placements(
+            placed, obj_type, "Place",
+            f"Pasted {len(placed)} item(s) starting at "
+            f"{ObjLoc(obj_type, dest_bank, start_slot).label()}")
+        if not ok:
+            self._log("Paste refused (see warnings above).")
+            return
+        self._log(f"Pasted {len(placed)} item(s); {len(pending)} left pending.")
+        for entry, reason in pending:
+            self._log(f"  pending: {entry.loc.label()} — {reason}")
+
+    def _show_local_context_menu(self, local_pos) -> None:
+        menu = QMenu(self)
+        menu.addAction("Cut", self._cut_local_selected)
+        menu.addAction("Copy", self._copy_local_selected)
+        a_paste = menu.addAction("Paste…", self._paste_local_selected)
+        a_paste.setEnabled(not self._batch_clip.is_empty)
+
+        item = self._tree_local.itemAt(local_pos)
+        payload = item.data(0, Qt.ItemDataRole.UserRole) if item is not None else None
+        if payload is not None and payload[0] == "local_bank" and payload[1] == OBJ_PROGRAM:
+            bank = payload[2]
+            menu.addSeparator()
+            if self._index.get_pending_bank_type_change(bank) is None:
+                menu.addAction("Stage Bank Conversion…", lambda: self._stage_bank_type_change(bank))
+            else:
+                menu.addAction("Unstage Bank Conversion", lambda: self._unstage_bank_type_change(bank))
+        menu.exec(self._tree_local.viewport().mapToGlobal(local_pos))
+
+    # ── Local pane: staged whole-bank HD-1/EXi conversion (requirement 3) ────────
+    # A standalone Stage/Unstage action, not the C# source's own "side effect of a specific
+    # Merge->Local whole-Program-bank placement" trigger — see module docstring for why.
+
+    def _stage_bank_type_change(self, bank: int) -> None:
+        box = QMessageBox(self)
+        box.setWindowTitle("Stage Bank Conversion")
+        box.setText(
+            f"Stage {ksx.program_label(bank)} for a whole-bank HD-1/EXi format conversion?\n\n"
+            "This queues a func-0x7C Change Program Bank Type for the next Sync/Commit. On "
+            "the instrument, 0x7C REFORMATS AND ERASES the ENTIRE bank — every Program slot "
+            "in it, not just the ones you've edited locally — right before this push's "
+            "Program writes for that bank land. There is no undo once it executes on "
+            "hardware.")
+        btn_exi = box.addButton("Convert to EXi", QMessageBox.ButtonRole.AcceptRole)
+        btn_hd1 = box.addButton("Convert to HD-1", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is btn_exi:
+            to_exi = True
+        elif clicked is btn_hd1:
+            to_exi = False
+        else:
+            return
+        self._index.set_pending_bank_type_change(bank, to_exi)
+        self._index.save()
+        self._log(f"Staged {ksx.program_label(bank)} for conversion to "
+                 f"{'EXi' if to_exi else 'HD-1'} (func 0x7C reformats + erases the whole "
+                 "bank at next Sync/Commit).")
+        self._refresh_local_tree()
+
+    def _unstage_bank_type_change(self, bank: int) -> None:
+        self._index.clear_pending_bank_type_change(bank)
+        self._index.save()
+        self._log(f"Unstaged the pending bank conversion for {ksx.program_label(bank)}.")
         self._refresh_local_tree()
 
     # ── Merge pane actions ───────────────────────────────────────────────────
@@ -1383,23 +1809,16 @@ class LibrarianShellWindow(QDialog):
             out[p.dst] = ObjectDump(p.dst.obj_type, p.dst.bank, p.dst.number, entry.version, body)
         return out
 
-    def _run_sequential_fill(self, seq_items: List[SequentialFillItem], obj_type: int,
-                             dest_bank: int, start_slot: int,
-                             hash_by_label: Optional[Dict[str, str]] = None) -> None:
-        """Port of resolve_sequential_fill() -> plan_batch_move(), the pipeline behind both
-        the "Fill Sequentially…" toolbar buttons and a multi-item Merge->Local drag. Shared
-        so neither path duplicates the other's placement logic. `hash_by_label` maps a
-        placed item's label back to its Merge content hash (empty/None for PCG sources,
-        which have nothing to remove from a cache)."""
+    def _apply_batch_placements(self, placed: List[BatchPlacement], obj_type: int,
+                                oplog_kind: str, description: str,
+                                hash_by_label: Optional[Dict[str, str]] = None) -> bool:
+        """The shared "write a resolved batch of BatchPlacements into the Local Library index
+        + OpLog" core — factored out of _run_sequential_fill so the Copy clipboard's paste
+        (_paste_local_copy, whose `placed` already came out of batch_clipboard.paste_targets'
+        own resolve_sequential_fill call) can apply the exact same plan_batch_move logic
+        without re-deriving the placements a second time. Returns False (nothing applied) if
+        plan_batch_move refuses the whole batch; the caller decides what to log about that."""
         hash_by_label = hash_by_label or {}
-        placed, pending = resolve_sequential_fill(seq_items, obj_type, dest_bank, start_slot,
-                                                   bank_type_of=self._local_bank_type_of)
-        if not placed:
-            self._log("Fill Sequentially: nothing placeable.")
-            for it, reason in pending:
-                self._log(f"  pending: {it.describe()} — {reason}")
-            return
-
         catalog = self._build_local_catalog()
         occupants = self._dest_occupants_for(placed)
         plan = plan_batch_move(catalog, obj_type, placed, occupants, divert_displaced=False,
@@ -1409,8 +1828,7 @@ class LibrarianShellWindow(QDialog):
         for w in plan.warnings:
             self._log("  ! " + w)
         if plan.is_refusable:
-            self._log("Fill Sequentially refused (see warnings above).")
-            return
+            return False
 
         now = _now_iso()
         label_by_dst = {p.dst: p.label for p in placed}
@@ -1426,10 +1844,8 @@ class LibrarianShellWindow(QDialog):
             targets.append({"obj_type": w.obj, "bank": w.bank, "number": w.index, "result_hash": new_hash})
 
         self._oplog.append({
-            "id": str(uuid.uuid4()), "timestamp_utc": now, "op_kind": "Place",
-            "targets": targets,
-            "description": f"Filled {len(placed)} item(s) sequentially starting at "
-                           f"{ObjLoc(obj_type, dest_bank, start_slot).label()}",
+            "id": str(uuid.uuid4()), "timestamp_utc": now, "op_kind": oplog_kind,
+            "targets": targets, "description": description,
             "sync_batch_id": None, "synced_at_utc": None,
         })
         self._index.save()
@@ -1440,11 +1856,38 @@ class LibrarianShellWindow(QDialog):
                 self._merge.mark_placed(h, (p.dst.obj_type, p.dst.bank, p.dst.number))
                 self._merge.remove(h)
 
+        self._refresh_local_tree()
+        self._refresh_merge_tree()
+        return True
+
+    def _run_sequential_fill(self, seq_items: List[SequentialFillItem], obj_type: int,
+                             dest_bank: int, start_slot: int,
+                             hash_by_label: Optional[Dict[str, str]] = None) -> None:
+        """Port of resolve_sequential_fill() -> plan_batch_move(), the pipeline behind both
+        the "Fill Sequentially…" toolbar buttons and a multi-item Merge->Local drag. Shared
+        so neither path duplicates the other's placement logic. `hash_by_label` maps a
+        placed item's label back to its Merge content hash (empty/None for PCG sources,
+        which have nothing to remove from a cache)."""
+        placed, pending = resolve_sequential_fill(seq_items, obj_type, dest_bank, start_slot,
+                                                   bank_type_of=self._local_bank_type_of)
+        if not placed:
+            self._log("Fill Sequentially: nothing placeable.")
+            for it, reason in pending:
+                self._log(f"  pending: {it.describe()} — {reason}")
+            return
+
+        ok = self._apply_batch_placements(
+            placed, obj_type, "Place",
+            f"Filled {len(placed)} item(s) sequentially starting at "
+            f"{ObjLoc(obj_type, dest_bank, start_slot).label()}",
+            hash_by_label)
+        if not ok:
+            self._log("Fill Sequentially refused (see warnings above).")
+            return
+
         self._log(f"Fill Sequentially: placed {len(placed)} item(s), {len(pending)} left pending.")
         for it, reason in pending:
             self._log(f"  pending: {it.describe()} — {reason}")
-        self._refresh_local_tree()
-        self._refresh_merge_tree()
 
     def _fill_sequentially_merge(self) -> None:
         payloads = [p for p in self._selected_payloads(self._tree_merge) if p[0] == "merge"]
@@ -1748,15 +2191,25 @@ class LibrarianShellWindow(QDialog):
         slot 0's reply body length is deterministically WIRE_SIZE_EXI or WIRE_SIZE_HD1
         (pcg_file.py's own convention, the same one library_pull_pipeline/plan_batch_move
         already rely on). None (unverifiable) if the dump fails or times out — matches
-        build_changeset's own "non-blocking when unverifiable" contract. See module
-        docstring for why pending_bank_type_change/write_bank_type_change stay unwired
-        (no staged-conversion UI in this pass) — this adapter's only job is making the
-        REFUSE-on-mismatch path (Step 3.5b) surface a real, not-guessed answer instead of
-        never firing at all."""
+        build_changeset's own "non-blocking when unverifiable" contract."""
         d = self._service.dump_object_parsed(OBJ_PROGRAM, bank, 0, no_response_ms=3000)
         if d is None:
             return None
         return len(d.body) == WIRE_SIZE_EXI
+
+    def _write_bank_type_change(self, bank: int, to_exi: bool) -> bool:
+        """changeset_sync.build_changeset's WriteBankTypeChange adapter — the func-0x7C
+        counterpart to _write_to_hardware/_get_live_bank_type (same "adapt SysExService for
+        this pipeline" role). Sends a REAL func-0x7C Change Program Bank Type; neither a wire-
+        format builder nor a SysExService method for 0x7C existed anywhere in this codebase
+        before this pass (grepped first, confirmed empty) — both were added
+        (librarian_sysex.change_program_bank_type_request + SysExService.
+        change_program_bank_type), with the wire bytes confirmed against the C# source's own
+        KronosSysEx.cs.BuildChangeProgramBankType rather than guessed. Only relays the Reply
+        code as a bool — execute_changeset already owns the all-or-nothing "one rejected
+        reformat aborts the whole push" semantics (see changeset_sync.py's own module
+        docstring), not this adapter."""
+        return self._service.change_program_bank_type(bank, to_exi) == 0
 
     def _start_sync(self) -> None:
         if self._busy or not self._require_connected():
@@ -1784,14 +2237,18 @@ class LibrarianShellWindow(QDialog):
                     get_live_digest=self._get_live_digest, get_bank_objects=self._get_bank_objects,
                     resolver=self._local_resolver, write_to_hardware=self._write_to_hardware,
                     progress=lambda m: self._progress.emit(m),
-                    get_live_bank_type=self._get_live_bank_type)
+                    get_live_bank_type=self._get_live_bank_type,
+                    pending_bank_type_change=self._index.get_pending_bank_type_change,
+                    write_bank_type_change=self._write_bank_type_change)
             else:
                 pull_result = None
                 plan, result = commit_changes(
                     self._index, self._blobs, self._clipboard,
                     get_live_digest=self._get_live_digest, resolver=self._local_resolver,
                     write_to_hardware=self._write_to_hardware,
-                    get_live_bank_type=self._get_live_bank_type)
+                    get_live_bank_type=self._get_live_bank_type,
+                    pending_bank_type_change=self._index.get_pending_bank_type_change,
+                    write_bank_type_change=self._write_bank_type_change)
             self._index.save()
         except Exception as e:  # pragma: no cover - defensive
             self._sync_done.emit(None, None, None, f"Sync/Commit crashed: {e}")
@@ -1816,6 +2273,18 @@ class LibrarianShellWindow(QDialog):
             self._log(f"Push: {result.written} written, {result.erased} erased, "
                      f"{result.deleted} local-only delete(s), {result.failed} failed, "
                      f"{result.reformatted} bank(s) reformatted.")
+            # Committed whole-bank type changes are now realized on hardware — clear the
+            # staged intent so a later, unrelated push to the same bank doesn't re-issue the
+            # (erasing) func 0x7C. Mirrors SyncPipeline.cs's own post-success
+            # ClearPendingBankTypeChange loop, confirmed from source: it only runs after the
+            # WHOLE push succeeds, never on a partial/aborted one — result.reformatted equals
+            # len(plan.bank_type_changes) exactly when every queued reformat in THIS push
+            # actually succeeded (execute_changeset's all-or-nothing reformat gate: a single
+            # rejected reformat aborts before any more are attempted).
+            if plan.bank_type_changes and result.reformatted == len(plan.bank_type_changes):
+                for bank, _ in plan.bank_type_changes:
+                    self._index.clear_pending_bank_type_change(bank)
+                self._index.save()
         self._refresh_local_tree()
 
     # ── Merge pull (kept synchronous — local blob store only, no hardware) ──
