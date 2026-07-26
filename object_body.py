@@ -1,8 +1,9 @@
 r"""
-Raw-body decoders for Program/Combi/Set-List objects — port of
+Raw-body decoders + mutators for Program/Combi/Set-List objects — port of
 Core/ObjectBody/ProgramBody.cs, CombiBody.cs, and SetListBody.cs from the
-Windows client (read-only side only; this port has no need yet for the C#
-Write*/mutator methods, which exist there to support in-place local edits).
+Windows client. Read side (`parse_*`) and write side (`write_*`) both
+covered; the write side mirrors the C# Write*/PadAscii/BuildRenamedBody
+mutators used to support in-place local edits.
 
 Operates on the decoded binary body only, no wire-format/8-to-7 knowledge --
 same discipline as the C# originals. A wire-format HD-1 Program body is an
@@ -95,6 +96,72 @@ def parse_combi_body(body: bytes) -> CombiBodyInfo:
     return CombiBodyInfo(name, category, sub_category)
 
 
+# ── Mutators (Write* side of ProgramBody.cs / CombiBody.cs / SetListBody.cs) ─
+#
+# Pure functions over immutable byte input: every write_* helper below clones
+# `body` into a bytearray, updates only the bytes the corresponding C# Write*
+# method touches, and returns a brand-new bytes object -- the original is
+# never mutated, matching `(byte[])body.Clone()` in every C# Write* method.
+#
+# Validation: the C# Write* methods for Category do NOT range-check or raise
+# -- they just mask (`category & 0x1F`, `subCategory & 0x07`) before packing,
+# so an out-of-range int silently wraps instead of throwing. Ported literally
+# here (no ValueError) to match that exact (lack of) behavior -- inventing
+# stricter validation than the C# side has would be a divergence, not a port.
+
+
+def _pad_ascii(s: str, length: int) -> bytes:
+    """Port of Librarian.PadAscii: space-padded (0x20) to exactly `length`
+    bytes, ASCII-encoded, truncated if `s` is longer. Non-ASCII characters
+    fall back to '?' (0x3F), matching .NET's Encoding.ASCII.GetBytes."""
+    data = bytearray(b"\x20" * length)
+    enc = s.encode("ascii", errors="replace")
+    n = min(len(enc), length)
+    data[0:n] = enc[0:n]
+    return bytes(data)
+
+
+def _build_renamed_body(body: bytes, name: str) -> bytes:
+    """Port of Librarian.BuildRenamedBody: only the first 24 bytes (the name
+    field) are replaced, every other byte of `body` preserved exactly."""
+    b = bytearray(body)
+    padded = _pad_ascii(name, 24)
+    n = min(24, len(b))
+    b[0:n] = padded[0:n]
+    return bytes(b)
+
+
+def write_program_name(body: bytes, name: str) -> bytes:
+    """Port of ProgramBody.WriteName (delegates to Librarian.BuildRenamedBody
+    in the C# source: name lives in the first 24 bytes)."""
+    return _build_renamed_body(body, name)
+
+
+def write_combi_name(body: bytes, name: str) -> bytes:
+    """Port of CombiBody.WriteName (same Librarian.BuildRenamedBody
+    delegation as ProgramBody.WriteName: name in the first 24 bytes)."""
+    return _build_renamed_body(body, name)
+
+
+def write_program_category(body: bytes, category: int, sub_category: int) -> bytes:
+    """Port of ProgramBody.WriteCategory. Same bytes as `body`, only the
+    packed Category/Sub-Category byte at PROGRAM_CATEGORY_OFS replaced --
+    every other byte preserved exactly."""
+    b = bytearray(body)
+    if PROGRAM_CATEGORY_OFS < len(b):
+        b[PROGRAM_CATEGORY_OFS] = (category & 0x1F) | ((sub_category & 0x07) << 5)
+    return bytes(b)
+
+
+def write_combi_category(body: bytes, category: int, sub_category: int) -> bytes:
+    """Port of CombiBody.WriteCategory -- same bit-packing as
+    write_program_category, at COMBI_CATEGORY_OFS."""
+    b = bytearray(body)
+    if COMBI_CATEGORY_OFS < len(b):
+        b[COMBI_CATEGORY_OFS] = (category & 0x1F) | ((sub_category & 0x07) << 5)
+    return bytes(b)
+
+
 # ── Set List (SetListBody.cs) ────────────────────────────────────────────────
 
 NAME_LEN = 24
@@ -160,10 +227,54 @@ def parse_setlist_slot(body: bytes, slot_index: int) -> Optional[SetListSlotInfo
                             color, hold_time, volume, comments)
 
 
+def write_setlist_name(body: bytes, name: str) -> bytes:
+    """Port of SetListBody.WriteName (delegates to Librarian.BuildRenamedBody
+    in the C# source: the Set List's own name lives in the first 24 bytes,
+    distinct from any individual slot's name)."""
+    return _build_renamed_body(body, name)
+
+
+def write_setlist_slot_name(body: bytes, slot_index: int, name: str) -> bytes:
+    """Port of SetListBody.WriteSlotName: slot name field (24 bytes at the
+    slot's own +0), space-padded/truncated like Librarian.PadAscii."""
+    b = bytearray(body)
+    base = SLOT_BASE + slot_index * SLOT_SIZE
+    padded = _pad_ascii(name, NAME_LEN)
+    n = min(NAME_LEN, max(0, len(b) - base))
+    if n > 0:
+        b[base:base + n] = padded[0:n]
+    return bytes(b)
+
+
+def write_setlist_slot_color(body: bytes, slot_index: int, color: int) -> bytes:
+    """Port of SetListBody.WriteSlotColor. Color shares its byte with Type
+    (bits 1-0) and font-LSB (bits 7-6) -- mask, don't overwrite those bits,
+    same discipline as the C# side's own comment about LibRefs.SetSetListSlotRef."""
+    b = bytearray(body)
+    ofs = SLOT_BASE + slot_index * SLOT_SIZE + 24
+    if ofs < len(b):
+        b[ofs] = (b[ofs] & ~0b0011_1100) | ((color & 0x0F) << 2)
+    return bytes(b)
+
+
+def write_setlist_slot_comments(body: bytes, slot_index: int, comments: str) -> bytes:
+    """Port of SetListBody.WriteSlotComments. Truncated/padded to
+    COMMENT_LEN=512 ASCII bytes -- same 512-byte-max the reader already
+    respects via `com_len = min(COMMENT_LEN, len(body) - (b + 30))`."""
+    b = bytearray(body)
+    ofs = SLOT_BASE + slot_index * SLOT_SIZE + 30
+    padded = _pad_ascii(comments, COMMENT_LEN)
+    n = min(COMMENT_LEN, max(0, len(b) - ofs))
+    if n > 0:
+        b[ofs:ofs + n] = padded[0:n]
+    return bytes(b)
+
+
 # ── Self-test (run: python object_body.py) ───────────────────────────────────
-# Ports ObjectBodySelfTests.cs's actual test vectors (the parts relevant to
-# this module -- read-only; the C# self-test's Write*/EraseBody/registry
-# checks aren't ported here since this module has no mutator/registry side).
+# Ports ObjectBodySelfTests.cs's actual test vectors -- both the read-only
+# checks and (now) the Write*/mutator round-trips. EraseBody/registry checks
+# in the C# self-test aren't ported: they exercise LibObj/ObjectTypeRegistry/
+# EraseBody, none of which this module owns.
 
 
 def _selftest() -> None:
@@ -195,6 +306,20 @@ def _selftest() -> None:
     prog_named[0:24] = b"TESTPROG".ljust(24)   # PadAscii: full 24-byte field, space-padded
     check("program-name-roundtrip", parse_program_body(bytes(prog_named)).name == "TESTPROG")
 
+    # 2b. Program mutators: ObjectBodySelfTests.cs's own write-side checks,
+    #     same "3706-byte, (i*11+1)&0xFF" body, WriteCategory(5, 3) then
+    #     confirm every byte except the category byte is untouched.
+    prog_cat_written = write_program_category(bytes(prog), 5, 3)
+    wp_cat, wp_sub = parse_program_body(prog_cat_written).category, parse_program_body(prog_cat_written).sub_category
+    check("program-category-write-read", wp_cat == 5 and wp_sub == 3)
+    prog_expected_tail = bytearray(prog)
+    prog_expected_tail[PROGRAM_CATEGORY_OFS] = prog_cat_written[PROGRAM_CATEGORY_OFS]
+    check("program-category-preserves-tail", prog_cat_written == bytes(prog_expected_tail))
+
+    prog_name_written = write_program_name(bytes(prog), "TESTPROG")
+    check("program-name-write-roundtrip", parse_program_body(prog_name_written).name == "TESTPROG")
+    check("program-name-write-preserves-tail", prog_name_written[24:] == bytes(prog)[24:])
+
     # 3. Combi: category round-trip, C#'s byte pattern (i*13+2 & 0xFF, 7810 bytes),
     #    category=7 sub=1.
     combi = bytearray((i * 13 + 2) & 0xFF for i in range(7810))
@@ -205,6 +330,19 @@ def _selftest() -> None:
     combi_named = bytearray(combi)
     combi_named[0:24] = b"TESTCOMBI".ljust(24)   # PadAscii: full 24-byte field, space-padded
     check("combi-name-roundtrip", parse_combi_body(bytes(combi_named)).name == "TESTCOMBI")
+
+    # 3b. Combi mutators: same write-then-read-back + tail-preservation shape
+    #     as the Program checks above, C#'s (7, 1) / "TESTCOMBI" vectors.
+    combi_cat_written = write_combi_category(bytes(combi), 7, 1)
+    wc_cat, wc_sub = parse_combi_body(combi_cat_written).category, parse_combi_body(combi_cat_written).sub_category
+    check("combi-category-write-read", wc_cat == 7 and wc_sub == 1)
+    combi_expected_tail = bytearray(combi)
+    combi_expected_tail[COMBI_CATEGORY_OFS] = combi_cat_written[COMBI_CATEGORY_OFS]
+    check("combi-category-preserves-tail", combi_cat_written == bytes(combi_expected_tail))
+
+    combi_name_written = write_combi_name(bytes(combi), "TESTCOMBI")
+    check("combi-name-write-roundtrip", parse_combi_body(combi_name_written).name == "TESTCOMBI")
+    check("combi-name-write-preserves-tail", combi_name_written[24:] == bytes(combi)[24:])
 
     # 4. Set List: ObjectBodySelfTests.cs's exact synthetic slBody vector --
     #    69416-byte, space-padded, name "TESTLIST", slot 0 = "SLOT0" with
@@ -236,6 +374,36 @@ def _selftest() -> None:
     # not an exception (mirrors FromRawBody's loop `break`).
     truncated = bytes(sl_body[:40])   # short body: doesn't even reach slot 0's +30
     check("setlistbody-truncated-none", parse_setlist_slot(truncated, 0) is None)
+
+    # 4b. SetListBody mutators: ObjectBodySelfTests.cs's own bit-preserving
+    #     color write (WriteSlotColor(9) must not disturb Type/bank/index,
+    #     the C# check being "setlist-color-preserves-refs" via
+    #     LibRefs.SetListSlotRef -- parse_setlist_slot gives the same
+    #     bit-level view here) and comments write ("hello world").
+    with_color = write_setlist_slot_color(bytes(sl_body), 0, 9)
+    color_slot = parse_setlist_slot(with_color, 0)
+    check("setlist-color-preserves-refs",
+          color_slot is not None and color_slot.type == 1 and color_slot.bank == 3 and color_slot.index == 9)
+    check("setlist-color-write", color_slot is not None and color_slot.color == 9)
+
+    with_comments = write_setlist_slot_comments(bytes(sl_body), 0, "hello world")
+    comments_slot = parse_setlist_slot(with_comments, 0)
+    check("setlist-comments-write", comments_slot is not None and comments_slot.comments == "hello world")
+    # Comments write must not disturb the slot name or the packed type/color byte.
+    check("setlist-comments-preserves-name", comments_slot is not None and comments_slot.name == "SLOT0")
+    check("setlist-comments-preserves-color", comments_slot is not None and comments_slot.color == 5)
+
+    # write_setlist_name / write_setlist_slot_name: not in ObjectBodySelfTests.cs
+    # as standalone checks, but both delegate to the same BuildRenamedBody /
+    # PadAscii primitives as Program/Combi WriteName -- round-trip them too.
+    sl_renamed = write_setlist_name(bytes(sl_body), "NEWLIST")
+    check("setlist-name-write-roundtrip", ksx._ascii_trim(sl_renamed, 0, 24) == "NEWLIST")
+    check("setlist-name-write-preserves-tail", sl_renamed[24:] == bytes(sl_body)[24:])
+
+    slot_renamed = write_setlist_slot_name(bytes(sl_body), 0, "RENAMED0")
+    renamed_slot0 = parse_setlist_slot(slot_renamed, 0)
+    check("setlist-slot-name-write-roundtrip", renamed_slot0 is not None and renamed_slot0.name == "RENAMED0")
+    check("setlist-slot-name-write-preserves-color", renamed_slot0 is not None and renamed_slot0.color == 5)
 
     if fails:
         print("FAIL:", ", ".join(fails))

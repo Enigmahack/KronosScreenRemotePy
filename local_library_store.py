@@ -178,6 +178,18 @@ class LocalLibraryIndex:
         self.root = pathlib.Path(root) if root is not None else local_library_dir()
         self.entries: Dict[str, LocalIndexEntry] = {}
         self.bank_digest_baseline: Dict[str, str] = {}
+        # Whole-bank HD-1/EXi type-change intent (port of LocalLibraryIndex.cs's
+        # PendingProgramBankTypeChanges) — a Program bank -> target is_exi flag, set by some
+        # separate, deliberate UI flow (e.g. "convert this bank to EXi"), consumed by
+        # changeset_sync.py's build_changeset (its `pending_bank_type_change` callable param,
+        # which get_pending_bank_type_change below is the exact shape for), and cleared by the
+        # caller after a successful func-0x7C reformat (confirmed from source: SyncPipeline.cs's
+        # PushAsync calls cache.ClearPendingBankTypeChange(bank) for every plan.BankTypeChanges
+        # entry right after recording push successes — so a completed reformat never re-triggers
+        # on the next push). Keyed by plain bank int, not "type:bank" — HD-1/EXi has no obj_type
+        # axis, matching bank_key's own Program-only bank-type convention elsewhere in this
+        # subsystem (see changeset_sync.py's module docstring).
+        self.bank_type_pending: Dict[int, bool] = {}
         self._lock = threading.Lock()
 
     @staticmethod
@@ -207,6 +219,9 @@ class LocalLibraryIndex:
                 k: LocalIndexEntry.from_dict(v) for k, v in root.get("entries", {}).items()
             }
             self.bank_digest_baseline = dict(root.get("bank_digest_baseline", {}))
+            self.bank_type_pending = {
+                int(k): bool(v) for k, v in root.get("bank_type_pending", {}).items()
+            }
         except Exception as e:
             print(f"[local-library] index load failed: {e}")
         return self
@@ -218,6 +233,8 @@ class LocalLibraryIndex:
                 root = {
                     "entries": {k: v.to_dict() for k, v in self.entries.items()},
                     "bank_digest_baseline": self.bank_digest_baseline,
+                    # JSON object keys are always strings; int-ified back on load() above.
+                    "bank_type_pending": {str(k): v for k, v in self.bank_type_pending.items()},
                 }
                 self._path().write_text(json.dumps(root, indent=2), encoding="utf-8")
         except Exception as e:
@@ -254,6 +271,27 @@ class LocalLibraryIndex:
 
     def set_bank_digest_baseline(self, obj_type: int, bank: int, digest_hex: str) -> None:
         self.bank_digest_baseline[self.bank_key(obj_type, bank)] = digest_hex
+
+    # -- pending whole-bank HD-1/EXi type change -----------------------------
+    # Port of LocalLibraryCache.cs's Set/Get/ClearPendingBankTypeChange. Stages an intentional
+    # conversion for a Program bank that changeset_sync.py's build_changeset will turn into a
+    # func-0x7C reformat; the caller must clear it once that reformat actually succeeds on
+    # hardware (confirmed from source, see bank_type_pending's field docstring above) — this
+    # class does not clear it automatically, matching set_entry/mark_conflicted's own "caller's
+    # job" division of responsibility elsewhere in this file.
+
+    def set_pending_bank_type_change(self, bank: int, to_exi: bool) -> None:
+        self.bank_type_pending[bank] = to_exi
+
+    def clear_pending_bank_type_change(self, bank: int) -> None:
+        self.bank_type_pending.pop(bank, None)
+
+    def get_pending_bank_type_change(self, bank: int) -> Optional[bool]:
+        """bank -> staged target is_exi, or None if untouched. Exact shape of
+        changeset_sync.py's `PendingBankTypeChange` callable type, so `index.
+        get_pending_bank_type_change` can be passed directly as build_changeset's/
+        sync_library's/commit_changes' `pending_bank_type_change` argument."""
+        return self.bank_type_pending.get(bank)
 
     # -- disaster recovery --------------------------------------------------
 
@@ -450,6 +488,55 @@ def _selftest() -> None:
         # ── clear_all wipes the log ──
         oplog.clear_all()
         check("oplog-clear", list(oplog.replay()) == [])
+
+        # ── pending bank-type change: set/get, survives save/load round trip, then clear ──
+        idx.set_pending_bank_type_change(0x02, True)
+        check("banktype-pending-get", idx.get_pending_bank_type_change(0x02) is True)
+        check("banktype-pending-unset-is-none", idx.get_pending_bank_type_change(0x03) is None)
+        idx.save()
+
+        reloaded_bt = LocalLibraryIndex(root).load()
+        check("banktype-pending-roundtrip", reloaded_bt.get_pending_bank_type_change(0x02) is True)
+        reloaded_bt.clear_pending_bank_type_change(0x02)
+        check("banktype-pending-cleared", reloaded_bt.get_pending_bank_type_change(0x02) is None)
+        reloaded_bt.save()
+        reloaded_bt2 = LocalLibraryIndex(root).load()
+        check("banktype-pending-clear-persists", reloaded_bt2.get_pending_bank_type_change(0x02) is None)
+
+        # ── changeset_sync integration: index.get_pending_bank_type_change passed directly as
+        # build_changeset's `pending_bank_type_change` callable (the exact consumer this field
+        # exists to back) ──
+        import changeset_sync as _csync
+        from librarian_sysex import OBJ_PROGRAM as _OBJ_PROGRAM
+        from session_dependency_clipboard import SessionDependencyClipboard as _Clipboard
+        from pcg_file import WIRE_SIZE_EXI as _WIRE_SIZE_EXI
+
+        bt_hash = blobs.put(bytes(_WIRE_SIZE_EXI))   # EXi-shaped body
+        idx.set_entry(_OBJ_PROGRAM, 0x09, 0, LocalIndexEntry(
+            version=1, baseline_hash=hash_a, current_hash=bt_hash,
+            display_name="BT-Test", created_utc=_now_iso(), modified_utc=_now_iso()))
+        idx.set_bank_digest_baseline(_OBJ_PROGRAM, 0x09, "bt-bankdigest-v1")
+
+        plan_no_stage = _csync.build_changeset(
+            idx, blobs, _Clipboard(),
+            get_live_digest=lambda bk: "bt-bankdigest-v1",
+            resolver=lambda t, b, n: True,
+            get_live_bank_type=lambda bank: False if bank == 0x09 else None,   # live HD-1, body is EXi
+            pending_bank_type_change=idx.get_pending_bank_type_change)
+        check("csync-index-method-mismatch-refuses", plan_no_stage.is_refusable)
+
+        idx.set_pending_bank_type_change(0x09, True)
+        plan_staged = _csync.build_changeset(
+            idx, blobs, _Clipboard(),
+            get_live_digest=lambda bk: "bt-bankdigest-v1",
+            resolver=lambda t, b, n: True,
+            get_live_bank_type=lambda bank: False if bank == 0x09 else None,
+            pending_bank_type_change=idx.get_pending_bank_type_change)
+        check("csync-index-method-staged-not-refusable", not plan_staged.is_refusable)
+        check("csync-index-method-reformat-queued", plan_staged.bank_type_changes == [(0x09, True)])
+
+        idx.clear_pending_bank_type_change(0x09)
+        check("csync-index-method-cleared-after-stage", idx.get_pending_bank_type_change(0x09) is None)
 
     finally:
         if root.exists():
