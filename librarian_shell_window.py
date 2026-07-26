@@ -21,32 +21,71 @@ never directly in Local. Local<->Local and Merge->Local are the only paths that 
 into LocalLibraryIndex directly.
 
 Deliberate simplifications vs the C# source (documented here, not silently dropped, per
-this subsystem's established porting-gap discipline):
-  * Placement is BUTTON-driven, not drag-and-drop. PaneInteraction.cs's drag gestures,
-    same-bank multi-select ranges, and cut/copy/paste clipboard semantics are not ported —
-    each tree supports single-item selection and a small toolbar per pane instead. The
-    task's own brief treats "drag-OR-button-driven" as an acceptable substitute.
-  * Merge -> Local placement is single-item only. The C# "auto-fill sequentially" batch
-    drop (ResolveSequentialFill) is not ported; placing N merge entries takes N button
-    clicks. plan_batch_move exists in librarian_model.py for a future batch-placement pass.
-  * Local -> Merge staging ("Move to Merge Window" from the Local pane, to relocate an
-    object elsewhere via the merge cache) is not implemented — only Local<->Local direct
-    swap (via plan_move) and PCG/Merge -> Local are, matching the task's explicit list of
-    three placement routes.
-  * No live "Object Dependencies" cross-reference panel and no persistent, replay-driven
-    "History" ListBox reading OpLog.replay(). Both are folded into one plain activity log
-    (QPlainTextEdit) fed by this window's own actions. OpLog is still written to on every
-    local mutation (Place/Move/Discard/Delete) — only the READ-side history viewer is cut.
+this subsystem's established porting-gap discipline). This list was revised in a follow-up
+pass that closed several gaps the first pass above used to leave open — see each bullet for
+what changed and what is STILL cut:
+  * Drag-and-drop is now real (a `_PaneTreeWidget` QTreeWidget subclass wires
+    setDragEnabled/AcceptDrops/startDrag/dropEvent, encoding the dragged leaf payloads as
+    JSON over a custom mime type), for all three routes: PCG->Merge, Merge->Local, and
+    Local<->Local. Every drop calls the SAME placement methods the toolbar buttons call
+    (_place_merge_entry_at / _swap_local_at / _pull_pcg_address_into_merge /
+    _run_sequential_fill) — nothing is duplicated. STILL cut: PaneInteraction.cs's Cut/
+    Copy/Paste clipboard (Ctrl+X/C/V) and F2-to-rename keyboard shortcuts, and any custom
+    drag-ghost/insertion-indicator visuals beyond Qt's own default drag cursor. Multi-select
+    (Ctrl/Shift-click) on the Merge and PCG trees comes for free from Qt's
+    ExtendedSelection mode; the Local pane stays single-selection (its own actions —
+    Swap/Erase/Properties — are all inherently single-item).
+  * Merge -> Local (and PCG -> Local, via Merge staging) placement is no longer single-item
+    only: a "Fill Sequentially…" toolbar button on both the Merge and PCG panes, plus
+    dragging a MULTI-selection onto the Local pane, both call librarian_model.py's
+    resolve_sequential_fill() then plan_batch_move() — the same two-stage pipeline the C#
+    source uses for its own sequential auto-fill drop. Dragging a SINGLE item still means
+    "place exactly here" (matches PaneInteraction's own single-vs-multi drag distinction).
+    STILL cut: the persisted BatchClipboard cut/paste history and any UI surface for
+    plan.displaced (a bumped destination occupant is only ever CHECK-warned in the log, via
+    divert_displaced=False, never diverted to a recoverable clipboard slot).
+  * Local -> Merge staging ("Move to Merge Window" from the Local pane) is now implemented
+    as a "Stage for Batch…" button — confirmed from MergePaneViewModel.cs's own PullFromLocal
+    doc comment ("stage a Local Library object, transitively, back into the Merge Window, so
+    it can be rearranged and pushed to a different destination") to be the SAME operation as
+    PullFromPcg, just against a different source. No new merge_cache.py API was needed:
+    MergeCache.pull_recursive() already takes resolve_content/resolve_refs as plain
+    parameters (not hardcoded to PCG), and MergeCache.LOCAL_SOURCE_LABEL already existed for
+    exactly this origin label — composing pull_recursive against a small local-index-backed
+    resolve_content closes this gap with zero changes to merge_cache.py itself.
+  * History and Object Dependencies are now two separate panels (matching
+    LibrarianShellWindow.xaml's own Grid.Row 3, confirmed two side-by-side GroupBoxes, not
+    one combined log): History is a QListWidget seeded at window-open from OpLog.replay()
+    (so it survives closing/reopening the Librarian, unlike the old combined QPlainTextEdit)
+    and then grows with one line per subsequent local mutation, in the SAME plain-English
+    style _log() always used — this is a simpler read-side than the XAML's own
+    Description/Timestamp/IsSynced-bound ListBox template (OpLog's synced_at_utc is never
+    actually written by anything in this subsystem yet, in Python OR C#'s
+    RecordPushSuccesses-equivalent wiring here, so a real "— synced" marker has nothing to
+    key off; tracked as a pre-existing gap, not introduced by this pass). Object Dependencies
+    is a second QListWidget, populated on selection change in ANY of the three trees, walking
+    the selected Combi/Set List's OWN outgoing references RECURSIVELY (Combi timbre refs
+    nest into that Combi's own Program refs, one level; a selected Program contributes
+    nothing, matching the XAML's own tooltip: "every Program/Combi the currently selected
+    Combi(s) or Set List(s) reference, including nested dependencies") — each row marked
+    [OK]/[MISSING] against the resolver appropriate to that pane (Local index, the Merge
+    cache's own already-resolved ref_sites graph, or the loaded PCG plus a Local fallback).
   * Dirty/conflicted/pending-delete visualization is plain QTreeWidgetItem foreground
     color (theme.py tokens), not the XAML's layered Border/DataTrigger Background scheme,
     and there is no separate green/red "dependency completeness" dot — that signal is
     folded into the Properties dialog's own read-out instead of a tree-row glyph.
-  * Rename is supported for Local Library entries only (LocalIndexEntry.display_name,
-    logged as an OpLog "Rename" op — the exact op_kind local_library_store.py's own
-    self-test already exercises). Category/Sub-Category numeric fields (PropertiesDialog's
-    ForProgramOrCombi) and the full Set-List slot editor (ForSetList) are not ported —
-    this local index has no fields for either; they would need a body-level codec this
-    task's scope doesn't cover.
+  * Rename is still supported for Local Library entries only (LocalIndexEntry.display_name,
+    logged as an OpLog "Rename" op). Category/Sub-Category (PropertiesDialog's
+    ForProgramOrCombi) and the Set-List slot list (ForSetList) are now SURFACED — read-only —
+    via the newly-landed object_body.py (parse_program_body/parse_combi_body/
+    parse_setlist_slot) against the selected item's own body bytes, for all three panes
+    (Local/Merge/PCG). STILL cut: editing them back into the body. object_body.py's own
+    module docstring is explicit that it ports only ProgramBody.cs/CombiBody.cs/
+    SetListBody.cs's READ side (no Write*/mutator methods exist there yet to port) — adding
+    a body-level codec that can safely round-trip a category nibble or a slot's name/color/
+    comments back into the wire bytes is real, separate work this UI-layer pass doesn't
+    take on, so a correct read-only display beats a half-wired editable one, per the task's
+    own guidance.
   * The "unresolved dependencies" dialog is reused for two distinct moments, matching the
     two real call sites in the C# source: (a) a blocking, OK-only notice at Sync/Commit
     time (build_changeset's own gate already refuses while the clipboard is non-empty —
@@ -60,6 +99,20 @@ this subsystem's established porting-gap discipline):
     librarian_sysex.py's own module docstring already documents as acceptable ("Program
     version depends on HD-1 vs EXi; both are 5 today"). Fixing this would mean changing
     changeset_sync's already-committed public signature, out of scope for a UI-layer task.
+  * Whole-bank HD-1<->EXi reformat: _get_live_bank_type (new) plugs into
+    changeset_sync.build_changeset's get_live_bank_type parameter the same way
+    _get_live_digest/_get_bank_objects/_write_to_hardware already adapt SysExService for
+    the rest of this pipeline — it derives a bank's live format from an actual Object Dump
+    reply (slot 0's body length against pcg_file.WIRE_SIZE_EXI), since SysExService has no
+    dedicated "query bank format" call. pending_bank_type_change/write_bank_type_change are
+    NOT wired (always None) — staging an intentional bank-type conversion is, by
+    ChangesetBuilder.cs's own design (see changeset_sync.py's module docstring), a distinct
+    UI flow this task's brief explicitly calls out of scope. The practical effect: a real
+    HD-1/EXi mismatch at Sync/Commit time now surfaces as a clear
+    "REFUSE: ... is currently formatted as ..." line in the existing warnings log instead of
+    either silently corrupting a bank or failing with no explanation — which is exactly the
+    "REFUSE case surfaces a clear message" requirement this bullet closes. Reformatting
+    itself remains a future, separate feature.
   * The remote PCG file picker (RemoteFilePickerDialog port) navigates over FTP
     synchronously (blocking the dialog during each directory listing) rather than on a
     background thread — reuses file_manager._FtpWorker directly, no new FTP client. This
@@ -74,6 +127,7 @@ Changes, opening a local .pcg file) are cheap disk/CPU work and run synchronousl
 """
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import threading
@@ -82,27 +136,37 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Callable, Dict, List, Optional, Tuple
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QBrush, QColor
+from PySide6.QtCore import QByteArray, QMimeData, Qt, Signal
+from PySide6.QtGui import QBrush, QColor, QDrag
 from PySide6.QtWidgets import (
-    QComboBox, QDialog, QDialogButtonBox, QFileDialog, QGroupBox, QHBoxLayout,
-    QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit,
+    QAbstractItemView, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QGroupBox,
+    QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
     QPushButton, QSpinBox, QSplitter, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 import dependency_scanner as depscan
 import kronos_sysex as ksx
+import object_body
 from changeset_sync import ChangesetPlan, SyncResult, commit_changes, sync_library
-from librarian_model import LibraryCatalog, ObjLoc, WriteOp, plan_move
+from librarian_model import (
+    BatchPlacement, LibraryCatalog, ObjLoc, SequentialFillItem, WriteOp,
+    plan_batch_move, plan_move, resolve_sequential_fill,
+)
 from librarian_sysex import OBJ_COMBI, OBJ_PROGRAM, OBJ_SET_LIST, OBJ_VERSION, ObjectDump
 from library_pull_pipeline import EDITABLE_BANKS, GetBankObjects, GetLiveDigest, SLOT_COUNT
 from local_library_store import BlobStore, LocalIndexEntry, LocalLibraryIndex, OpLog
 from merge_cache import MergeCache, MergeEntry
-from pcg_file import PcgFile, PcgObjectEntry, open_pcg, wire_body_from_pcg_entry
+from pcg_file import PcgFile, PcgObjectEntry, WIRE_SIZE_EXI, open_pcg, wire_body_from_pcg_entry
 from session_dependency_clipboard import SessionDependencyClipboard, SessionDependencyEntry
 from setlist_data import MAX_COUNT
 from sysex_service import SysExService
 import theme as T
+
+# Custom mime type for the three panes' real (not simulated) drag-and-drop — carries the
+# SAME leaf-payload tuples each tree already stores in Qt.ItemDataRole.UserRole (see
+# _PaneTreeWidget below), so a drop just decodes back into the identical shape
+# _leaf_payload()/_selected_payloads() already understand.
+_DND_MIME = "application/x-kronos-librarian-payload"
 
 _ROOT_LABEL = {OBJ_PROGRAM: "Programs", OBJ_COMBI: "Combis", OBJ_SET_LIST: "Set Lists"}
 _ROOT_ORDER = (OBJ_PROGRAM, OBJ_COMBI, OBJ_SET_LIST)
@@ -194,14 +258,18 @@ def _advance_entry_after_write(existing: Optional[LocalIndexEntry], new_hash: st
 
 
 class _PropertiesDialog(QDialog):
-    """Port of PropertiesDialog's Program/Combi/Set-List "real estate" this
-    subsystem's model layer actually exposes: name, bank/number, dirty/
-    conflicted/pending-delete. Category/Sub-Category and the Set-List slot
-    editor are cut (see module docstring)."""
+    """Port of PropertiesDialog's Program/Combi/Set-List "real estate": name, bank/number,
+    dirty/conflicted/pending-delete, plus (now) a read-only Category/Sub-Category read-out
+    for Programs/Combis and a read-only Set-List slot list — both sourced from object_body.py
+    against the item's own body bytes (see module docstring for why editing them back into
+    the body is still cut). `extra_lines` renders as plain read-only labels (short,
+    fixed-count facts); `list_rows`, if given, renders in a small scrollable QListWidget
+    below them (same "long list" treatment _UnresolvedDependenciesDialog already uses) —
+    used for the Set-List slot summary, which can run to dozens of rows."""
 
     def __init__(self, heading: str, name: str, editable_name: bool,
                  location: str, flag_lines: List[str], extra_lines: List[str],
-                 parent=None):
+                 list_rows: Optional[List[str]] = None, parent=None):
         super().__init__(parent)
         self.setWindowTitle(heading)
         self.setStyleSheet(f"QDialog {{ background-color: {T.BG}; color: {T.TEXT}; }}")
@@ -230,6 +298,15 @@ class _PropertiesDialog(QDialog):
             lbl.setWordWrap(True)
             lbl.setStyleSheet(f"color: {T.TEXT_IDLE}; font-size: {T.FS_SMALL}px;")
             v.addWidget(lbl)
+
+        if list_rows:
+            lst = QListWidget()
+            lst.setStyleSheet(f"QListWidget {{ background: {T.INSET}; color: {T.TEXT}; "
+                              f"border: 1px solid {T.BORDER}; }}")
+            for row in list_rows:
+                lst.addItem(QListWidgetItem(row))
+            lst.setMaximumHeight(220)
+            v.addWidget(lst)
 
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         btns.accepted.connect(self._on_accept)
@@ -381,6 +458,84 @@ class _RemoteFilePickerDialog(QDialog):
         self.accept()
 
 
+class _PaneTreeWidget(QTreeWidget):
+    """QTreeWidget subclass adding REAL drag-and-drop to a Librarian pane, on top of (not
+    instead of) that pane's existing toolbar buttons — every drop this class recognizes is
+    handled by LibrarianShellWindow calling the exact same placement methods the buttons
+    call (see itemsDropped below). `pane` tags every leaf's UserRole payload as the drag
+    SOURCE identity ("local"/"merge"/"pcg" — the same string already stored as payload[0]);
+    `accepts_drop=False` makes a tree drag-SOURCE-only, which is how the PCG pane enforces
+    "strictly read-only" (module docstring) at the widget level, not just by convention.
+
+    Multi-select (Ctrl/Shift-click) comes for free from Qt's own ExtendedSelection mode —
+    set by the caller, not here, since only Merge/PCG need it (Local's own actions are all
+    single-item)."""
+
+    itemsDropped = Signal(str, list, object)   # source_pane, [payload tuples], target QTreeWidgetItem|None
+
+    def __init__(self, pane: str, accepts_drop: bool, parent=None):
+        super().__init__(parent)
+        self._pane = pane
+        self.setDragEnabled(True)
+        self.setAcceptDrops(accepts_drop)
+        self.viewport().setAcceptDrops(accepts_drop)
+        self.setDropIndicatorShown(accepts_drop)
+
+    def leaf_payloads(self) -> List[tuple]:
+        """Every currently-selected item's UserRole payload (skips bank/root nodes, which
+        carry either no payload or a distinct "_bank"-tagged one, not this pane's own leaf
+        tag)."""
+        out: List[tuple] = []
+        for item in self.selectedItems():
+            data = item.data(0, Qt.ItemDataRole.UserRole)
+            if data is not None:
+                out.append(tuple(data))
+        return out
+
+    def startDrag(self, supportedActions) -> None:  # noqa: N802 - Qt override
+        payloads = self.leaf_payloads()
+        if not payloads:
+            return
+        mime = QMimeData()
+        mime.setData(_DND_MIME, QByteArray(
+            json.dumps({"pane": self._pane, "items": payloads}).encode("utf-8")))
+        drag = QDrag(self)
+        drag.setMimeData(mime)
+        drag.exec(Qt.DropAction.CopyAction)
+
+    def dragEnterEvent(self, event) -> None:  # noqa: N802 - Qt override
+        if event.mimeData().hasFormat(_DND_MIME):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event) -> None:  # noqa: N802 - Qt override
+        if event.mimeData().hasFormat(_DND_MIME):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event) -> None:  # noqa: N802 - Qt override
+        mime = event.mimeData()
+        if not mime.hasFormat(_DND_MIME):
+            event.ignore()
+            return
+        try:
+            payload = json.loads(bytes(mime.data(_DND_MIME)).decode("utf-8"))
+            items = [tuple(it) for it in payload.get("items", [])]
+            source_pane = payload.get("pane", "")
+        except Exception:  # pragma: no cover - defensive
+            event.ignore()
+            return
+        try:
+            pos = event.position().toPoint()
+        except AttributeError:  # pragma: no cover - older PySide6/Qt5-style event
+            pos = event.pos()
+        target_item = self.itemAt(pos)
+        event.acceptProposedAction()
+        self.itemsDropped.emit(source_pane, items, target_item)
+
+
 # ── Main window ────────────────────────────────────────────────────────────────
 
 
@@ -421,6 +576,7 @@ class LibrarianShellWindow(QDialog):
         self._merge_pull_done.connect(self._on_merge_pull_done)
         self._progress.connect(self._log)
 
+        self._load_history()
         self._refresh_local_tree()
         self._refresh_merge_tree()
         self._refresh_pcg_tree()
@@ -454,14 +610,10 @@ class LibrarianShellWindow(QDialog):
         panes.setSizes([420, 420, 420])
         root.addWidget(panes, stretch=1)
 
-        self._log_view = QPlainTextEdit()
-        self._log_view.setReadOnly(True)
-        self._log_view.setMaximumBlockCount(2000)
-        self._log_view.setStyleSheet(f"QPlainTextEdit {{ background: {T.INSET}; color: {T.TEXT}; "
-                                     f"border: 1px solid {T.BORDER}; font-family: {T.FONT_MONO}; "
-                                     f"font-size: 12px; }}")
-        root.addWidget(self._log_view, stretch=0)
-        self._log_view.setFixedHeight(140)
+        history_row = QHBoxLayout()
+        history_row.addWidget(self._build_history_pane(), stretch=1)
+        history_row.addWidget(self._build_dependencies_pane(), stretch=1)
+        root.addLayout(history_row)
 
         close_row = QHBoxLayout()
         close_row.addStretch(1)
@@ -486,10 +638,19 @@ class LibrarianShellWindow(QDialog):
         btn_clear = QPushButton("Clear Changes")
         btn_clear.clicked.connect(self._clear_changes)
         row.addWidget(btn_clear)
+        btn_stage = QPushButton("Stage for Batch…")
+        btn_stage.setToolTip("Copy this item (and its dependencies) into the Merge Window, "
+                             "to rearrange and place it somewhere else — confirmed from "
+                             "MergePaneViewModel.cs's PullFromLocal.")
+        btn_stage.clicked.connect(self._stage_local_selected_to_merge)
+        row.addWidget(btn_stage)
         v.addLayout(row)
-        self._tree_local = QTreeWidget()
+        self._tree_local = _PaneTreeWidget("local", accepts_drop=True)
         self._tree_local.setHeaderHidden(True)
         self._tree_local.itemDoubleClicked.connect(lambda *_: self._show_local_properties())
+        self._tree_local.itemSelectionChanged.connect(
+            lambda: self._update_object_dependencies("local", self._tree_local))
+        self._tree_local.itemsDropped.connect(self._on_local_dropped)
         v.addWidget(self._tree_local)
         return box
 
@@ -506,10 +667,20 @@ class LibrarianShellWindow(QDialog):
         btn_clear = QPushButton("Clear Merge")
         btn_clear.clicked.connect(self._clear_merge)
         row.addWidget(btn_clear)
+        btn_fill = QPushButton("Fill Sequentially…")
+        btn_fill.setToolTip("Select two or more staged items of the same type, then pick a "
+                            "starting Local Library slot — placed consecutively from there "
+                            "(librarian_model.resolve_sequential_fill).")
+        btn_fill.clicked.connect(self._fill_sequentially_merge)
+        row.addWidget(btn_fill)
         v.addLayout(row)
-        self._tree_merge = QTreeWidget()
+        self._tree_merge = _PaneTreeWidget("merge", accepts_drop=True)
         self._tree_merge.setHeaderHidden(True)
+        self._tree_merge.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self._tree_merge.itemDoubleClicked.connect(lambda *_: self._show_merge_properties())
+        self._tree_merge.itemSelectionChanged.connect(
+            lambda: self._update_object_dependencies("merge", self._tree_merge))
+        self._tree_merge.itemsDropped.connect(self._on_merge_dropped)
         v.addWidget(self._tree_merge)
         return box
 
@@ -528,20 +699,194 @@ class LibrarianShellWindow(QDialog):
         btn_pull_merge = QPushButton("Pull into Merge Window")
         btn_pull_merge.clicked.connect(self._pull_pcg_selected_into_merge)
         row2.addWidget(btn_pull_merge)
+        btn_fill = QPushButton("Fill Sequentially…")
+        btn_fill.setToolTip("Select two or more PCG items of the same type, then pick a "
+                            "starting Local Library slot — placed consecutively from there.")
+        btn_fill.clicked.connect(self._fill_sequentially_pcg)
+        row2.addWidget(btn_fill)
         v.addLayout(row2)
         self._pcg_status_label = QLabel("No PCG loaded")
         self._pcg_status_label.setStyleSheet(f"color: {T.TEXT_DIM};")
         v.addWidget(self._pcg_status_label)
-        self._tree_pcg = QTreeWidget()
+        self._tree_pcg = _PaneTreeWidget("pcg", accepts_drop=False)
         self._tree_pcg.setHeaderHidden(True)
+        self._tree_pcg.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self._tree_pcg.itemDoubleClicked.connect(lambda *_: self._show_pcg_properties())
+        self._tree_pcg.itemSelectionChanged.connect(
+            lambda: self._update_object_dependencies("pcg", self._tree_pcg))
         v.addWidget(self._tree_pcg)
         return box
 
-    # ── Logging ──────────────────────────────────────────────────────────────
+    def _build_history_pane(self) -> QWidget:
+        box = QGroupBox("History")
+        box.setFixedHeight(180)
+        v = QVBoxLayout(box)
+        btn_clear = QPushButton("Clear History")
+        btn_clear.clicked.connect(self._clear_history)
+        v.addWidget(btn_clear, alignment=Qt.AlignmentFlag.AlignLeft)
+        self._history_list = QListWidget()
+        self._history_list.setStyleSheet(f"QListWidget {{ background: {T.INSET}; color: {T.TEXT}; "
+                                         f"border: 1px solid {T.BORDER}; font-size: 11px; }}")
+        v.addWidget(self._history_list)
+        return box
+
+    def _build_dependencies_pane(self) -> QWidget:
+        box = QGroupBox("Object Dependencies")
+        box.setToolTip("Every Program/Combi the currently selected Combi(s) or Set List(s) "
+                       "reference, including nested dependencies.")
+        box.setFixedHeight(180)
+        v = QVBoxLayout(box)
+        self._deps_list = QListWidget()
+        self._deps_list.setStyleSheet(f"QListWidget {{ background: {T.INSET}; color: {T.TEXT}; "
+                                      f"border: 1px solid {T.BORDER}; font-size: 11px; }}")
+        v.addWidget(self._deps_list)
+        return box
+
+    # ── Logging / History / Object Dependencies ──────────────────────────────
 
     def _log(self, text: str) -> None:
-        self._log_view.appendPlainText(text)
+        """Appends one session-only note to the History panel — used for everything that
+        ISN'T itself a discrete local mutation (Sync/Commit progress, pull/placement
+        summaries, plan preview/warning lines). NOT written to OpLog, so — unlike the rows
+        _load_history() seeds from OpLog.replay() at window-open — a note logged here won't
+        reappear after closing and reopening the Librarian. Dimmed so it visually reads as
+        ephemeral next to the permanent, OpLog-backed history (see module docstring)."""
+        item = QListWidgetItem(text)
+        item.setForeground(QBrush(QColor(T.TEXT_DIM)))
+        self._history_list.addItem(item)
+        self._history_list.scrollToBottom()
+
+    def _load_history(self) -> None:
+        """Seeds the History panel from OpLog.replay() at window-open — the persisted,
+        authoritative audit trail (see module docstring for why this isn't a live re-render
+        of the file on every mutation: this window is the only writer to its own OpLog
+        instance during a session, so appending one line per _oplog.append() call, the same
+        way _log() already does, stays in sync without re-reading the file)."""
+        for op in self._oplog.replay():
+            desc = op.get("description") or op.get("op_kind", "")
+            ts = op.get("timestamp_utc", "")
+            self._history_list.addItem(QListWidgetItem(f"{desc}  [{ts}]"))
+        self._history_list.scrollToBottom()
+
+    def _clear_history(self) -> None:
+        """Port of the XAML's "Clear History" button — permanently deletes the on-disk
+        audit log. OpLog (local_library_store.py) has no delete/truncate method of its own
+        (by design: it's meant to be append-only, write-ahead), so this reaches into its
+        public `root` attribute to remove oplog.jsonl directly rather than adding a mutator
+        method to that module for a UI-only action. Does not touch the local library index,
+        pending edits, or hardware — matches the XAML tooltip exactly."""
+        if QMessageBox.question(self, "Clear History", "Permanently delete the local audit "
+                               "log? This does not affect your local library, pending "
+                               "edits, or hardware.") != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            path = self._oplog.root / "oplog.jsonl"
+            if path.exists():
+                path.unlink()
+        except OSError as e:
+            QMessageBox.warning(self, "Clear History", f"Could not delete the audit log: {e}")
+            return
+        self._history_list.clear()
+        self._log("History cleared.")
+
+    def _update_object_dependencies(self, pane: str, tree: QTreeWidget) -> None:
+        self._deps_list.clear()
+        payloads = [p for p in self._selected_payloads(tree) if p[0] == pane]
+        for row in self._compute_dependency_rows(pane, payloads):
+            self._deps_list.addItem(QListWidgetItem(row))
+
+    @staticmethod
+    def _selected_payloads(tree: QTreeWidget) -> List[tuple]:
+        out: List[tuple] = []
+        for item in tree.selectedItems():
+            data = item.data(0, Qt.ItemDataRole.UserRole)
+            if data is not None:
+                out.append(tuple(data))
+        return out
+
+    def _compute_dependency_rows(self, pane: str, payloads: List[tuple]) -> List[str]:
+        rows: List[str] = []
+        for p in payloads:
+            if pane == "local":
+                _, obj_type, bank, number = p
+                if obj_type not in (OBJ_COMBI, OBJ_SET_LIST):
+                    continue
+                entry = self._index.get(obj_type, bank, number)
+                if entry is None:
+                    continue
+                body = self._blobs.get(entry.current_hash)
+                if body is None:
+                    continue
+                rows.append(f"── {ObjLoc(obj_type, bank, number).label()} ──")
+                rows.extend(self._walk_local_deps(obj_type, body, 1, set()))
+            elif pane == "merge":
+                entry = self._merge.try_get(p[1])
+                if entry is None or entry.obj_type not in (OBJ_COMBI, OBJ_SET_LIST):
+                    continue
+                rows.append(f"── {entry.display_name or entry.content_hash[:8]} ──")
+                rows.extend(self._walk_merge_deps(entry, 1, set()))
+            elif pane == "pcg":
+                _, obj_type, bank, number = p
+                if obj_type not in (OBJ_COMBI, OBJ_SET_LIST):
+                    continue
+                e = self._pcg_by_addr.get((obj_type, bank, number))
+                if e is None:
+                    continue
+                body = self._pcg_resolve_content(obj_type, bank, number)
+                if body is None:
+                    continue
+                rows.append(f"── {ObjLoc(obj_type, bank, number).label()} ──")
+                rows.extend(self._walk_pcg_deps(obj_type, body, 1, set()))
+        return rows
+
+    def _walk_local_deps(self, obj_type: int, body: bytes, depth: int,
+                         visited: set) -> List[str]:
+        indent = "  " * depth
+        rows: List[str] = []
+        for ref in depscan.walk_object_references(obj_type, body):
+            present = self._local_resolver(ref.ref.obj_type, ref.ref.bank, ref.ref.number)
+            rows.append(f"{indent}{ref.ref_kind}: {ref.ref.label()}  "
+                       f"[{'OK' if present else 'MISSING'}]")
+            key = (ref.ref.obj_type, ref.ref.bank, ref.ref.number)
+            if present and ref.ref.obj_type == OBJ_COMBI and key not in visited:
+                visited.add(key)
+                sub_entry = self._index.get(*key)
+                sub_body = self._blobs.get(sub_entry.current_hash) if sub_entry else None
+                if sub_body is not None:
+                    rows.extend(self._walk_local_deps(OBJ_COMBI, sub_body, depth + 1, visited))
+        return rows
+
+    def _walk_merge_deps(self, entry: MergeEntry, depth: int, visited: set) -> List[str]:
+        indent = "  " * depth
+        rows: List[str] = []
+        for site in entry.ref_sites:
+            loc = ObjLoc(*site.target_address)
+            if site.resolved_content_hash is None:
+                rows.append(f"{indent}{loc.label()}  [MISSING]")
+                continue
+            dep = self._merge.try_get(site.resolved_content_hash)
+            name = dep.display_name if dep is not None else loc.label()
+            rows.append(f"{indent}{loc.label()}: {name}  [OK]")
+            if dep is not None and dep.obj_type == OBJ_COMBI and dep.content_hash not in visited:
+                visited.add(dep.content_hash)
+                rows.extend(self._walk_merge_deps(dep, depth + 1, visited))
+        return rows
+
+    def _walk_pcg_deps(self, obj_type: int, body: bytes, depth: int, visited: set) -> List[str]:
+        indent = "  " * depth
+        rows: List[str] = []
+        for ref in depscan.walk_object_references(obj_type, body):
+            key = (ref.ref.obj_type, ref.ref.bank, ref.ref.number)
+            in_pcg = key in self._pcg_by_addr
+            present_locally = self._local_resolver(*key)
+            marker = "in PCG" if in_pcg else ("in Local" if present_locally else "MISSING")
+            rows.append(f"{indent}{ref.ref_kind}: {ref.ref.label()}  [{marker}]")
+            if in_pcg and ref.ref.obj_type == OBJ_COMBI and key not in visited:
+                visited.add(key)
+                sub_body = self._pcg_resolve_content(*key)
+                if sub_body is not None:
+                    rows.extend(self._walk_pcg_deps(OBJ_COMBI, sub_body, depth + 1, visited))
+        return rows
 
     # ── Tree population (Qt glue over the pure _group_* helpers) ────────────
 
@@ -558,6 +903,7 @@ class LibrarianShellWindow(QDialog):
         expanded = {tree.topLevelItem(i).text(0) for i in range(tree.topLevelItemCount())
                     if tree.topLevelItem(i).isExpanded()}
         tree.clear()
+        self._deps_list.clear()
         groups = _group_local(self._index.entries)
         for obj_type in _ROOT_ORDER:
             root = QTreeWidgetItem([_ROOT_LABEL[obj_type]])
@@ -569,6 +915,10 @@ class LibrarianShellWindow(QDialog):
                     parent = root
                 else:
                     parent = QTreeWidgetItem([_bank_label(obj_type, bank)])
+                    # Tagged (distinct from a leaf's "local" tag) so a drag drop onto a whole
+                    # bank — no specific slot — can still resolve a destination bank for
+                    # _find_first_free_slot (see _handle_merge_to_local_drop).
+                    parent.setData(0, Qt.ItemDataRole.UserRole, ("local_bank", obj_type, bank))
                     root.addChild(parent)
                 for number, key, entry in items:
                     suffix = ""
@@ -588,6 +938,7 @@ class LibrarianShellWindow(QDialog):
     def _refresh_merge_tree(self) -> None:
         tree = self._tree_merge
         tree.clear()
+        self._deps_list.clear()
         groups = _group_merge(self._merge.entries)
         for obj_type in _ROOT_ORDER:
             entries = groups.get(obj_type, [])
@@ -609,6 +960,7 @@ class LibrarianShellWindow(QDialog):
     def _refresh_pcg_tree(self) -> None:
         tree = self._tree_pcg
         tree.clear()
+        self._deps_list.clear()
         objects = self._pcg.objects if self._pcg is not None else []
         self._pcg_by_addr = {}
         groups = _group_pcg(objects)
@@ -652,6 +1004,67 @@ class LibrarianShellWindow(QDialog):
     def _local_resolver(self, obj_type: int, bank: int, number: int) -> bool:
         return self._index.get(obj_type, bank, number) is not None
 
+    _SETLIST_SLOT_TYPE_LABEL = {0: "Combi", 1: "Program", 2: "Song"}
+
+    def _object_body_readout(self, obj_type: int, body: Optional[bytes]
+                             ) -> Tuple[List[str], Optional[List[str]]]:
+        """Wires object_body.py's parse_program_body/parse_combi_body/parse_setlist_slot
+        into the Properties dialog's existing (extra_lines, list_rows) shapes — Category/
+        Sub-Category as a plain fact line (Program/Combi), or the Set List's own slot
+        summary as a scrollable list (Set List). Read-only (see module docstring for why);
+        returns ([], None) for a missing body or an unsupported obj_type (Set-List has no
+        Category concept of its own)."""
+        if body is None:
+            return [], None
+        if obj_type == OBJ_PROGRAM:
+            info = object_body.parse_program_body(body)
+            return [f"Category: {info.category}   Sub-Category: {info.sub_category}"], None
+        if obj_type == OBJ_COMBI:
+            info = object_body.parse_combi_body(body)
+            return [f"Category: {info.category}   Sub-Category: {info.sub_category}"], None
+        if obj_type == OBJ_SET_LIST:
+            return [], self._setlist_slot_rows(body)
+        return [], None
+
+    def _setlist_slot_rows(self, body: bytes) -> List[str]:
+        rows: List[str] = []
+        for i in range(object_body.SLOT_COUNT):
+            slot = object_body.parse_setlist_slot(body, i)
+            if slot is None:
+                break
+            if slot.is_empty:
+                continue
+            type_label = self._SETLIST_SLOT_TYPE_LABEL.get(slot.type, str(slot.type))
+            rows.append(f"{slot.number:03d}  {slot.name}   [{type_label}  bank={slot.bank} "
+                       f"idx={slot.index}  color={slot.color}  hold={slot.hold_time}  "
+                       f"vol={slot.volume}]" + (f"  — {slot.comments}" if slot.comments else ""))
+        return rows
+
+    def _local_bank_type_of(self, bank: int) -> Optional[bool]:
+        """Program HD-1/EXi lookup for librarian_model.py's bank_type_of convention
+        (True=EXi/False=HD-1/None=unverifiable) — derived from whatever's already locally
+        indexed in that bank (LocalIndexEntry.is_exi), since this UI layer has no live
+        per-bank format query of its own beyond _get_live_bank_type's single-slot dump
+        (which is Sync/Commit-time only, not meant to be polled for planning UI)."""
+        for key, entry in self._index.entries.items():
+            obj_type, b, _ = _parse_key(key)
+            if obj_type == OBJ_PROGRAM and b == bank:
+                return entry.is_exi
+        return None
+
+    def _find_first_free_slot(self, obj_type: int, bank: int) -> int:
+        limit = MAX_COUNT if obj_type == OBJ_SET_LIST else 128
+        for i in range(limit):
+            if self._index.get(obj_type, bank, i) is None:
+                return i
+        return 0
+
+    def _local_resolve_content(self, obj_type: int, bank: int, number: int) -> Optional[bytes]:
+        entry = self._index.get(obj_type, bank, number)
+        if entry is None:
+            return None
+        return self._blobs.get(entry.current_hash)
+
     # ── Local pane actions ───────────────────────────────────────────────────
 
     def _show_local_properties(self) -> None:
@@ -665,9 +1078,11 @@ class LibrarianShellWindow(QDialog):
         loc = ObjLoc(obj_type, bank, number)
         flags = [f"Dirty: {entry.is_dirty}", f"Conflicted: {entry.conflicted}",
                  f"Pending delete: {entry.pending_delete}"]
+        extra_lines, list_rows = self._object_body_readout(obj_type, self._blobs.get(entry.current_hash))
         dlg = _PropertiesDialog(f"Properties — {loc.label()}", entry.display_name,
                                 editable_name=True, location=f"Location: {loc.label()}",
-                                flag_lines=flags, extra_lines=[], parent=self)
+                                flag_lines=flags, extra_lines=extra_lines, list_rows=list_rows,
+                                parent=self)
         if dlg.exec() == QDialog.DialogCode.Accepted and dlg.new_name and dlg.new_name != entry.display_name:
             old_name = entry.display_name
             entry.display_name = dlg.new_name
@@ -735,8 +1150,7 @@ class LibrarianShellWindow(QDialog):
             self._log("Select exactly one Local Library item to swap.")
             return
         _, obj_type, bank, number = payload
-        src_entry = self._index.get(obj_type, bank, number)
-        if src_entry is None:
+        if self._index.get(obj_type, bank, number) is None:
             return
         src = ObjLoc(obj_type, bank, number)
 
@@ -744,11 +1158,20 @@ class LibrarianShellWindow(QDialog):
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         dst_bank, dst_number = dlg.selected()
-        dst = ObjLoc(obj_type, dst_bank, dst_number)
+        self._swap_local_at(src, ObjLoc(obj_type, dst_bank, dst_number))
+
+    def _swap_local_at(self, src: ObjLoc, dst: ObjLoc) -> None:
+        """The actual Local<->Local swap — factored out of _swap_local_selected so the
+        Local pane's drag-drop handler (_handle_local_to_local_drop) can call the exact
+        same logic with a drop-computed destination instead of a dialog-chosen one."""
+        src_entry = self._index.get(src.obj_type, src.bank, src.number)
+        if src_entry is None:
+            self._log(f"Swap aborted: no local content at {src.label()}.")
+            return
         if src == dst:
             self._log("Source and destination are the same location.")
             return
-        dst_entry = self._index.get(obj_type, dst_bank, dst_number)
+        dst_entry = self._index.get(dst.obj_type, dst.bank, dst.number)
         if dst_entry is None:
             QMessageBox.information(self, "Swap", f"{dst.label()} has no local content yet — "
                                     "place something there first (e.g. from the Merge Window) "
@@ -761,8 +1184,8 @@ class LibrarianShellWindow(QDialog):
             return
 
         catalog = self._build_local_catalog()
-        src_dump = ObjectDump(obj_type, bank, number, src_entry.version, src_body)
-        dst_dump = ObjectDump(obj_type, dst_bank, dst_number, dst_entry.version, dst_body)
+        src_dump = ObjectDump(src.obj_type, src.bank, src.number, src_entry.version, src_body)
+        dst_dump = ObjectDump(dst.obj_type, dst.bank, dst.number, dst_entry.version, dst_body)
         plan = plan_move(catalog, src, src_dump, dst, dst_dump)
         for line in plan.preview:
             self._log("  " + line)
@@ -790,6 +1213,26 @@ class LibrarianShellWindow(QDialog):
         self._index.save()
         self._log(f"Swapped {src.label()} <-> {dst.label()} (staged locally, pending Sync/Commit).")
         self._refresh_local_tree()
+
+    def _stage_local_selected_to_merge(self) -> None:
+        """Requirement 2 / MergePaneViewModel.cs's PullFromLocal — stage a Local Library
+        object (and its dependencies, transitively) back into the Merge Window so it can be
+        rearranged and pushed to a different destination. Composes MergeCache's existing
+        pull_recursive against a LOCAL resolve_content/source instead of a PCG one — no new
+        merge_cache.py API needed (see module docstring)."""
+        payload = self._leaf_payload(self._tree_local)
+        if payload is None or payload[0] != "local":
+            self._log("Select exactly one Local Library item to stage for a batch placement.")
+            return
+        _, obj_type, bank, number = payload
+        added, gaps = self._merge.pull_recursive(
+            (obj_type, bank, number), self._local_resolve_content, self._resolve_refs,
+            source=MergeCache.LOCAL_SOURCE_LABEL)
+        self._log(f"Staged into Merge Window: {len(added)} new item(s), {len(gaps)} unresolved "
+                 f"reference(s).")
+        for addr, kind in gaps:
+            self._log(f"  gap: obj {addr[0]:02X} bank {addr[1]:02X} idx {addr[2]} ({kind})")
+        self._refresh_merge_tree()
 
     def _clear_changes(self) -> None:
         targets = []
@@ -828,10 +1271,12 @@ class LibrarianShellWindow(QDialog):
                  f"Referenced by {len(entry.referenced_by)} other staged item(s)"
                  if entry.referenced_by else "Not referenced by anything else staged.",
                  "Unresolved dependencies." if entry.has_unresolved_dependencies else "All dependencies resolved."]
+        obj_extra, list_rows = self._object_body_readout(entry.obj_type, entry.body)
         dlg = _PropertiesDialog(f"Merge entry — {entry.display_name or entry.content_hash[:8]}",
                                 entry.display_name, editable_name=False,
                                 location=f"Type: {_ROOT_LABEL.get(entry.obj_type, str(entry.obj_type))}",
-                                flag_lines=[], extra_lines=extra, parent=self)
+                                flag_lines=[], extra_lines=extra + obj_extra, list_rows=list_rows,
+                                parent=self)
         dlg.exec()
 
     def _place_merge_selected(self) -> None:
@@ -847,6 +1292,13 @@ class LibrarianShellWindow(QDialog):
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         dst_bank, dst_number = dlg.selected()
+        self._place_merge_entry_at(entry, dst_bank, dst_number)
+
+    def _place_merge_entry_at(self, entry: MergeEntry, dst_bank: int, dst_number: int) -> None:
+        """The actual Merge->Local single-item placement — factored out of
+        _place_merge_selected so the Merge pane's drag-drop handler
+        (_handle_merge_to_local_drop) can call the exact same logic with a drop-computed
+        destination instead of a dialog-chosen one."""
         dst = ObjLoc(entry.obj_type, dst_bank, dst_number)
 
         missing = []
@@ -889,12 +1341,128 @@ class LibrarianShellWindow(QDialog):
         self._refresh_merge_tree()
 
     def _remove_merge_selected(self) -> None:
-        payload = self._leaf_payload(self._tree_merge)
-        if payload is None or payload[0] != "merge":
+        payloads = [p for p in self._selected_payloads(self._tree_merge) if p[0] == "merge"]
+        if not payloads:
+            self._log("Select one or more Merge Window items to remove.")
             return
-        self._merge.remove(payload[1])
-        self._log("Removed item from the Merge Window.")
+        removed = sum(1 for p in payloads if self._merge.remove(p[1]))
+        self._log("Removed item from the Merge Window." if removed == 1
+                 else f"Removed {removed} item(s) from the Merge Window.")
         self._refresh_merge_tree()
+
+    # ── Sequential fill (requirement 5) + Merge/PCG drag-drop shared core ────
+
+    def _seq_item_from_merge(self, entry: MergeEntry) -> SequentialFillItem:
+        addr = entry.origins[0].address if entry.origins else (entry.obj_type, 0, 0)
+        origin = ObjLoc(entry.obj_type, addr[1], addr[2])
+        dump = ObjectDump(entry.obj_type, origin.bank, origin.number, entry.version, entry.body)
+        label = entry.display_name or entry.content_hash[:8]
+        return SequentialFillItem(origin, dump, label)
+
+    def _seq_item_from_pcg(self, obj_type: int, bank: int, index: int) -> Optional[SequentialFillItem]:
+        e = self._pcg_by_addr.get((obj_type, bank, index))
+        if e is None:
+            return None
+        body = self._pcg_resolve_content(obj_type, bank, index)
+        if body is None:
+            return None
+        origin = ObjLoc(obj_type, bank, index)
+        dump = ObjectDump(obj_type, bank, index, OBJ_VERSION.get(obj_type, 0), body)
+        label = e.name or origin.label()
+        return SequentialFillItem(origin, dump, label)
+
+    def _dest_occupants_for(self, placements: List[BatchPlacement]) -> Dict[ObjLoc, ObjectDump]:
+        out: Dict[ObjLoc, ObjectDump] = {}
+        for p in placements:
+            entry = self._index.get(p.dst.obj_type, p.dst.bank, p.dst.number)
+            if entry is None:
+                continue
+            body = self._blobs.get(entry.current_hash)
+            if body is None:
+                continue
+            out[p.dst] = ObjectDump(p.dst.obj_type, p.dst.bank, p.dst.number, entry.version, body)
+        return out
+
+    def _run_sequential_fill(self, seq_items: List[SequentialFillItem], obj_type: int,
+                             dest_bank: int, start_slot: int,
+                             hash_by_label: Optional[Dict[str, str]] = None) -> None:
+        """Port of resolve_sequential_fill() -> plan_batch_move(), the pipeline behind both
+        the "Fill Sequentially…" toolbar buttons and a multi-item Merge->Local drag. Shared
+        so neither path duplicates the other's placement logic. `hash_by_label` maps a
+        placed item's label back to its Merge content hash (empty/None for PCG sources,
+        which have nothing to remove from a cache)."""
+        hash_by_label = hash_by_label or {}
+        placed, pending = resolve_sequential_fill(seq_items, obj_type, dest_bank, start_slot,
+                                                   bank_type_of=self._local_bank_type_of)
+        if not placed:
+            self._log("Fill Sequentially: nothing placeable.")
+            for it, reason in pending:
+                self._log(f"  pending: {it.describe()} — {reason}")
+            return
+
+        catalog = self._build_local_catalog()
+        occupants = self._dest_occupants_for(placed)
+        plan = plan_batch_move(catalog, obj_type, placed, occupants, divert_displaced=False,
+                               bank_type_of=self._local_bank_type_of)
+        for line in plan.preview:
+            self._log("  " + line)
+        for w in plan.warnings:
+            self._log("  ! " + w)
+        if plan.is_refusable:
+            self._log("Fill Sequentially refused (see warnings above).")
+            return
+
+        now = _now_iso()
+        label_by_dst = {p.dst: p.label for p in placed}
+        targets = []
+        for w in plan.writes:
+            key = LocalLibraryIndex.key(w.obj, w.bank, w.index)
+            existing = self._index.entries.get(key)
+            new_hash = self._blobs.put(w.body)
+            dst_loc = ObjLoc(w.obj, w.bank, w.index)
+            name = label_by_dst.get(dst_loc) or ksx._ascii_trim(w.body, 0, 24)
+            new_entry = _advance_entry_after_write(existing, new_hash, name, w.version, now)
+            self._index.set_entry(w.obj, w.bank, w.index, new_entry)
+            targets.append({"obj_type": w.obj, "bank": w.bank, "number": w.index, "result_hash": new_hash})
+
+        self._oplog.append({
+            "id": str(uuid.uuid4()), "timestamp_utc": now, "op_kind": "Place",
+            "targets": targets,
+            "description": f"Filled {len(placed)} item(s) sequentially starting at "
+                           f"{ObjLoc(obj_type, dest_bank, start_slot).label()}",
+            "sync_batch_id": None, "synced_at_utc": None,
+        })
+        self._index.save()
+
+        for p in placed:
+            h = hash_by_label.get(p.label)
+            if h is not None:
+                self._merge.mark_placed(h, (p.dst.obj_type, p.dst.bank, p.dst.number))
+                self._merge.remove(h)
+
+        self._log(f"Fill Sequentially: placed {len(placed)} item(s), {len(pending)} left pending.")
+        for it, reason in pending:
+            self._log(f"  pending: {it.describe()} — {reason}")
+        self._refresh_local_tree()
+        self._refresh_merge_tree()
+
+    def _fill_sequentially_merge(self) -> None:
+        payloads = [p for p in self._selected_payloads(self._tree_merge) if p[0] == "merge"]
+        entries = [e for e in (self._merge.try_get(p[1]) for p in payloads) if e is not None]
+        if not entries:
+            self._log("Select one or more Merge Window items to fill sequentially.")
+            return
+        obj_type = entries[0].obj_type
+        if any(e.obj_type != obj_type for e in entries):
+            self._log("Fill Sequentially: all selected items must be the same object type.")
+            return
+        dlg = _DestinationDialog(obj_type, "Fill Sequentially starting at…", self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        dest_bank, start_slot = dlg.selected()
+        seq_items = [self._seq_item_from_merge(e) for e in entries]
+        hash_by_label = {it.label: e.content_hash for it, e in zip(seq_items, entries)}
+        self._run_sequential_fill(seq_items, obj_type, dest_bank, start_slot, hash_by_label)
 
     def _clear_merge(self) -> None:
         if not self._merge.entries:
@@ -986,7 +1554,12 @@ class LibrarianShellWindow(QDialog):
             self._log("Select exactly one PCG item to pull into the Merge Window.")
             return
         _, obj_type, bank, number = payload
-        address = (obj_type, bank, number)
+        self._pull_pcg_address_into_merge((obj_type, bank, number))
+
+    def _pull_pcg_address_into_merge(self, address: Tuple[int, int, int]) -> None:
+        """The actual PCG->Merge pull — factored out of _pull_pcg_selected_into_merge so
+        the PCG pane's drag-drop handler (a PCG leaf dropped onto the Merge tree,
+        _on_merge_dropped) can call the exact same logic for each dragged item."""
         added, gaps = self._merge.pull_recursive(address, self._pcg_resolve_content, self._resolve_refs,
                                                  source=self._pcg_source_label or "PCG")
         self._log(f"Pulled into Merge Window: {len(added)} new item(s), {len(gaps)} unresolved "
@@ -994,6 +1567,26 @@ class LibrarianShellWindow(QDialog):
         for addr, kind in gaps:
             self._log(f"  gap: obj {addr[0]:02X} bank {addr[1]:02X} idx {addr[2]} ({kind})")
         self._refresh_merge_tree()
+
+    def _fill_sequentially_pcg(self) -> None:
+        payloads = [p for p in self._selected_payloads(self._tree_pcg) if p[0] == "pcg"]
+        if not payloads:
+            self._log("Select one or more PCG items to fill sequentially.")
+            return
+        obj_type = payloads[0][1]
+        if any(p[1] != obj_type for p in payloads):
+            self._log("Fill Sequentially: all selected items must be the same object type.")
+            return
+        seq_items = [it for it in (self._seq_item_from_pcg(p[1], p[2], p[3]) for p in payloads)
+                    if it is not None]
+        if not seq_items:
+            self._log("Fill Sequentially: nothing resolvable from the selected PCG items.")
+            return
+        dlg = _DestinationDialog(obj_type, "Fill Sequentially starting at…", self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        dest_bank, start_slot = dlg.selected()
+        self._run_sequential_fill(seq_items, obj_type, dest_bank, start_slot)
 
     def _show_pcg_properties(self) -> None:
         payload = self._leaf_payload(self._tree_pcg)
@@ -1005,10 +1598,86 @@ class LibrarianShellWindow(QDialog):
             return
         loc = ObjLoc(obj_type, bank, number)
         extra = [f"is_exi: {e.is_exi}"] if obj_type == OBJ_PROGRAM else []
+        body = self._pcg_resolve_content(obj_type, bank, number)
+        obj_extra, list_rows = self._object_body_readout(obj_type, body)
         dlg = _PropertiesDialog(f"PCG object — {loc.label()}", e.name, editable_name=False,
-                                location=f"Location: {loc.label()}", flag_lines=[], extra_lines=extra,
-                                parent=self)
+                                location=f"Location: {loc.label()}", flag_lines=[],
+                                extra_lines=extra + obj_extra, list_rows=list_rows, parent=self)
         dlg.exec()
+
+    # ── Drag-and-drop routing (real gestures, same placement methods as the buttons) ──
+
+    def _on_local_dropped(self, source_pane: str, items: List[tuple],
+                          target_item: Optional[QTreeWidgetItem]) -> None:
+        if source_pane == "merge":
+            self._handle_merge_to_local_drop(items, target_item)
+        elif source_pane == "local":
+            self._handle_local_to_local_drop(items, target_item)
+        else:
+            self._log("The Local Library pane only accepts drops from the Merge Window or itself.")
+
+    def _handle_local_to_local_drop(self, items: List[tuple],
+                                    target_item: Optional[QTreeWidgetItem]) -> None:
+        locals_only = [it for it in items if it and it[0] == "local"]
+        if len(locals_only) != 1:
+            self._log("Drag exactly one Local Library item onto another to swap them.")
+            return
+        _, obj_type, bank, number = locals_only[0]
+        target_payload = target_item.data(0, Qt.ItemDataRole.UserRole) if target_item is not None else None
+        if target_payload is None or target_payload[0] != "local":
+            self._log("Drop directly onto another Local Library slot to swap.")
+            return
+        _, t_obj_type, t_bank, t_number = target_payload
+        self._swap_local_at(ObjLoc(obj_type, bank, number), ObjLoc(t_obj_type, t_bank, t_number))
+
+    def _handle_merge_to_local_drop(self, items: List[tuple],
+                                    target_item: Optional[QTreeWidgetItem]) -> None:
+        hashes = [it[1] for it in items if it and it[0] == "merge"]
+        entries = [e for e in (self._merge.try_get(h) for h in hashes) if e is not None]
+        if not entries:
+            self._log("Drag one or more Merge Window items onto the Local Library pane to place them.")
+            return
+        obj_type = entries[0].obj_type
+        if any(e.obj_type != obj_type for e in entries):
+            self._log("Drop refused: all dragged items must be the same object type.")
+            return
+
+        target_payload = target_item.data(0, Qt.ItemDataRole.UserRole) if target_item is not None else None
+        if target_payload is not None and target_payload[0] == "local":
+            _, t_obj_type, t_bank, t_number = target_payload
+            if t_obj_type != obj_type:
+                self._log("Drop refused: target slot is a different object type.")
+                return
+            dst_bank, dst_number = t_bank, t_number
+        elif target_payload is not None and target_payload[0] == "local_bank":
+            _, t_obj_type, t_bank = target_payload
+            if t_obj_type != obj_type:
+                self._log("Drop refused: target bank is a different object type.")
+                return
+            dst_bank = t_bank
+            dst_number = self._find_first_free_slot(obj_type, t_bank)
+        else:
+            self._log("Drop onto a specific Local Library slot or bank.")
+            return
+
+        if len(entries) == 1:
+            # Single item: "place exactly here" (PaneInteraction.cs's own single-vs-multi
+            # drag distinction — see module docstring).
+            self._place_merge_entry_at(entries[0], dst_bank, dst_number)
+        else:
+            # Multi-select: auto-fill sequentially starting at the drop target.
+            seq_items = [self._seq_item_from_merge(e) for e in entries]
+            hash_by_label = {it.label: e.content_hash for it, e in zip(seq_items, entries)}
+            self._run_sequential_fill(seq_items, obj_type, dst_bank, dst_number, hash_by_label)
+
+    def _on_merge_dropped(self, source_pane: str, items: List[tuple],
+                         target_item: Optional[QTreeWidgetItem]) -> None:
+        if source_pane != "pcg":
+            self._log("The Merge Window only accepts drops from the PCG pane.")
+            return
+        for it in items:
+            if it and it[0] == "pcg":
+                self._pull_pcg_address_into_merge((it[1], it[2], it[3]))
 
     # ── Sync / Commit ────────────────────────────────────────────────────────
 
@@ -1071,6 +1740,24 @@ class LibrarianShellWindow(QDialog):
         rc2 = self._service.store_bank(obj_type, bank)
         return rc2 == 0
 
+    def _get_live_bank_type(self, bank: int) -> Optional[bool]:
+        """changeset_sync.build_changeset's get_live_bank_type adapter — same "adapt
+        SysExService for this pipeline" role _get_live_digest/_get_bank_objects/
+        _write_to_hardware already play. SysExService has no dedicated bank-format query
+        (no 0x7C read side), so this derives the live format from an actual Object Dump:
+        slot 0's reply body length is deterministically WIRE_SIZE_EXI or WIRE_SIZE_HD1
+        (pcg_file.py's own convention, the same one library_pull_pipeline/plan_batch_move
+        already rely on). None (unverifiable) if the dump fails or times out — matches
+        build_changeset's own "non-blocking when unverifiable" contract. See module
+        docstring for why pending_bank_type_change/write_bank_type_change stay unwired
+        (no staged-conversion UI in this pass) — this adapter's only job is making the
+        REFUSE-on-mismatch path (Step 3.5b) surface a real, not-guessed answer instead of
+        never firing at all."""
+        d = self._service.dump_object_parsed(OBJ_PROGRAM, bank, 0, no_response_ms=3000)
+        if d is None:
+            return None
+        return len(d.body) == WIRE_SIZE_EXI
+
     def _start_sync(self) -> None:
         if self._busy or not self._require_connected():
             return
@@ -1096,13 +1783,15 @@ class LibrarianShellWindow(QDialog):
                     self._index, self._blobs, self._clipboard,
                     get_live_digest=self._get_live_digest, get_bank_objects=self._get_bank_objects,
                     resolver=self._local_resolver, write_to_hardware=self._write_to_hardware,
-                    progress=lambda m: self._progress.emit(m))
+                    progress=lambda m: self._progress.emit(m),
+                    get_live_bank_type=self._get_live_bank_type)
             else:
                 pull_result = None
                 plan, result = commit_changes(
                     self._index, self._blobs, self._clipboard,
                     get_live_digest=self._get_live_digest, resolver=self._local_resolver,
-                    write_to_hardware=self._write_to_hardware)
+                    write_to_hardware=self._write_to_hardware,
+                    get_live_bank_type=self._get_live_bank_type)
             self._index.save()
         except Exception as e:  # pragma: no cover - defensive
             self._sync_done.emit(None, None, None, f"Sync/Commit crashed: {e}")
@@ -1125,7 +1814,8 @@ class LibrarianShellWindow(QDialog):
             self._log("  ! " + w)
         if result is not None:
             self._log(f"Push: {result.written} written, {result.erased} erased, "
-                     f"{result.deleted} local-only delete(s), {result.failed} failed.")
+                     f"{result.deleted} local-only delete(s), {result.failed} failed, "
+                     f"{result.reformatted} bank(s) reformatted.")
         self._refresh_local_tree()
 
     # ── Merge pull (kept synchronous — local blob store only, no hardware) ──
