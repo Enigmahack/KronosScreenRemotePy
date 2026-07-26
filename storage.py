@@ -79,6 +79,9 @@ def load_settings() -> AppSettings:
         s.always_on_top          = root.get("always_on_top",          s.always_on_top)
         s.recent_hosts           = list(root.get("recent_hosts",      []))
         s.keybinds               = root.get("keybinds",               {})
+        s.blank_template_source_slots = {
+            k: list(v) for k, v in root.get("blank_template_source_slots", s.blank_template_source_slots).items()
+        }
 
         for m in root.get("macros", []):
             try:
@@ -144,6 +147,7 @@ def save_settings(s: AppSettings):
             "always_on_top":          s.always_on_top,
             "recent_hosts":           s.recent_hosts,
             "keybinds":               s.keybinds,
+            "blank_template_source_slots": s.blank_template_source_slots,
             "macros": [
                 {
                     "description":   m.description,

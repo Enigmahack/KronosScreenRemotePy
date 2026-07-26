@@ -34,6 +34,7 @@ from librarian_sysex import (
     obj_bank_to_func33, set_combi_timbre_ref, set_setlist_slot_ref,
 )
 import kronos_sysex as ksx
+from pcg_file import WIRE_SIZE_EXI, WIRE_SIZE_HD1
 
 
 # ── Value types ──────────────────────────────────────────────────────────────
@@ -128,6 +129,8 @@ class LibraryCatalog:
     def referrers_of(self, loc: ObjLoc) -> List[ReferrerSite]:
         """Every reference site that currently points at `loc`."""
         out: List[ReferrerSite] = []
+        if loc.obj_type == OBJ_SET_LIST:
+            return out   # nothing ever references a Set List
         # func33 type: program refs use type 1, combi refs use type 0 — and the
         # set-list slot `type` field uses the same 0=combi/1=prog convention.
         ref_type = 1 if loc.obj_type == OBJ_PROGRAM else 0
@@ -185,6 +188,8 @@ class RefIndex:
 
     def referrers_of(self, loc: ObjLoc) -> List[ReferrerSite]:
         out: List[ReferrerSite] = []
+        if loc.obj_type == OBJ_SET_LIST:
+            return out   # nothing ever references a Set List
         ref_type = 1 if loc.obj_type == OBJ_PROGRAM else 0
         want_bank = obj_bank_to_func33(ref_type, loc.bank)
         if want_bank < 0:
@@ -360,6 +365,276 @@ def _store_label(obj: int, bank: int) -> str:
     if obj == OBJ_SET_LIST:
         return "Set Lists"
     return f"obj{obj:02X}:bank{bank:02X}"
+
+
+# ── Batch move planning (pure) ───────────────────────────────────────────────
+#
+# Port of Core/BatchMoveModel.cs (BatchLibrarian.PlanBatchMove). Generalizes
+# plan_move()'s pairwise swap into an arbitrary N-item reference relocation —
+# confirmed from the C# source (not guessed): a "batch move" placement is NOT
+# a swap. The source's own slot is NEVER written; only referrers (Combi
+# timbres / Set List slots) that pointed at the source's OLD location get
+# repointed to the NEW one. The reason this can't just be N calls to
+# plan_move is that a single referrer touched by MULTIPLE placements in the
+# SAME batch (e.g. a Combi with two timbres, each pointing at a different
+# Program that both get moved in this batch) must have every patch merged
+# into ONE write from a single old-loc -> new-loc relocation map — N
+# independent plan_move() calls would each rewrite that Combi unaware of the
+# other's edit and stomp it. The relocation map is keyed by ORIGIN (not by
+# destination-slot occupancy), which is also what lets a chain (A moves to
+# B's slot, B itself moves elsewhere in the same batch) resolve safely — see
+# the orphan gate below.
+#
+# ResolveSequentialFill (destination-slot auto-assignment for a drag-drop
+# fill) and the persisted BatchClipboard/ClipboardEntry/DTO cut-paste history
+# are NOT ported here — those are UI/session-state concerns for a future
+# clipboard module (distinct from Core/LocalLibrary/SessionDependencyClipboard.
+# cs's SessionDependencyEntry, which tracks unresolved PCG-import dependencies,
+# not batch-move displacement). This module only owns the pure placement
+# primitive: given already-decided (source, destination) pairs, plan the
+# writes.
+
+
+@dataclass(frozen=True)
+class BatchPlacement:
+    """One item's placement in a batch. `src` is the pre-state address whose
+    LIVE referrers (if any) get repointed to `dst` — None for a fresh
+    placement (e.g. from a loaded PCG) with no local source to repoint from."""
+    dst: ObjLoc
+    dump: ObjectDump
+    label: str
+    src: Optional[ObjLoc] = None
+
+
+@dataclass
+class DisplacedItem:
+    """A destination slot's occupant, bumped by an incoming batch placement
+    and diverted rather than silently destroyed. Minimal stand-in for
+    BatchMoveModel.cs's ClipboardEntry — the fuller persisted cut/paste/DTO
+    clipboard (Provenance, BankCopyGroup, etc.) is a session/UI concern for a
+    future clipboard module, not this pure planning primitive."""
+    obj_type: int
+    origin: ObjLoc
+    version: int
+    body: bytes
+    reason: str = ""
+
+
+@dataclass
+class BatchMovePlan:
+    obj_type: int
+    writes: List[WriteOp] = field(default_factory=list)
+    pre_images: List[WriteOp] = field(default_factory=list)
+    stores: List[Tuple[int, int]] = field(default_factory=list)
+    referrers: List[ReferrerSite] = field(default_factory=list)
+    preview: List[str] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
+    displaced: List[DisplacedItem] = field(default_factory=list)   # BatchMoveModel.cs's ClipboardAdds
+    live_pc: List[bytes] = field(default_factory=list)   # always empty — batch live-preview is out of scope (mirrors C#)
+    digest_baseline: Dict[Tuple[int, int], bytes] = field(default_factory=dict)
+    backup_label: str = "batchmove"
+
+    @property
+    def is_refusable(self) -> bool:
+        return any(w.startswith("REFUSE:") for w in self.warnings)
+
+
+def plan_batch_move(catalog: LibraryCatalog, obj_type: int,
+                    placements: List[BatchPlacement],
+                    dest_occupants: Dict[ObjLoc, ObjectDump],
+                    divert_displaced: bool = False,
+                    bank_type_of: Optional[Callable[[int], Optional[bool]]] = None
+                    ) -> BatchMovePlan:
+    """Compute a coherent multi-item placement. Pure — no hardware access.
+
+    dest_occupants — fresh dump of the CURRENT content at every distinct
+    placement.dst (the batch analog of plan_move's dst_dump; pre-image +
+    orphan-gate source).
+    divert_displaced — if True, a bumped destination occupant that ISN'T
+    itself being relocated elsewhere in this batch is recorded in
+    plan.displaced instead of merely warned about.
+    bank_type_of — Program HD-1/EXi lookup (True=EXi/False=HD-1/None=
+    unknown-or-unverifiable-bank, e.g. I-G). Ignored for Combis/Set Lists.
+    """
+    plan = BatchMovePlan(obj_type=obj_type)
+
+    real = [p for p in placements if p.src is None or p.src != p.dst]
+    skipped = len(placements) - len(real)
+
+    if not real:
+        plan.warnings.append("REFUSE: no placements to perform")
+        return plan
+
+    dest_counts: Dict[ObjLoc, int] = {}
+    for p in real:
+        dest_counts[p.dst] = dest_counts.get(p.dst, 0) + 1
+    for dst, count in dest_counts.items():
+        if count > 1:
+            plan.warnings.append(f"REFUSE: duplicate destination {dst.label()} "
+                                 f"targeted by {count} placement(s)")
+
+    if any(p.dst.obj_type != obj_type or (p.src is not None and p.src.obj_type != obj_type)
+           for p in real):
+        plan.warnings.append("REFUSE: batch contains an object of a different "
+                             "type than the batch's object type")
+
+    if obj_type == OBJ_PROGRAM and any(p.dst.bank in _READONLY_PROGRAM_BANKS for p in real):
+        plan.warnings.append("REFUSE: a destination bank is read-only (GM/g)")
+
+    if obj_type == OBJ_PROGRAM and bank_type_of is not None:
+        for p in real:
+            if p.src is not None:
+                if p.src.bank == p.dst.bank:
+                    continue
+                src_type = bank_type_of(p.src.bank)
+                dst_type = bank_type_of(p.dst.bank)
+                if src_type is not None and dst_type is not None:
+                    if src_type != dst_type:
+                        plan.warnings.append(
+                            f"REFUSE: {p.src.label()} ({'EXi' if src_type else 'HD-1'}) cannot move "
+                            f"to {p.dst.label()} ({'EXi' if dst_type else 'HD-1'}) — bank types differ")
+                else:
+                    plan.warnings.append(
+                        f"CHECK: {p.src.label()} -> {p.dst.label()} crosses banks whose HD-1/EXi "
+                        "type couldn't be fully verified — the write may be rejected (Reply 64).")
+            else:
+                # Fresh placement (no local source bank to compare) — check the wire body's own
+                # length (deterministically EXi=4960B or HD-1=3706B) against what the destination
+                # bank actually is.
+                dt = bank_type_of(p.dst.bank)
+                if dt is not None:
+                    expected_len = WIRE_SIZE_EXI if dt else WIRE_SIZE_HD1
+                    if len(p.dump.body) != expected_len:
+                        plan.warnings.append(
+                            f"REFUSE: {p.dst.label()} is a {'EXi' if dt else 'HD-1'} bank "
+                            f"({expected_len}-byte Programs), but {p.label} is {len(p.dump.body)} "
+                            "bytes — wrong format for this bank.")
+                else:
+                    plan.warnings.append(
+                        f"CHECK: {p.dst.label()}'s HD-1/EXi type couldn't be fully verified — the "
+                        "write may be rejected (Reply 64).")
+
+    # (1) Pre-state old->new relocation map, keyed by ORIGIN — lets a chain (A -> B's slot, B's
+    # own occupant relocated elsewhere in this batch) resolve both referrer classes correctly.
+    relocation: Dict[ObjLoc, ObjLoc] = {}
+    for p in real:
+        if p.src is not None:
+            relocation[p.src] = p.dst
+
+    # (2) Orphan gate — UNCONDITIONAL, independent of divert_displaced. A destination slot with
+    # live referrers is only safe to overwrite when its occupant is ITSELF also being relocated
+    # somewhere in this same batch (i.e. it's also a `src` — a chain, not an orphan).
+    distinct_targets: List[ObjLoc] = []
+    for p in real:
+        if p.dst not in distinct_targets:
+            distinct_targets.append(p.dst)
+
+    for to in distinct_targets:
+        displaced_refs = catalog.referrers_of(to)
+        if not displaced_refs or to in relocation:
+            continue
+        occ = dest_occupants.get(to)
+        first = next(p for p in real if p.dst == to)
+        identical = occ is not None and first.dump.body == occ.body
+        if identical:
+            plan.warnings.append(f"REFUSE: {to.label()} already contains this exact object "
+                                 "— nothing to place.")
+        else:
+            plan.warnings.append(
+                f"REFUSE: {to.label()} is referenced by {len(displaced_refs)} object(s) and would "
+                "be overwritten without being relocated itself — add it to this batch as a "
+                "source, or choose a different destination.")
+
+    # (3) Referrer collection + grouping — direct generalization of plan_move's `grouped` dict.
+    ref_type = 1 if obj_type == OBJ_PROGRAM else 0
+    grouped: Dict[Tuple[int, int, int], List[Tuple[int, str, int, int]]] = {}
+    referrers: List[ReferrerSite] = []
+    for src_loc, dst_loc in relocation.items():
+        sites = catalog.referrers_of(src_loc)
+        referrers.extend(sites)
+        new_func33 = obj_bank_to_func33(ref_type, dst_loc.bank)
+        for r in sites:
+            grouped.setdefault((r.ref_obj, r.ref_bank, r.ref_index), []).append(
+                (r.site, r.kind, new_func33, dst_loc.number))
+
+    # (4) Placement writes + pre-images. Source stays UNTOUCHED — no write at src, ever.
+    writes: List[WriteOp] = []
+    pre_images: List[WriteOp] = []
+    for p in real:
+        writes.append(WriteOp(obj_type, p.dst.bank, p.dst.number, p.dump.version, p.dump.body,
+                              note=f"{p.label} -> {p.dst.label()}"))
+        occ = dest_occupants.get(p.dst)
+        if occ is not None:
+            pre_images.append(WriteOp(obj_type, p.dst.bank, p.dst.number, occ.version, occ.body,
+                                      note="original (displaced)"))
+
+    # (5) Displaced-occupant disposition — only for targets NOT already covered by their own
+    # relocation entry (§2's chain exemption).
+    displaced: List[DisplacedItem] = []
+    for to in distinct_targets:
+        if to in relocation:
+            continue
+        occ = dest_occupants.get(to)
+        if occ is None:
+            continue
+        if divert_displaced:
+            displaced.append(DisplacedItem(obj_type, to, occ.version, occ.body,
+                                           reason=f"displaced by incoming placement to {to.label()}"))
+        else:
+            plan.warnings.append(f"CHECK: {to.label()} is overwritten and not diverted — its "
+                                 "prior contents are only recoverable from the automatic backup.")
+
+    # (6) Grouped referrer-patch writes — identical shape to plan_move's step 2.
+    for (ref_obj, ref_bank, ref_index), patches in grouped.items():
+        base_dump = (catalog.combis.get((ref_bank, ref_index)) if ref_obj == OBJ_COMBI
+                     else catalog.setlists.get(ref_index) if ref_obj == OBJ_SET_LIST else None)
+        if base_dump is None:
+            plan.warnings.append(f"REFUSE: referring object missing from catalog "
+                                 f"(obj {ref_obj:02X} bank {ref_bank:02X} idx {ref_index}) "
+                                 "— re-scan before moving")
+            continue
+        pre_images.append(WriteOp(ref_obj, ref_bank, ref_index, base_dump.version, base_dump.body,
+                                  note="original"))
+        body = bytearray(base_dump.body)
+        for site, kind, new_bank, new_number in patches:
+            if kind == 'combi_timbre':
+                set_combi_timbre_ref(body, site, new_bank, new_number)
+            else:  # setlist_slot
+                set_setlist_slot_ref(body, site, new_bank, new_number, type_=None)
+        writes.append(WriteOp(ref_obj, ref_bank, ref_index, base_dump.version, bytes(body),
+                              note=f"fix {len(patches)} ref(s)"))
+
+    stores: List[Tuple[int, int]] = []
+    for w in writes:
+        key = (w.obj, w.bank)
+        if key not in stores:
+            stores.append(key)
+
+    type_tag = {OBJ_PROGRAM: "prog", OBJ_COMBI: "combi"}.get(obj_type, "setlist")
+    backup_label = f"batchmove_{type_tag}_{len(real)}items"
+
+    type_noun = {OBJ_PROGRAM: "programs", OBJ_COMBI: "combis"}.get(obj_type, "set lists")
+    preview = [f"BATCH MOVE  {len(real)} placement(s)  ({type_noun})"]
+    if skipped > 0:
+        preview.append(f"  ({skipped} placement(s) already at their destination — skipped)")
+    for p in real:
+        preview.append(f"  {p.label}  ->  {p.dst.label()}")
+    preview.append("  source slots keep their original contents — only references now resolve "
+                   "to the new copies.")
+    if displaced:
+        preview.append(f"  {len(displaced)} displaced object(s) diverted to clipboard.")
+    preview.append(f"  references to rewrite: {len(referrers)}")
+    preview.append(f"  objects to write (0x73): {len(writes)}")
+    preview.append("  banks to Store (0x76): " + ", ".join(_store_label(o, b) for o, b in stores))
+
+    plan.writes = writes
+    plan.pre_images = pre_images
+    plan.stores = stores
+    plan.referrers = referrers
+    plan.preview = preview
+    plan.displaced = displaced
+    plan.backup_label = backup_label
+    return plan
 
 
 # ── Execution ────────────────────────────────────────────────────────────────
@@ -603,6 +878,116 @@ def _selftest() -> None:
     res2 = apply_move(plan, ex2, "/tmp", "20260717-000001")
     check("apply-abort-stale", (not res2.ok) and "changed since preview" in (res2.aborted_reason or ""))
     check("apply-no-store-on-abort", not any(s.startswith("store") for s in ex2.log))
+
+    # A Set List loc must never be treated as referenceable (the fbank==0/index==0 default of an
+    # empty slot would otherwise false-match against ObjLoc(OBJ_SET_LIST, 0, 0)-shaped locs).
+    check("catalog-setlist-no-referrers",
+          len(cat.referrers_of(ObjLoc(OBJ_SET_LIST, 0, 5))) == 0)
+    check("refindex-setlist-no-referrers",
+          len(ri.referrers_of(ObjLoc(OBJ_SET_LIST, 0, 5))) == 0)
+
+    # ── Batch move: THE crux case — one referrer touched by TWO placements in the SAME batch
+    # gets both patches merged into a single write, and the intra-batch reference is repointed
+    # to the moved item's NEW location rather than being flagged as an external dangling ref.
+    cat_b = LibraryCatalog()
+    fb_a = obj_bank_to_func33(1, 0x00)
+    combi_body_b = bytearray(7810)
+    set_combi_timbre_ref(combi_body_b, 3, fb_a, 7)   # -> I-A:007
+    set_combi_timbre_ref(combi_body_b, 5, fb_a, 9)   # -> I-A:009
+    cat_b.add_combi(ObjectDump(OBJ_COMBI, 0x00, 0, 3, bytes(combi_body_b)))
+    prog_a = ObjLoc(OBJ_PROGRAM, 0x00, 7)
+    prog_b = ObjLoc(OBJ_PROGRAM, 0x00, 9)
+    to_a = ObjLoc(OBJ_PROGRAM, 0x40, 0)
+    to_b = ObjLoc(OBJ_PROGRAM, 0x40, 1)
+    merged_placements = [
+        BatchPlacement(to_a, ObjectDump(OBJ_PROGRAM, 0x00, 7, 1, bytes(100)), prog_a.label(), prog_a),
+        BatchPlacement(to_b, ObjectDump(OBJ_PROGRAM, 0x00, 9, 1, bytes(100)), prog_b.label(), prog_b),
+    ]
+    merged_occupants = {
+        to_a: ObjectDump(OBJ_PROGRAM, 0x40, 0, 1, bytes(100)),
+        to_b: ObjectDump(OBJ_PROGRAM, 0x40, 1, 1, bytes(100)),
+    }
+    merged_plan = plan_batch_move(cat_b, OBJ_PROGRAM, merged_placements, merged_occupants,
+                                  divert_displaced=False)
+    check("batch-not-refusable", not merged_plan.is_refusable)
+    combi_writes = [w for w in merged_plan.writes if w.obj == OBJ_COMBI]
+    check("merged-referrer-single-write", len(combi_writes) == 1)
+    if combi_writes:
+        fb_to_a = obj_bank_to_func33(1, 0x40)
+        b3, n3 = lsx.combi_timbre_ref(combi_writes[0].body, 3)
+        b5, n5 = lsx.combi_timbre_ref(combi_writes[0].body, 5)
+        check("merged-timbre3-retarget", b3 == fb_to_a and n3 == 0)
+        check("merged-timbre5-retarget", b5 == fb_to_a and n5 == 1)
+    check("batch-source-untouched",
+          not any(w.obj == OBJ_PROGRAM and w.bank == 0x00 for w in merged_plan.writes))
+
+    # Orphan gate: overwriting a referenced, non-relocated slot REFUSES.
+    cat_o = LibraryCatalog()
+    fb_x = obj_bank_to_func33(1, 0x40)
+    combi_body_o = bytearray(7810)
+    set_combi_timbre_ref(combi_body_o, 0, fb_x, 10)
+    cat_o.add_combi(ObjectDump(OBJ_COMBI, 0x00, 0, 3, bytes(combi_body_o)))
+    orphan_src = ObjLoc(OBJ_PROGRAM, 0x00, 5)
+    orphan_dst = ObjLoc(OBJ_PROGRAM, 0x40, 10)   # referenced, not itself relocated
+    incoming_body = bytes(100)
+    occupant_body = bytes([0xFF] + [0] * 99)
+    orphan_placements = [BatchPlacement(orphan_dst, ObjectDump(OBJ_PROGRAM, 0x00, 5, 1, incoming_body),
+                                        orphan_src.label(), orphan_src)]
+    orphan_occupants = {orphan_dst: ObjectDump(OBJ_PROGRAM, 0x40, 10, 1, occupant_body)}
+    orphan_plan = plan_batch_move(cat_o, OBJ_PROGRAM, orphan_placements, orphan_occupants,
+                                  divert_displaced=False)
+    check("orphan-gate-refuses",
+          orphan_plan.is_refusable and any("referenced by" in w for w in orphan_plan.warnings))
+
+    # Duplicate destination and mixed-type REFUSE.
+    dup_placements = [
+        BatchPlacement(ObjLoc(OBJ_PROGRAM, 0x40, 0), ObjectDump(OBJ_PROGRAM, 0x00, 1, 1, bytes(10)),
+                      "a", ObjLoc(OBJ_PROGRAM, 0x00, 1)),
+        BatchPlacement(ObjLoc(OBJ_PROGRAM, 0x40, 0), ObjectDump(OBJ_PROGRAM, 0x00, 2, 1, bytes(10)),
+                      "b", ObjLoc(OBJ_PROGRAM, 0x00, 2)),
+    ]
+    dup_plan = plan_batch_move(LibraryCatalog(), OBJ_PROGRAM, dup_placements, {})
+    check("duplicate-dest-refuses", dup_plan.is_refusable)
+
+    mixed_placements = [BatchPlacement(ObjLoc(OBJ_PROGRAM, 0x40, 0),
+                                       ObjectDump(OBJ_PROGRAM, 0x00, 1, 1, bytes(10)),
+                                       "a", ObjLoc(OBJ_PROGRAM, 0x00, 1))]
+    mixed_plan = plan_batch_move(LibraryCatalog(), OBJ_COMBI, mixed_placements, {})
+    check("mixed-type-refuses", mixed_plan.is_refusable)
+
+    # Unreferenced overwrite: CHECK-warns with the flag off, diverts to `displaced` with it on.
+    solo_src = ObjLoc(OBJ_COMBI, 0x00, 1)
+    solo_dst = ObjLoc(OBJ_COMBI, 0x40, 0)
+    solo_placements = [BatchPlacement(solo_dst, ObjectDump(OBJ_COMBI, 0x00, 1, 1, bytes(7810)),
+                                      solo_src.label(), solo_src)]
+    solo_occupants = {solo_dst: ObjectDump(OBJ_COMBI, 0x40, 0, 1, bytes(7810))}
+
+    check_plan = plan_batch_move(LibraryCatalog(), OBJ_COMBI, solo_placements, solo_occupants,
+                                 divert_displaced=False)
+    check("check-warning-on-overwrite",
+          not check_plan.is_refusable
+          and any(w.startswith("CHECK:") for w in check_plan.warnings)
+          and len(check_plan.displaced) == 0)
+
+    clip_plan = plan_batch_move(LibraryCatalog(), OBJ_COMBI, solo_placements, solo_occupants,
+                                divert_displaced=True)
+    check("displaced-add-on-overwrite",
+          not clip_plan.is_refusable and len(clip_plan.displaced) == 1)
+
+    # A Set List placement produces zero referrer-patch writes and never spuriously REFUSEs via
+    # the orphan gate — direct consequence of the SetList referrers_of guard flowing through
+    # plan_batch_move unmodified.
+    sl_from = ObjLoc(OBJ_SET_LIST, 0, 10)
+    sl_to = ObjLoc(OBJ_SET_LIST, 0, 20)
+    sl_placements = [BatchPlacement(sl_to, ObjectDump(OBJ_SET_LIST, 0, 10, 1, bytes(69416)),
+                                    sl_from.label(), sl_from)]
+    sl_occupants = {sl_to: ObjectDump(OBJ_SET_LIST, 0, 20, 1, bytes(69416))}
+    sl_plan = plan_batch_move(LibraryCatalog(), OBJ_SET_LIST, sl_placements, sl_occupants,
+                              divert_displaced=False)
+    check("setlist-batch-not-refusable", not sl_plan.is_refusable)
+    check("setlist-batch-no-referrer-writes", len(sl_plan.referrers) == 0)
+    check("setlist-batch-one-write", len(sl_plan.writes) == 1)
+    check("setlist-batch-check-on-overwrite", any(w.startswith("CHECK:") for w in sl_plan.warnings))
 
     if fails:
         print("FAIL:", ", ".join(fails))
