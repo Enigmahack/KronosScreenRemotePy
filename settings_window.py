@@ -87,6 +87,7 @@ class SettingsWindow(QDialog):
         self._tabs.addTab(self._build_image_tab(),      "Image")
         self._tabs.addTab(self._build_keybinds_tab(),   "Key Bindings")
         self._tabs.addTab(self._build_macros_tab(),     "Macros")
+        self._tabs.addTab(self._build_librarian_tab(),  "Librarian")
         self._tabs.addTab(self._build_debug_tab(),      "Debug")
 
         # Bottom row: Import/Export left; OK/Cancel right
@@ -119,9 +120,12 @@ class SettingsWindow(QDialog):
         self._hide_data_inp.setToolTip("Hides the right-hand button panel at launch. Toggle from View → Hide Data Input.")
         self._hide_value_inp = QCheckBox("Hide value input panel on startup")
         self._hide_value_inp.setToolTip("Hides the left-hand slider panel at launch. Toggle from View → Hide Value Input.")
+        self._reverse_scroll = QCheckBox("Reverse mouse scrolling direction")
+        self._reverse_scroll.setToolTip("Swaps which wheel direction sends WHEEL CW vs WHEEL CCW to the Kronos data wheel.")
         vb.addWidget(self._quit_prompt)
         vb.addWidget(self._hide_data_inp)
         vb.addWidget(self._hide_value_inp)
+        vb.addWidget(self._reverse_scroll)
 
         vb.addSpacing(8)
         vb.addWidget(_section("Screenshots"))
@@ -193,7 +197,7 @@ class SettingsWindow(QDialog):
         form.addRow("FTP Port:",     self._ftp_port_spin)
 
         form.addRow(_section("MIDI"))
-        self._midi_monitor = QCheckBox("Enable MIDI bridge (SysEx Tool, Set List Viewer, name caching)")
+        self._midi_monitor = QCheckBox("Enable MIDI bridge (SysEx Tool, name caching)")
         form.addRow(self._midi_monitor)
         return w
 
@@ -205,15 +209,15 @@ class SettingsWindow(QDialog):
         vb.setSpacing(6)
 
         vb.addWidget(_section("Stream mode"))
-        self._rb_change = QCheckBox("Change-driven — send frames only when screen changes (recommended)")
-        self._rb_change.setToolTip("Recommended. The daemon sends a frame only when the display changes.")
-        self._rb_pull   = QCheckBox("Pull — client requests each frame individually")
-        self._rb_pull.setToolTip("The client requests each frame individually. Try if frames are occasionally missed.")
-        # Mutually exclusive via click handlers
-        self._rb_change.clicked.connect(lambda: self._rb_pull.setChecked(not self._rb_change.isChecked()))
-        self._rb_pull.clicked.connect(lambda: self._rb_change.setChecked(not self._rb_pull.isChecked()))
-        vb.addWidget(self._rb_change)
-        vb.addWidget(self._rb_pull)
+        self._stream_mode = QComboBox()
+        self._stream_mode.setMinimumWidth(200)
+        self._stream_mode.addItem("Change-driven - send frames only when the screen changes (recommended)")
+        self._stream_mode.addItem("Pull - client requests each frame individually")
+        self._stream_mode.setToolTip(
+            "Change-driven (recommended): the daemon sends a frame only when the display "
+            "changes. Pull: the client requests each frame individually — try if frames "
+            "are occasionally missed.")
+        vb.addWidget(self._stream_mode)
 
         vb.addSpacing(12)
         vb.addWidget(_section("Max frame rate"))
@@ -495,6 +499,49 @@ class SettingsWindow(QDialog):
 
         return w
 
+    # ── Librarian tab ──────────────────────────────────────────────────────────
+    # Port of SettingsWindow.xaml's Librarian tab: the Merge Window's persistence
+    # behavior plus the per-type preserve-duplication policy for Merge->Local placement.
+
+    def _build_librarian_tab(self) -> QWidget:
+        w = QWidget()
+        vb = QVBoxLayout(w)
+        vb.setSpacing(6)
+
+        vb.addWidget(_section("Merge Window persistence"))
+        self._merge_behavior = QComboBox()
+        self._merge_behavior.addItem("Temporary Memory", "temporary_memory")
+        self._merge_behavior.addItem("Local Storage", "local_storage")
+        self._merge_behavior.setToolTip(
+            "Controls whether the Librarian's Merge Window (a staging area for objects "
+            "pulled from loaded PCG files, before they're placed into your Local Library) "
+            "survives an app restart or crash.")
+        vb.addWidget(self._merge_behavior)
+        vb.addWidget(_hint("Temporary Memory: cleared on restart, never touches disk. "
+                           "Local Storage: survives a crash/reboot via a snapshot file."))
+
+        vb.addSpacing(10)
+        vb.addWidget(_section("Merge -> Local duplication"))
+        self._preserve_dup_progs = QCheckBox("Programs: preserve duplication")
+        self._preserve_dup_progs.setToolTip(
+            "Checked: placing a Program from the Merge Window always copies it as-is into a "
+            "fresh slot, even if byte-identical content already exists in your Local Library. "
+            "Unchecked (default): duplicates are detected and the existing copy is reused.")
+        self._preserve_dup_combis = QCheckBox("Combis: preserve duplication")
+        self._preserve_dup_combis.setToolTip(
+            "Checked (default): placing a Combi from the Merge Window always copies it as-is "
+            "into a fresh slot. Unchecked: duplicates are detected and the existing copy is "
+            "reused — compared after its Program references are re-pointed, so a re-copied "
+            "PCG still matches.")
+        vb.addWidget(self._preserve_dup_progs)
+        vb.addWidget(self._preserve_dup_combis)
+        vb.addWidget(_hint("When placing from the Merge Window into Local Library, choose per "
+                           "object type whether duplicates are preserved (copied as-is) or "
+                           "detected and reused."))
+
+        vb.addStretch()
+        return w
+
     # ── Debug tab ──────────────────────────────────────────────────────────────
 
     def _build_debug_tab(self) -> QWidget:
@@ -586,6 +633,7 @@ class SettingsWindow(QDialog):
         self._quit_prompt.setChecked(s.prompt_before_quitting)
         self._hide_data_inp.setChecked(s.hide_data_input)
         self._hide_value_inp.setChecked(s.hide_value_input)
+        self._reverse_scroll.setChecked(s.reverse_scrolling)
         self._screenshot_dir.setText(s.screenshot_dir)
         self._vga_mirror.setChecked(s.vga_mirror_enabled)
         self._ss_spin.setValue(s.screensaver_timeout)
@@ -599,10 +647,14 @@ class SettingsWindow(QDialog):
         self._ftp_port_spin.setValue(s.ftp_port)
         self._midi_monitor.setChecked(s.midi_monitor_enabled)
 
+        # Librarian
+        idx = self._merge_behavior.findData(s.merge_behavior)
+        self._merge_behavior.setCurrentIndex(idx if idx >= 0 else 1)
+        self._preserve_dup_progs.setChecked(s.merge_preserve_duplicate_programs)
+        self._preserve_dup_combis.setChecked(s.merge_preserve_duplicate_combis)
+
         # Streaming
-        pull = s.pull_mode
-        self._rb_pull.setChecked(pull)
-        self._rb_change.setChecked(not pull)
+        self._stream_mode.setCurrentIndex(1 if s.pull_mode else 0)
         self._fps_slider.setValue(s.max_fps)
         self._fps_lbl.setText(f"{s.max_fps} fps")
         self._disable_boot.setChecked(s.disable_boot_screen)
@@ -644,6 +696,7 @@ class SettingsWindow(QDialog):
         s.prompt_before_quitting = self._quit_prompt.isChecked()
         s.hide_data_input        = self._hide_data_inp.isChecked()
         s.hide_value_input       = self._hide_value_inp.isChecked()
+        s.reverse_scrolling      = self._reverse_scroll.isChecked()
         s.screenshot_dir         = self._screenshot_dir.text().strip()
         s.vga_mirror_enabled     = self._vga_mirror.isChecked()
         s.screensaver_timeout    = self._ss_spin.value()
@@ -657,8 +710,13 @@ class SettingsWindow(QDialog):
         s.ftp_port     = self._ftp_port_spin.value()
         s.midi_monitor_enabled = self._midi_monitor.isChecked()
 
+        # Librarian
+        s.merge_behavior                  = self._merge_behavior.currentData()
+        s.merge_preserve_duplicate_programs = self._preserve_dup_progs.isChecked()
+        s.merge_preserve_duplicate_combis   = self._preserve_dup_combis.isChecked()
+
         # Streaming
-        s.pull_mode              = self._rb_pull.isChecked()
+        s.pull_mode              = self._stream_mode.currentIndex() == 1
         s.max_fps                = self._fps_slider.value()
         s.disable_boot_screen    = self._disable_boot.isChecked()
         s.boot_screen_threshold  = self._boot_thresh_slider.value()
@@ -1043,6 +1101,7 @@ class SettingsWindow(QDialog):
         s.prompt_before_quitting = self._quit_prompt.isChecked()
         s.hide_data_input        = self._hide_data_inp.isChecked()
         s.hide_value_input       = self._hide_value_inp.isChecked()
+        s.reverse_scrolling      = self._reverse_scroll.isChecked()
         s.screenshot_dir         = self._screenshot_dir.text().strip()
         s.vga_mirror_enabled     = self._vga_mirror.isChecked()
         s.screensaver_timeout    = self._ss_spin.value()
@@ -1053,7 +1112,10 @@ class SettingsWindow(QDialog):
         s.ftp_password           = self._ftp_pass.text()
         s.ftp_port               = self._ftp_port_spin.value()
         s.midi_monitor_enabled   = self._midi_monitor.isChecked()
-        s.pull_mode              = self._rb_pull.isChecked()
+        s.merge_behavior         = self._merge_behavior.currentData()
+        s.merge_preserve_duplicate_programs = self._preserve_dup_progs.isChecked()
+        s.merge_preserve_duplicate_combis   = self._preserve_dup_combis.isChecked()
+        s.pull_mode              = self._stream_mode.currentIndex() == 1
         s.max_fps                = self._fps_slider.value()
         s.disable_boot_screen    = self._disable_boot.isChecked()
         s.boot_screen_threshold  = self._boot_thresh_slider.value()

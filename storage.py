@@ -10,7 +10,7 @@ import json
 import os
 import pathlib
 import threading
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from models import PaletteEntry, CalMesh, CalBiasDot
 from app_settings import AppSettings, MacroDef, RawKeyMap
@@ -29,6 +29,13 @@ def _data_dir() -> pathlib.Path:
 
 def _path(name: str) -> pathlib.Path:
     return _data_dir() / name
+
+
+def data_dir() -> pathlib.Path:
+    """Public accessor for the same data directory _path() resolves against,
+    for callers that persist their own file there without adding a dedicated
+    load_/save_ pair to this module."""
+    return _data_dir()
 
 
 # ── Settings ───────────────────────────────────────────────────────────────────
@@ -52,6 +59,7 @@ def load_settings() -> AppSettings:
         s.prompt_before_quitting = root.get("prompt_before_quitting", s.prompt_before_quitting)
         s.hide_data_input        = root.get("hide_data_input",        root.get("hide_controls", s.hide_data_input))
         s.hide_value_input       = root.get("hide_value_input",       s.hide_value_input)
+        s.reverse_scrolling      = root.get("reverse_scrolling",      s.reverse_scrolling)
         s.screenshot_dir         = root.get("screenshot_dir",         s.screenshot_dir)
         s.vga_mirror_enabled     = root.get("vga_mirror_enabled",     s.vga_mirror_enabled)
         s.screensaver_timeout    = root.get("screensaver_timeout",    s.screensaver_timeout)
@@ -70,8 +78,16 @@ def load_settings() -> AppSettings:
         s.image_sharpen          = int(root.get("image_sharpen",       s.image_sharpen))
         s.debug_logging          = root.get("debug_logging",          s.debug_logging)
         s.always_on_top          = root.get("always_on_top",          s.always_on_top)
+        s.merge_preserve_duplicate_programs = root.get("merge_preserve_duplicate_programs",
+                                                        s.merge_preserve_duplicate_programs)
+        s.merge_preserve_duplicate_combis   = root.get("merge_preserve_duplicate_combis",
+                                                        s.merge_preserve_duplicate_combis)
+        s.merge_behavior        = root.get("merge_behavior",         s.merge_behavior)
         s.recent_hosts           = list(root.get("recent_hosts",      []))
         s.keybinds               = root.get("keybinds",               {})
+        s.blank_template_source_slots = {
+            k: list(v) for k, v in root.get("blank_template_source_slots", s.blank_template_source_slots).items()
+        }
 
         for m in root.get("macros", []):
             try:
@@ -117,6 +133,7 @@ def save_settings(s: AppSettings):
             "prompt_before_quitting": s.prompt_before_quitting,
             "hide_data_input":        s.hide_data_input,
             "hide_value_input":       s.hide_value_input,
+            "reverse_scrolling":      s.reverse_scrolling,
             "screenshot_dir":         s.screenshot_dir,
             "vga_mirror_enabled":     s.vga_mirror_enabled,
             "screensaver_timeout":    s.screensaver_timeout,
@@ -135,8 +152,12 @@ def save_settings(s: AppSettings):
             "image_sharpen":          s.image_sharpen,
             "debug_logging":          s.debug_logging,
             "always_on_top":          s.always_on_top,
+            "merge_preserve_duplicate_programs": s.merge_preserve_duplicate_programs,
+            "merge_preserve_duplicate_combis":   s.merge_preserve_duplicate_combis,
+            "merge_behavior":         s.merge_behavior,
             "recent_hosts":           s.recent_hosts,
             "keybinds":               s.keybinds,
+            "blank_template_source_slots": s.blank_template_source_slots,
             "macros": [
                 {
                     "description":   m.description,
@@ -376,6 +397,54 @@ def save_dumped_banks(cache_key: str, banks: Set[Tuple[int, int]]):
             p.write_text(json.dumps(root, indent=2), encoding="utf-8")
     except Exception as e:
         print(f"[dumped-banks] save failed: {e}")
+
+
+# ── Category names cache (GlobalBody.ReadCategoryNames) ────────────────────
+# category_names_cache.json: { host: {program, program_sub, combi, combi_sub} }
+# Mirrors Core/Storage.cs's CategoryNamesDto persistence, host-keyed exactly
+# like the name/dumped-banks caches. Load returns None when this host was never
+# synced — the caller falls back to CategoryNames.numeric() (plain "Category 05"
+# labels), never to an error. Shape-validated on load so a truncated/hand-edited
+# file degrades to None rather than crashing the Properties dialog.
+
+_category_names_lock = threading.Lock()
+
+
+def load_category_names(cache_key: str) -> Optional[dict]:
+    p = _path("category_names_cache.json")
+    if not p.exists():
+        return None
+    try:
+        with _category_names_lock:
+            root = json.loads(p.read_text(encoding="utf-8"))
+        d = root.get(cache_key)
+        if not isinstance(d, dict):
+            return None
+        return {
+            "program": d.get("program"),
+            "program_sub": d.get("program_sub"),
+            "combi": d.get("combi"),
+            "combi_sub": d.get("combi_sub"),
+        }
+    except Exception as e:
+        print(f"[category-names] load failed: {e}")
+        return None
+
+
+def save_category_names(cache_key: str, names: dict):
+    p = _path("category_names_cache.json")
+    try:
+        with _category_names_lock:
+            root = {}
+            if p.exists():
+                try:
+                    root = json.loads(p.read_text(encoding="utf-8"))
+                except Exception:
+                    root = {}
+            root[cache_key] = names
+            p.write_text(json.dumps(root, indent=2), encoding="utf-8")
+    except Exception as e:
+        print(f"[category-names] save failed: {e}")
 
 
 # ── Set List cache ───────────────────────────────────────────────────────────

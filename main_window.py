@@ -30,15 +30,17 @@ from PySide6.QtCore import (
     QEvent, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal, Slot,
 )
 from PySide6.QtGui import (
-    QAction, QActionGroup, QClipboard, QColor, QFont, QIcon, QImage, QKeyEvent, QMouseEvent,
-    QPainter, QPainterPath, QPixmap, QResizeEvent, QWheelEvent,
+    QAction, QActionGroup, QBrush, QClipboard, QColor, QFont, QIcon, QImage, QKeyEvent,
+    QMouseEvent, QPainter, QPainterPath, QPen, QPixmap, QPolygonF, QResizeEvent, QWheelEvent,
 )
 from PySide6.QtWidgets import (
-    QApplication, QDialog, QFileDialog, QFrame, QHBoxLayout, QInputDialog,
-    QLabel, QMainWindow, QMenu, QMenuBar, QMessageBox, QSizePolicy,
-    QStatusBar, QTextEdit, QVBoxLayout, QWidget,
+    QApplication, QCheckBox, QDialog, QFileDialog, QFormLayout, QFrame,
+    QGraphicsOpacityEffect, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMainWindow, QMenu,
+    QMenuBar, QMessageBox, QPushButton, QSizePolicy, QStatusBar, QTextEdit,
+    QVBoxLayout, QWidget,
 )
 
+import char_map
 import ctrl_client as CtrlClient
 import image_adjust
 import key_map
@@ -229,6 +231,38 @@ def _px_to_adc_v(py: int) -> int:
     return max(8,  min(245, round(8  + py * (245 - 8)  / (_FRAME_H - 1))))
 
 
+def _paint_seq_icon(kind: str, color: str, size: int) -> QPixmap:
+    """Flat, single-color footer icons for the two sequencer-transport glyphs that have
+    no plain-text Unicode equivalent (metronome, floppy save) — painted rather than an
+    emoji character so they match the rest of the row's monochrome style instead of
+    falling back to the system's color emoji font (see _seq_icon_btn's own comment)."""
+    scale = 4   # draw oversized, then let QPixmap's smooth scaling anti-alias the shape
+    px = QPixmap(size * scale, size * scale)
+    px.fill(Qt.GlobalColor.transparent)
+    p = QPainter(px)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QBrush(QColor(color)))
+    s = size * scale / 10.0   # 10x10 design grid, matching C#'s own icon Path geometry
+    if kind == "metronome":
+        # Port of MainWindow.xaml's Tap Tempo Path: "M3,0 L7,0 L9.5,10 L0.5,10 Z
+        # M5.3,2 L6.2,2 L4.7,8 L3.8,8 Z" — trapezoid body, cut-out pendulum arm.
+        p.drawPolygon(QPolygonF([QPointF(3*s, 0), QPointF(7*s, 0),
+                                 QPointF(9.5*s, 10*s), QPointF(0.5*s, 10*s)]))
+        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
+        p.drawPolygon(QPolygonF([QPointF(5.3*s, 2*s), QPointF(6.2*s, 2*s),
+                                 QPointF(4.7*s, 8*s), QPointF(3.8*s, 8*s)]))
+    elif kind == "save":
+        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+        p.drawRoundedRect(QRectF(0.3*s, 0.3*s, 9.4*s, 9.4*s), 1.2*s, 1.2*s)
+        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
+        p.drawRect(QRectF(2.3*s, 0.3*s, 3.6*s, 3.2*s))          # write-protect notch
+        p.drawRect(QRectF(2*s, 5.2*s, 6*s, 3.8*s))               # label window
+    p.end()
+    px.setDevicePixelRatio(scale)
+    return px
+
+
 class FrameWidget(QWidget):
     """Renders the Kronos frame and all overlays."""
     touch_down   = Signal(int, int)   # frame coords
@@ -258,7 +292,6 @@ class FrameWidget(QWidget):
         self._img_sat   = 0
         self._img_sharp = 0
         self._scale_mode = "HighQuality"   # Sharp | Smooth | HighQuality
-        self._aspect_lock    = True
         self._frame_rect     = QRectF()
         self._palette: list[PaletteEntry] = []
         self._help_rows: list[tuple[str, str]] = []
@@ -284,7 +317,7 @@ class FrameWidget(QWidget):
         self._is_connected = False
         self._disable_boot_screen = False
         self._frame_is_likely_boot_screen = False
-        self._boot_fill_fraction = 0.0
+        self._daemon_authoritative = False   # set True once the daemon STATE path answers
 
         self._renderer = OverlayRenderer()
 
@@ -415,7 +448,13 @@ class FrameWidget(QWidget):
         self._frame_rect = fr
 
         if (self._boot_phase and self._is_connected
-                and not self._disable_boot_screen and self._frame_is_likely_boot_screen):
+                and not self._disable_boot_screen and self._frame_is_likely_boot_screen
+                and not getattr(self, "_daemon_authoritative", False)):
+            # Client-side boot splash overlay - only when the daemon is NOT compositing
+            # one server-side (see _on_frame's daemon_authoritative flag). When the
+            # daemon is authoritative it paints the splash + live progress bar into the
+            # stream itself (KronosScreenRemoteDaemon/docs/api.md "Boot splash"), so a
+            # local overlay would double-draw over it.
             self._renderer.draw_boot_splash(p, fr, self._boot_fill_fraction)
         elif self._frame_pixmap:
             p.drawPixmap(fr.toRect(), self._frame_pixmap)
@@ -469,16 +508,17 @@ class FrameWidget(QWidget):
         p.end()
 
     def _compute_frame_rect(self) -> QRectF:
+        # Aspect lock is permanent — matches C#'s FrameImage.Stretch = Stretch.Uniform
+        # (MainWindow.Streaming.cs): always letterboxed to the Kronos' native ratio,
+        # never stretched to fill. There is no toggle for it.
         w, h = self.width(), self.height()
-        if self._aspect_lock:
-            aspect = _FRAME_W / _FRAME_H
-            if w / h > aspect:
-                fw = h * aspect
-                return QRectF((w - fw) / 2, 0, fw, h)
-            else:
-                fh = w / aspect
-                return QRectF(0, (h - fh) / 2, w, fh)
-        return QRectF(0, 0, w, h)
+        aspect = _FRAME_W / _FRAME_H
+        if w / h > aspect:
+            fw = h * aspect
+            return QRectF((w - fw) / 2, 0, fw, h)
+        else:
+            fh = w / aspect
+            return QRectF(0, (h - fh) / 2, w, fh)
 
     # ── Coordinate mapping ─────────────────────────────────────────────────────
 
@@ -1124,10 +1164,144 @@ def _setup_logging(debug: bool):
     logging.getLogger().setLevel(level)
 
 
+def _verify_ftp_login(host: str, port: int, user: str, password: str) -> Tuple[bool, str]:
+    """Attempt a real FTP login (connect + login + disconnect). Reuses
+    file_manager's ftplib wrapper rather than a bespoke client."""
+    from file_manager import _FtpWorker
+    worker = _FtpWorker(host, port, user, password)
+    try:
+        worker.connect()
+        worker.disconnect()
+        return True, ""
+    except Exception as e:
+        return False, str(e)
+
+
+class _FtpLoginDialog(QDialog):
+    """Kronos FTP login prompt — port of Views/LoginDialog.xaml(.cs).
+
+    Verifies the entered credentials against the real FTP server on a
+    background thread before accepting, and locks out after 3 failed
+    attempts (matches KronosFtpSession's attempt-lockout constant).
+    """
+
+    _ATTEMPTS_ALLOWED = 3
+
+    def __init__(self, host: str, port: int, existing_user: str, existing_pass: str,
+                 parent=None):
+        super().__init__(parent)
+        self._host = host
+        self._port = port
+        self._attempts_failed = 0
+        self.username = ""
+        self.password = ""
+        self.save_password = True
+        self.exhausted_attempts = False
+
+        self.setWindowTitle("Kronos FTP Login")
+        self.setFixedWidth(340)
+        self.setStyleSheet(f"QDialog {{ background-color: {T.BG}; color: {T.TEXT}; }}")
+
+        layout = QVBoxLayout(self)
+        subtitle = QLabel(f"FTP credentials for {host}:{port}:")
+        subtitle.setStyleSheet(f"color: {T.TEXT_DIM}; font-size: {T.FS_SMALL}px;")
+        layout.addWidget(subtitle)
+
+        form = QFormLayout()
+        self._user_edit = QLineEdit(existing_user)
+        self._user_edit.setPlaceholderText("root")
+        self._pass_edit = QLineEdit(existing_pass)
+        self._pass_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        form.addRow("Username:", self._user_edit)
+        form.addRow("Password:", self._pass_edit)
+        layout.addLayout(form)
+
+        self._save_chk = QCheckBox("Save password")
+        self._save_chk.setChecked(True)
+        layout.addWidget(self._save_chk)
+
+        self._error_label = QLabel("")
+        self._error_label.setStyleSheet(f"color: {T.ERROR_TEXT};")
+        self._error_label.setWordWrap(True)
+        self._error_label.setVisible(False)
+        layout.addWidget(self._error_label)
+
+        btn_row = QHBoxLayout()
+        self._clear_btn = QPushButton("Clear")
+        self._clear_btn.setToolTip("Clear both fields so you can enter fresh credentials")
+        self._clear_btn.clicked.connect(self._on_clear)
+        btn_row.addWidget(self._clear_btn)
+        btn_row.addStretch(1)
+        self._cancel_btn = QPushButton("Cancel")
+        self._cancel_btn.clicked.connect(self.reject)
+        self._ok_btn = QPushButton("OK")
+        self._ok_btn.setDefault(True)
+        self._ok_btn.clicked.connect(self._on_ok)
+        btn_row.addWidget(self._cancel_btn)
+        btn_row.addWidget(self._ok_btn)
+        layout.addLayout(btn_row)
+
+        if existing_user:
+            self._pass_edit.setFocus()
+        else:
+            self._user_edit.setFocus()
+
+    def _on_clear(self):
+        self._user_edit.clear()
+        self._pass_edit.clear()
+        self._user_edit.setFocus()
+
+    def _show_error(self, msg: str):
+        self._error_label.setText(msg)
+        self._error_label.setVisible(True)
+
+    def _on_ok(self):
+        user = self._user_edit.text().strip()
+        if not user:
+            self._show_error("Username is required.")
+            return
+
+        self._ok_btn.setEnabled(False)
+        self._cancel_btn.setEnabled(False)
+        self._ok_btn.setText("Verifying…")
+        self._error_label.setVisible(False)
+
+        password = self._pass_edit.text()
+
+        def worker():
+            ok, error = _verify_ftp_login(self._host, self._port, user, password)
+            QTimer.singleShot(0, self, lambda: self._on_verify_done(ok, error, user, password))
+
+        threading.Thread(target=worker, daemon=True, name="FtpVerify").start()
+
+    def _on_verify_done(self, ok: bool, error: str, user: str, password: str):
+        if ok:
+            self.username = user
+            self.password = password
+            self.save_password = self._save_chk.isChecked()
+            self.accept()
+            return
+
+        self._ok_btn.setEnabled(True)
+        self._cancel_btn.setEnabled(True)
+        self._ok_btn.setText("OK")
+
+        self._attempts_failed += 1
+        if self._attempts_failed >= self._ATTEMPTS_ALLOWED:
+            self.exhausted_attempts = True
+            self.reject()
+            return
+
+        remaining = self._ATTEMPTS_ALLOWED - self._attempts_failed
+        plural = "s" if remaining != 1 else ""
+        self._show_error(f"{error} ({remaining} attempt{plural} remaining)")
+
+
 class MainWindow(QMainWindow):
     def __init__(self, settings: AppSettings):
         super().__init__()
         self._settings    = settings
+        self._conn_state  = "disconnected"
         self._host        = settings.kronos_host
         self._ctrl_port   = settings.ctrl_port
         self._stream_port = settings.stream_port
@@ -1153,8 +1327,11 @@ class MainWindow(QMainWindow):
         # identity while the switch's MIDI is still in flight.
         self._mode_switch_pending = False
         self._combi_prog_edit_active = False
+        self._combi_edit_origin: int = 0   # 1 = from Combi, 2 = from Sequence (daemon EDITCTX)
         self._combi_prog_flash_state = False
         self._combi_exit_gone_at: float = 0.0
+        self._daemon_state_ok = False      # became True on the first STATE response
+        self._daemon_booting  = True       # fail-safe default until the first STATE poll
         self._help_active    = False
         self._kbd_capture   = False
         self._kbd_send_en   = True
@@ -1203,16 +1380,14 @@ class MainWindow(QMainWindow):
         self._layout_preset = settings.layout_preset
         self._is_fullscreen = False
 
-        self._aspect_lock  = True
         self._zoom_on      = False
         self._zoom_level   = settings.zoom_default_level
         self._mirror_state = False
         self._perf_window  = None   # PerformanceWindow singleton (lazy)
         self._file_manager_win = None
         self._sysex_tool_win = None
-        self._setlist_viewer_win = None
+        self._librarian_shell_win = None
         self._sysex_service = SysExService(self)
-        self._sync_all_cancel: Optional[threading.Event] = None
         self._shutting_down = False
 
         # Ping
@@ -1285,6 +1460,7 @@ class MainWindow(QMainWindow):
 
         # Control surface (800 design units wide)
         self._ctrl_surface = KronosControlSurface()
+        self._ctrl_surface._reverse_scroll = self._settings.reverse_scrolling
         self._ctrl_surface.button_pressed.connect(self._on_ctrl_button)
         self._ctrl_surface.button_released.connect(self._on_ctrl_button_released)
         self._ctrl_surface.wheel_step.connect(self._on_wheel_step)
@@ -1415,9 +1591,93 @@ class MainWindow(QMainWindow):
         for w in (_sep(), self._fps_label, _sep(), self._ping_label,
                   _sep(), self._midi_badge, _sep(), _midi_io,
                   _sep(), self._kbd_label, _sep(), self._notify_label,
-                  _sep(), self._kbd_info_btn, _sep(), self._conn_mode_label,
-                  _sep(), self._mode_label, _sep(), self._perf_label):
+                  _sep(), self._kbd_info_btn, _sep(), self._perf_label):
             self._status_bar.addWidget(w)
+
+        # Right-cluster containers for ModeText / ConnModeText (C# declares them
+        # right-docked, so they sit at the far right of the status bar).
+        def _wrap(label: QLabel) -> QWidget:
+            box = QWidget()
+            lay = QHBoxLayout(box)
+            lay.setContentsMargins(0, 0, 0, 0)
+            lay.addWidget(label)
+            return box
+
+        self._conn_mode_box = _wrap(self._conn_mode_label)
+        self._mode_box = _wrap(self._mode_label)
+
+        # ── Right cluster: sequencer transport + tap tempo (mirrors C# footer row) ──
+        # Locate/Rewind/Fast-Forward/Pause/Record/Start only mean anything in Sequence
+        # mode; REC/WRITE doubles as Save in Setlist/Combi/Program/Global. Tap Tempo is
+        # global. Enabled whenever connected (no per-mode gating in this port).
+        _seq_font = QFont(T.FONT_SYMBOL)
+        _seq_font.setPixelSize(T.FS_SMALL)
+
+        def _seq_btn(glyph: str, tooltip: str, action: str) -> QLabel:
+            lbl = QLabel(glyph)
+            lbl.setObjectName("footerIcon")
+            lbl.setFont(_seq_font)
+            lbl.setStyleSheet(f"color: {T.TEXT_DIM}; padding: 0 3px;")
+            lbl.setToolTip(tooltip)
+            lbl.setCursor(Qt.CursorShape.PointingHandCursor)
+            lbl.mousePressEvent = lambda ev, a=action, l=lbl: (
+                None if ev.button() != Qt.MouseButton.LeftButton
+                else (self._ctrl_send(f"BUTTON {a}"),
+                      l.setStyleSheet(f"color: {T.ACCENT}; padding: 0 3px;"),
+                      QTimer.singleShot(180, lambda: l.setStyleSheet(
+                          f"color: {T.TEXT_DIM}; padding: 0 3px;"))))
+            return lbl
+
+        def _seq_icon_btn(kind: str, tooltip: str, action: str) -> QLabel:
+            # Painted vector icon, not an emoji glyph — 💾 (U+1F4BE) and the metronome
+            # shape have no Segoe UI Symbol coverage, so Qt falls back to the system's
+            # COLOR emoji font for them, which is why Save used to render as a colored,
+            # mismatched glyph next to the monochrome transport icons around it. Painting
+            # our own keeps every footer icon the same flat, single-color style.
+            size = T.FS_SMALL
+            lbl = QLabel()
+            lbl.setObjectName("footerIcon")
+            lbl.setPixmap(_paint_seq_icon(kind, T.TEXT_DIM, size))
+            lbl.setToolTip(tooltip)
+            lbl.setCursor(Qt.CursorShape.PointingHandCursor)
+            lbl.mousePressEvent = lambda ev, a=action, l=lbl, k=kind, sz=size: (
+                None if ev.button() != Qt.MouseButton.LeftButton
+                else (self._ctrl_send(f"BUTTON {a}"),
+                      l.setPixmap(_paint_seq_icon(k, T.ACCENT, sz)),
+                      QTimer.singleShot(180, lambda: l.setPixmap(_paint_seq_icon(k, T.TEXT_DIM, sz)))))
+            return lbl
+
+        self._seq_locate = _seq_btn("⏮", "Locate — return to the locate point", "SEQ_LOCATE")
+        self._seq_rew    = _seq_btn("◀◀", "Rewind (<<)", "SEQ_REW")
+        self._seq_ff     = _seq_btn("▶▶", "Fast-forward (>>)", "SEQ_FF")
+        self._seq_pause  = _seq_btn("⏸", "Pause", "SEQ_PAUSE")
+        self._seq_rec    = _seq_btn("⏺", "Record", "SEQ_REC")
+        self._seq_start  = _seq_btn("▶", "Start / Stop", "SEQ_START")
+        self._tap_tempo_lbl = _seq_icon_btn("metronome",
+            "Tap Tempo — one tap per press; the Kronos averages", "TAP_TEMPO")
+        self._seq_save_lbl  = _seq_icon_btn("save",
+            "Write / Save — REC/WRITE (Setlist/Combi/Program/Global)", "SEQ_REC")
+        # Transport row is one widget so it can be faded/enabled as a unit (req 12).
+        _seq_box = QWidget()
+        _seq_lay = QHBoxLayout(_seq_box)
+        _seq_lay.setContentsMargins(0, 0, 0, 0)
+        _seq_lay.setSpacing(2)
+        for w in (self._seq_locate, self._seq_rew, self._seq_ff, self._seq_pause,
+                  self._seq_rec, self._seq_start):
+            _seq_lay.addWidget(w)
+        self._seq_box = _seq_box
+        # Save (REC/WRITE) is its own item in the C# status bar (SeqSaveBarItem).
+        _save_box = QWidget()
+        _save_lay = QHBoxLayout(_save_box)
+        _save_lay.setContentsMargins(0, 0, 0, 0)
+        _save_lay.addWidget(self._seq_save_lbl)
+        self._seq_save_box = _save_box
+        # Tap Tempo is its own item too (TapTempoBarItem).
+        _tap_box = QWidget()
+        _tap_lay = QHBoxLayout(_tap_box)
+        _tap_lay.setContentsMargins(0, 0, 0, 0)
+        _tap_lay.addWidget(self._tap_tempo_lbl)
+        self._tap_tempo_box = _tap_box
 
         # ── Right cluster: audio VU meter (the only right-justified item) ────
         from vu_meter import VuMeterWidget
@@ -1431,7 +1691,21 @@ class MainWindow(QMainWindow):
         _vu_lay.addWidget(self._vu_widget)
         _vu_lay.addWidget(self._vu_picker_btn)
 
+        # C# right-aligned status bar order (left→right, per MainWindow.xaml's
+        # DockPanel.Dock=Right declarations): Save | TapTempo | SeqTransport | VU |
+        # ConnMode | ModeText. QStatusBar.addPermanentWidget stacks from the right, so
+        # add rightmost-first to reproduce that order.
+        self._status_bar.addPermanentWidget(self._mode_box)
+        self._status_bar.addPermanentWidget(_sep())
+        self._status_bar.addPermanentWidget(self._conn_mode_box)
+        self._status_bar.addPermanentWidget(_sep())
         self._status_bar.addPermanentWidget(_vu_box)
+        self._status_bar.addPermanentWidget(_sep())
+        self._status_bar.addPermanentWidget(self._seq_box)
+        self._status_bar.addPermanentWidget(_sep())
+        self._status_bar.addPermanentWidget(self._tap_tempo_box)
+        self._status_bar.addPermanentWidget(_sep())
+        self._status_bar.addPermanentWidget(self._seq_save_box)
 
         self._build_menu()
 
@@ -1469,9 +1743,6 @@ class MainWindow(QMainWindow):
 
         # ── View (MENU_View) ────────────────────────────────────────────────
         view_menu = mb.addMenu("&View")
-        self._act_aspect   = view_menu.addAction("&Aspect Lock")
-        self._act_aspect.setCheckable(True)
-        self._act_aspect.setChecked(True)
         self._act_zoom     = view_menu.addAction("&Zoom Window")
         self._act_zoom.setCheckable(True)
         view_menu.addSeparator()
@@ -1529,17 +1800,14 @@ class MainWindow(QMainWindow):
         self._act_grid[5].setChecked(True)
         tools_menu.addSeparator()
         self._act_sysex_tool = tools_menu.addAction("Open &SysEx Tool…")
-        self._act_setlist_viewer = tools_menu.addAction("Set List &Viewer…")
-        self._act_sync_names = tools_menu.addAction("Sync &Program/Combi Names…")
-        self._act_sync_all = tools_menu.addAction("Sync &All (Names + Set Lists)…")
+        self._act_librarian_shell = tools_menu.addAction("&Librarian…")
         tools_menu.addSeparator()
         self._act_keyboard_info = tools_menu.addAction("&Keyboard Info…")
-        self._act_input_tester  = tools_menu.addAction("&Input Tester…")
-        self._act_input_tester.setVisible(False)  # collapsed — matches C# XAML
         self._act_test_mode   = tools_menu.addAction("Enter Kronos &Test Mode")
         tools_menu.addSeparator()
         self._act_disable_kbd = tools_menu.addAction("&Disable Keyboard Send")
         self._act_disable_kbd.setCheckable(True)
+        self._act_paste_clipboard = tools_menu.addAction("&Paste Clipboard to Kronos")
 
         # ── Mode select (MENU_ModeSelect) ───────────────────────────────────
         mode_menu = mb.addMenu("&Mode Select")
@@ -1560,17 +1828,21 @@ class MainWindow(QMainWindow):
         self._act_about       = help_menu.addAction("&About…")
 
     def _build_bank_menu(self, menu: QMenu):
+        """3 sub-menus (Internal/User/U-User), matching C#'s MainWindow.xaml.cs
+        BuildBankSelectMenu — keeps the top Bank Select popup a 3-item list
+        instead of one flat 21-item dropdown."""
         letters = "ABCDEFG"
+        internal_menu = menu.addMenu("&Internal (A-G)")
         for letter in letters:
-            a = menu.addAction(f"I-{letter}")
+            a = internal_menu.addAction(letter)
             a.triggered.connect(lambda checked, l=letter: self._ctrl_send(f"BUTTON BANK_I{l}"))
-        menu.addSeparator()
+        user_menu = menu.addMenu("&User (A-G)")
         for letter in letters:
-            a = menu.addAction(f"U-{letter}")
+            a = user_menu.addAction(letter)
             a.triggered.connect(lambda checked, l=letter: self._ctrl_send(f"BUTTON BANK_U{l}"))
-        menu.addSeparator()
+        uuser_menu = menu.addMenu("Us&er (AA–GG)")
         for letter in letters:
-            a = menu.addAction(f"U-{letter}{letter}")
+            a = uuser_menu.addAction(f"{letter}{letter}")
             a.triggered.connect(lambda checked, l=letter: self._ctrl_send(f"CHORD BANK_U{l} BANK_I{l}"))
 
     # ── Action wiring ──────────────────────────────────────────────────────────
@@ -1583,7 +1855,6 @@ class MainWindow(QMainWindow):
         self._act_disconnect.triggered.connect(self._disconnect)
         self._act_quit.triggered.connect(self._try_quit)
 
-        self._act_aspect.toggled.connect(self._on_aspect_toggled)
         self._act_zoom.toggled.connect(self._on_zoom_toggled)
         self._act_full.triggered.connect(self._toggle_fullscreen)
         self._act_on_top.toggled.connect(self._on_always_on_top_toggled)
@@ -1607,10 +1878,9 @@ class MainWindow(QMainWindow):
         self._act_open_ss_dir.triggered.connect(self._open_screenshots_folder)
         self._act_keyboard_info.triggered.connect(self._open_keyboard_info)
         self._act_sysex_tool.triggered.connect(self._open_sysex_tool)
-        self._act_setlist_viewer.triggered.connect(self._open_setlist_viewer)
-        self._act_sync_names.triggered.connect(self._open_sync_names)
-        self._act_sync_all.triggered.connect(self._open_sync_all)
+        self._act_librarian_shell.triggered.connect(self._open_librarian_shell)
         self._act_disable_kbd.toggled.connect(self._on_disable_kbd_toggled)
+        self._act_paste_clipboard.triggered.connect(self._paste_clipboard_to_kronos)
 
         # Footer MIDI indicators + performance name — connect ONCE to the stable
         # sysex_service (the underlying bridge is rebuilt on every reconnect).
@@ -1618,6 +1888,15 @@ class MainWindow(QMainWindow):
         self._sysex_service.tx_activity.connect(self._on_midi_tx)
         self._sysex_service.link_changed.connect(self._on_midi_link_changed)
         self._sysex_service.performance_changed.connect(self._on_performance_changed)
+        # Live MIDI-stream mode hint (func 0x4E, decoded the instant it's seen -
+        # see sysex_service's own docstring) - triggers an immediate STATE
+        # re-poll instead of waiting up to _MODE_POLL_INTERVAL_MS for the next
+        # periodic tick, so a hardware-side mode change (not just an on-screen
+        # button press) reaches the mode buttons/label as fast as the
+        # information actually arrives. STATE stays authoritative (it also
+        # carries EDITCTX/BOOT, which this bare hint doesn't) - this only
+        # moves the confirmation earlier, via _apply_daemon_state as usual.
+        self._sysex_service.mode_changed.connect(self._on_sysex_mode_hint)
         # Seed from current state (in case events fired before this wiring).
         br = self._sysex_service.bridge
         self._set_midi_badge(bool(br and br.is_connected))
@@ -1659,7 +1938,6 @@ class MainWindow(QMainWindow):
         self._act_scale_smooth.triggered.connect(lambda: self._set_scale_quality("Smooth"))
         self._act_scale_hq.triggered.connect(lambda: self._set_scale_quality("HighQuality"))
         self._act_image_adjust.triggered.connect(lambda: self._open_settings(initial_tab="Image"))
-        self._act_input_tester.triggered.connect(lambda: self._todo("Input Tester"))
 
     def _todo(self, feature: str):
         """Placeholder for C#-parity menu items not yet ported. Makes a missing
@@ -1670,9 +1948,46 @@ class MainWindow(QMainWindow):
             f"“{feature}” is on the menu for C# parity but isn’t wired up yet.\n\n"
             "It will be implemented in an upcoming step.")
 
+    def _paste_clipboard_to_kronos(self):
+        """Port of MainWindow.Input.cs's PasteClipboardToKronos()."""
+        clipboard = QApplication.clipboard()
+        raw = clipboard.text()
+        if not raw:
+            return
+
+        chars: list[str] = []
+        skipped = 0
+        for c in raw:
+            if c in ("\r", "\n") or (ord(c) < 0x20 and c != "\t") or ord(c) >= 0x80:
+                skipped += 1
+                continue
+            if char_map.get_commands(c) is None:
+                skipped += 1
+                continue
+            chars.append(c)
+
+        if not chars:
+            logging.info("[paste] nothing sendable after filtering%s",
+                         f" ({skipped} chars stripped)" if skipped else "")
+            return
+
+        char_count = len(chars)
+        logging.info("[paste] typing %d chars via KEY%s", char_count,
+                     f", {skipped} stripped" if skipped else "")
+
+        def worker():
+            for c in chars:
+                cmds = char_map.get_commands(c)
+                if cmds is None:
+                    continue
+                for cmd in cmds:
+                    self._ctrl_send(cmd)
+                time.sleep(0.05)
+            logging.info("[paste] %d chars typed", char_count)
+
+        threading.Thread(target=worker, daemon=True, name="PasteClipboard").start()
+
     def _apply_settings_to_ui(self):
-        self._act_aspect.setChecked(self._aspect_lock)
-        self._frame_w._aspect_lock = self._aspect_lock
         focused = self._layout_preset == "Focused"
         self._act_preset_full.setChecked(not focused)
         self._act_preset_focused.setChecked(focused)
@@ -1721,33 +2036,22 @@ class MainWindow(QMainWindow):
         self._connect_async()
 
     def _ensure_ftp_credentials(self) -> bool:
-        """Prompt for FTP credentials if not saved. Returns False if user cancelled."""
+        """Prompt for FTP credentials if not saved, verifying them against the
+        real FTP server before accepting. Returns False if the user cancelled
+        or exhausted the 3-attempt lockout."""
         if self._settings.ftp_username:
             return True
-        from PySide6.QtWidgets import (
-            QDialog, QDialogButtonBox, QFormLayout, QLabel, QLineEdit, QVBoxLayout)
-        dlg = QDialog(self)
-        dlg.setWindowTitle("Kronos Login")
-        dlg.setMinimumWidth(320)
-        layout = QVBoxLayout(dlg)
-        layout.addWidget(QLabel(f"FTP credentials for {self._host}:"))
-        form = QFormLayout()
-        user_edit = QLineEdit()
-        user_edit.setPlaceholderText("root")
-        pass_edit = QLineEdit()
-        pass_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        form.addRow("Username:", user_edit)
-        form.addRow("Password:", pass_edit)
-        layout.addLayout(form)
-        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        btns.accepted.connect(dlg.accept)
-        btns.rejected.connect(dlg.reject)
-        layout.addWidget(btns)
+        dlg = _FtpLoginDialog(self._host, self._settings.ftp_port,
+                              self._settings.ftp_username, self._settings.ftp_password, self)
         if dlg.exec() != QDialog.Accepted:
+            if dlg.exhausted_attempts:
+                QMessageBox.critical(self, "Authentication Failed",
+                                     "Too many failed FTP login attempts.")
             return False
-        self._settings.ftp_username = user_edit.text()
-        self._settings.ftp_password = pass_edit.text()
-        storage.save_settings(self._settings)
+        self._settings.ftp_username = dlg.username
+        self._settings.ftp_password = dlg.password
+        if dlg.save_password:
+            storage.save_settings(self._settings)
         return True
 
     def _connect_async(self):
@@ -1850,49 +2154,63 @@ class MainWindow(QMainWindow):
             raw, self._frame_w._lut, self._settings.boot_screen_threshold / 100.0)
         self._frame_w._frame_is_likely_boot_screen = likely_boot
 
+        # Pixel detection is only a FALLBACK (req 13): the daemon's STATE poll is the
+        # authoritative mode/boot source. While the daemon is answering (or still
+        # reporting BOOT=1) the pixel detectors are skipped entirely; they only run
+        # when the daemon STATE path has never produced a reading (daemon process
+        # missing / network to ctrl port failing).
+        daemon_authoritative = self._daemon_state_ok
         if not mostly_black:
-            # Mode + help detection from top-left 140×55 region
+            # Help overlay is still pixel-detected (the daemon exposes no help signal).
             if self._mode_detector.has_any():
-                mode = self._mode_detector.identify(raw, _FRAME_W, self._frame_w._lut)
-                if mode != self._current_mode and mode > 0:
-                    self._set_mode_button(mode)
                 help_now = self._mode_detector.is_help_active(raw, _FRAME_W, self._frame_w._lut)
                 if help_now != self._help_active:
                     self._help_active = help_now
                     self._ctrl_surface.set_active("Help", help_now)
 
-            # Combi program-edit indicator — checked every frame (outside top-left region)
-            indicator = self._combi_detector.is_active(raw, _FRAME_W, self._frame_w._lut)
-            if (not self._combi_prog_edit_active
-                    and self._current_mode == 3
-                    and self._prev_mode in (2, 0)
-                    and indicator):
-                self._combi_exit_gone_at = 0.0
-                self._enter_combi_program_edit()
-            elif self._combi_prog_edit_active:
-                if self._current_mode != 3:
+            if not daemon_authoritative:
+                # Last-case fallback: daemon STATE never answered - use the client-side
+                # pixel mode detector.
+                if self._mode_detector.has_any():
+                    mode = self._mode_detector.identify(raw, _FRAME_W, self._frame_w._lut)
+                    if mode != self._current_mode and mode > 0:
+                        self._set_mode_button(mode)
+
+                # Combi program-edit indicator - checked every frame (outside top-left region)
+                indicator = self._combi_detector.is_active(raw, _FRAME_W, self._frame_w._lut)
+                if (not self._combi_prog_edit_active
+                        and self._current_mode == 3
+                        and self._prev_mode in (2, 0)
+                        and indicator):
                     self._combi_exit_gone_at = 0.0
-                    self._exit_combi_program_edit()
-                elif not indicator:
-                    now = time.monotonic()
-                    if self._combi_exit_gone_at == 0.0:
-                        self._combi_exit_gone_at = now
-                    elif now - self._combi_exit_gone_at >= 1.5:
+                    self._enter_combi_program_edit()
+                elif self._combi_prog_edit_active:
+                    if self._current_mode != 3:
                         self._combi_exit_gone_at = 0.0
                         self._exit_combi_program_edit()
-                else:
-                    self._combi_exit_gone_at = 0.0
+                    elif not indicator:
+                        now = time.monotonic()
+                        if self._combi_exit_gone_at == 0.0:
+                            self._combi_exit_gone_at = now
+                        elif now - self._combi_exit_gone_at >= 1.5:
+                            self._combi_exit_gone_at = 0.0
+                            self._exit_combi_program_edit()
+                    else:
+                        self._combi_exit_gone_at = 0.0
 
-        # Boot phase entry: after BOOT_ENTRY_DELAY with no mode detected
+        # Boot phase entry (req 14): while the daemon reports BOOT=1 (or hasn't answered
+        # yet) keep the boot splash up; pixel black-detection is the fallback path only.
         if self._boot_first_frame == 0.0:
             self._boot_first_frame = time.monotonic()
         if (not self._detected_mode_ever and not self._boot_phase
                 and self._boot_first_frame > 0
                 and time.monotonic() - self._boot_first_frame >= _BOOT_ENTRY_DELAY):
-            self._enter_boot_phase()
+            if self._daemon_booting or not daemon_authoritative:
+                self._enter_boot_phase()
 
-        # Boot load-phase detection — advance phases strictly forward
-        if self._boot_phase:
+        # Boot load-phase detection - advance phases strictly forward (fallback only;
+        # the daemon's own progress bar is composited server-side into the stream).
+        if self._boot_phase and not daemon_authoritative:
             detected = self._boot_detector.identify(raw, _FRAME_W, self._frame_w._lut)
             if (detected == BootPhase.FINISHING
                     and self._boot_load_phase < BootPhase.FINISHING):
@@ -2004,14 +2322,25 @@ class MainWindow(QMainWindow):
 
     def _set_pending_mode(self, mode: int):
         """Record a user-requested mode without lighting the button immediately.
-        Detection in _on_frame is authoritative; this falls back after 3 seconds."""
+        Detection (daemon STATE, or pixel fallback) is authoritative; this falls back
+        after 3 seconds. Mode changes are ignored until the board is verified booted
+        (a real mode has been confirmed) - C# SendMode's own gate: the front panel
+        ignores mode keys during boot anyway, and a pending mode whose timeout fires
+        later would light the wrong button."""
+        if not self._detected_mode_ever or self._daemon_booting:
+            return
         self._pending_mode = mode
-        # Gate the perf-name footer until the switch completes, so the Kronos's
-        # in-flight MIDI (a Program-Change decoded against the not-yet-updated
-        # mode) doesn't flash the previous mode's identity. Cleared in
-        # _set_mode_button (detection or the 3 s timeout below — the backstop).
-        self._mode_switch_pending = True
-        QTimer.singleShot(3000, lambda m=mode: self._pending_mode_timeout(m))
+        # Boost UI responsiveness: fetch STATE soon instead of waiting up to
+        # _MODE_POLL_INTERVAL_MS for the next periodic tick. api.md says a BUTTON
+        # mode-select "update[s] the daemon's internal mode state so STATE queries
+        # reflect the change immediately" - get_mode_state() prefers a live
+        # eva_mode.ko read, which re-reads OA's real mode state that
+        # HandleSwitchEvent (BUTTON's handler) just mutated. That's server-asserted,
+        # not verified against hardware here, so this isn't fired with zero delay:
+        # a short wait gives OA's own event handling room to settle before the poll,
+        # while still landing in ~1/10th the time the periodic tick would take. If
+        # it's still stale, the periodic timer remains the backstop.
+        QTimer.singleShot(80, self._poll_mode)
 
     def _pending_mode_timeout(self, mode: int):
         """Fallback: if detection never confirmed within 3 s, apply the pending mode."""
@@ -2034,12 +2363,15 @@ class MainWindow(QMainWindow):
             self._exit_boot_phase()
         self._ctrl_surface.set_mode(mode)
         self._mode_label.setText(_MODE_NAMES[mode] if 1 <= mode <= 7 else "")
+        self._update_seq_enabled()
 
     # ── Boot phase ────────────────────────────────────────────────────────────
 
     def _reset_boot_state(self):
         self._boot_phase = False
         self._detected_mode_ever = False
+        self._daemon_state_ok = False
+        self._daemon_booting = True
         self._boot_first_frame = 0.0
         self._boot_phase_start = 0.0
         self._preload_timer_start = 0.0
@@ -2049,6 +2381,7 @@ class MainWindow(QMainWindow):
         self._preload_schedule = None
         self._boot_anim_timer.stop()
         self._frame_w._boot_phase = False
+        self._frame_w._daemon_authoritative = False
         self._frame_w._boot_fill_fraction = 0.0
         self._frame_w._frame_is_likely_boot_screen = False
 
@@ -2139,30 +2472,39 @@ class MainWindow(QMainWindow):
         self._ctrl_surface.set_active("Program", self._combi_prog_flash_state)
 
     def _enter_combi_program_edit(self):
-        self._combi_prog_edit_active = True
-        self._combi_prog_flash_state = False
-        self._ctrl_surface.set_active("Combi",   True)
-        self._ctrl_surface.set_active("Program", False)
-        self._combi_flash_timer.start()
-        self._mode_label.setText("Program (from Combi)")
-        print("[mode] combi program-edit: entered")
+        """Pixel-fallback entry for program-edit-from-Combi (kept for when the daemon
+        STATE path is unavailable)."""
+        self._enter_program_edit_context(1)
 
     def _exit_combi_program_edit(self):
         self._combi_prog_edit_active = False
+        self._combi_edit_origin = 0
         self._combi_flash_timer.stop()
         # Re-light whichever mode is actually current
         self._ctrl_surface.set_mode(self._current_mode)
         self._mode_label.setText(_MODE_NAMES[self._current_mode]
                                  if 1 <= self._current_mode <= 7 else "")
+        self._update_seq_enabled()
         print("[mode] combi program-edit: exited")
 
+    @Slot(int)
+    def _on_sysex_mode_hint(self, _mode: int):
+        """sysex_service.mode_changed fired (live MIDI-stream 0x4E decode) - pull STATE
+        now rather than waiting for the next periodic tick. The signal's own mode value
+        isn't used directly (no EDITCTX/BOOT), it's purely a "check now" trigger; STATE
+        via _apply_daemon_state remains the sole source of truth for what gets applied."""
+        self._poll_mode()
+
     def _poll_mode(self):
+        """Daemon-first mode + boot detection (req 13/14): the daemon's STATE command is
+        the authoritative source (its eva_mode.ko reading is exact per call, per
+        KronosScreenRemoteDaemon/docs/api.md). The client-side pixel detectors are only a
+        last-case fallback when STATE is unreachable or returns no mode (e.g. the daemon
+        process is missing)."""
         if not self._host or not self._receiver:
             return
-        if self._mode_detector.has_any():
-            return  # frame-based detection is working — no need to poll STATE
         if self._poll_in_progress:
-            return  # previous query still in flight — skip this tick
+            return  # previous query still in flight - skip this tick
         self._poll_in_progress = True
         host = self._host
         port = self._ctrl_port
@@ -2171,19 +2513,86 @@ class MainWindow(QMainWindow):
 
     def _poll_mode_bg(self, host: str, port: int):
         try:
-            resp = self._ctrl.query(host, port, "STATE", timeout_ms=800)
+            resp = self._ctrl.query_state(host, port, timeout_ms=800)
             if not resp:
+                self._daemon_state_ok = False
                 return
+            mode = 0
+            edit_ctx = 0
+            boot = 1
             for part in resp.split():
                 if part.startswith("MODE="):
                     try:
-                        m = int(part[5:])
-                        if m != self._current_mode and self._pending_mode == 0:
-                            QTimer.singleShot(0, self, lambda mode=m: self._set_mode_button(mode))
+                        mode = int(part[5:])
                     except ValueError:
-                        pass
+                        mode = 0
+                elif part.startswith("EDITCTX="):
+                    try:
+                        edit_ctx = int(part[8:])
+                    except ValueError:
+                        edit_ctx = 0
+                elif part.startswith("BOOT="):
+                    try:
+                        boot = int(part[5:])
+                    except ValueError:
+                        boot = 1
+            QTimer.singleShot(0, self, lambda m=mode, e=edit_ctx, b=boot:
+                              self._apply_daemon_state(m, e, b))
         finally:
             self._poll_in_progress = False
+
+    def _apply_daemon_state(self, mode: int, edit_ctx: int, boot: int) -> None:
+        """Port of MainWindow.Streaming.cs's ApplyDaemonState + boot gate handling:
+        BOOT=1 keeps the boot phase up (daemon's own authoritative gate); MODE/EDITCTX
+        only apply once boot clears. EDITCTX (program-edit-from-Combi/Sequence) drives
+        the flashing-Program/origin-button state."""
+        if self._host is None or self._receiver is None:
+            return
+        self._daemon_state_ok = True
+        self._frame_w._daemon_authoritative = True
+        daemon_booting = boot != 0
+        if daemon_booting:
+            self._daemon_booting = True
+            if not self._boot_phase and not self._detected_mode_ever:
+                self._enter_boot_phase()
+            return
+        self._daemon_booting = False
+        if self._boot_phase:
+            self._exit_boot_phase()
+        if edit_ctx != 0:
+            # Program-edit-from-Combi (1) / -from-Sequence (2) - drive the flashing state.
+            ctx = 1 if edit_ctx == 1 else 2
+            if mode != self._current_mode and mode != 0:
+                self._set_mode_button(mode)   # keep _current_mode bookkeeping correct
+            if not self._combi_prog_edit_active or self._combi_edit_origin != ctx:
+                self._enter_program_edit_context(ctx)
+        else:
+            if self._combi_prog_edit_active:
+                self._exit_combi_program_edit()
+            # STATE is authoritative and exact - apply it as soon as it disagrees with
+            # what's currently shown, so a button press lights up as fast as the daemon
+            # confirms the change (one poll interval, not an added grace).
+            if mode != 0 and mode != self._current_mode:
+                self._set_mode_button(mode)
+            elif mode == 0 and not self._detected_mode_ever:
+                # Daemon says unknown and nothing detected yet - keep the boot phase up.
+                if not self._boot_phase:
+                    self._enter_boot_phase()
+
+    def _enter_program_edit_context(self, ctx: int) -> None:
+        """Enter a program-edit-from-Combi/Sequence context: the origin mode button lights
+        and the Program button flashes (C# EnterProgramEditContext)."""
+        self._combi_prog_edit_active = True
+        self._combi_edit_origin = ctx
+        self._combi_prog_flash_state = False
+        self._ctrl_surface.set_active("Combi", ctx == 1)
+        self._ctrl_surface.set_active("Sequence", ctx == 2)
+        self._ctrl_surface.set_active("Program", False)
+        self._combi_flash_timer.start()
+        self._mode_label.setText("Mode: Program (from "
+                                 + ("Combi" if ctx == 1 else "Sequence") + ")")
+        self._update_seq_enabled()
+        print(f"[mode] program-edit-from-{'Combi' if ctx == 1 else 'Sequence'}: entered")
 
     # ── Touch ──────────────────────────────────────────────────────────────────
 
@@ -2344,12 +2753,14 @@ class MainWindow(QMainWindow):
         if not (mods & Qt.ControlModifier):
             if self._matches_keybind(event, "Quit"):
                 self._try_quit(); return
+            if self._matches_keybind(event, "Zoom In"):
+                self._zoom_step(+0.5); return
+            if self._matches_keybind(event, "Zoom Out"):
+                self._zoom_step(-0.5); return
             if self._matches_keybind(event, "Fullscreen"):
                 self._toggle_fullscreen(); return
             if self._matches_keybind(event, "Zoom Window"):
                 self._act_zoom.setChecked(not self._act_zoom.isChecked()); return
-            if self._matches_keybind(event, "AspectLock"):
-                self._act_aspect.setChecked(not self._act_aspect.isChecked()); return
             if self._matches_keybind(event, "Mirror"):
                 self._toggle_mirror(); return
             if self._matches_keybind(event, "Help"):
@@ -2368,6 +2779,20 @@ class MainWindow(QMainWindow):
                 self._set_pending_mode(i)
                 return
 
+        # Sequencer transport keybinds (unassigned by default — see REBINDABLE_DEFS)
+        seq = {"Seq Locate": "BUTTON SEQ_LOCATE", "Seq Rewind": "BUTTON SEQ_REW",
+               "Seq Forward": "BUTTON SEQ_FF", "Seq Pause": "BUTTON SEQ_PAUSE",
+               "Seq Record": "BUTTON SEQ_REC", "Seq Start": "BUTTON SEQ_START",
+               "Seq Save": "BUTTON SEQ_REC"}   # Save fires the same REC/WRITE press
+        for action, cmd in seq.items():
+            if self._matches_keybind(event, action):
+                self._ctrl_send(cmd)
+                return
+        if self._matches_keybind(event, "Tap Tempo"):
+            self._ctrl_send("BUTTON TAP_TEMPO")
+            self._flash_tap_tempo()
+            return
+
     def keyReleaseEvent(self, event: QKeyEvent):
         if event.isAutoRepeat():
             return
@@ -2379,6 +2804,17 @@ class MainWindow(QMainWindow):
         name = _numpad_btn(event.key(), event.modifiers())
         if name:
             self._ctrl_surface.release_button(name)
+
+    # ── Tap tempo flash ──────────────────────────────────────────────────────
+    # One tap = one front-panel TAP TEMPO press; the Kronos does its own averaging
+    # (two taps set the tempo), so the client never computes BPM. The footer button
+    # and the "Tap Tempo" keybind share this same press+flash path (mirrors C#
+    # TapTempoOnce/FlashTapTempo).
+    def _flash_tap_tempo(self):
+        if hasattr(self, "_tap_tempo_lbl"):
+            self._tap_tempo_lbl.setPixmap(_paint_seq_icon("metronome", T.ACCENT, T.FS_SMALL))
+            QTimer.singleShot(250, lambda: self._tap_tempo_lbl.setPixmap(
+                _paint_seq_icon("metronome", T.TEXT_DIM, T.FS_SMALL)))
 
     # ── Held-key auto-repeat ─────────────────────────────────────────────────
     def _start_kbd_repeat(self, qt_key: int, linux_code: int):
@@ -2484,6 +2920,8 @@ class MainWindow(QMainWindow):
             self._frame_w.update()
             event.accept()
             return
+        if self._settings.reverse_scrolling:
+            delta = -delta
         if delta > 0:
             self._ctrl_send("WHEEL CW")
             self._ctrl_surface.trigger_wheel_anim(1)
@@ -2493,11 +2931,6 @@ class MainWindow(QMainWindow):
         event.accept()
 
     # ── View actions ───────────────────────────────────────────────────────────
-
-    def _on_aspect_toggled(self, checked: bool):
-        self._aspect_lock = checked
-        self._frame_w._aspect_lock = checked
-        self._frame_w.update()
 
     def _on_zoom_toggled(self, checked: bool):
         self._zoom_on = checked
@@ -2863,18 +3296,17 @@ class MainWindow(QMainWindow):
         touches self._settings (so Cancel reverts cleanly)."""
         self._frame_w.set_image_adjust(brightness, contrast, gamma, saturation, sharpen)
 
-    # ── Command palette (simplified) ───────────────────────────────────────────
+    # ── Command palette ──────────────────────────────────────────────────────────
 
     def _open_command_palette(self):
-        # Simple implementation: show QInputDialog with action list
-        actions = [(a, l) for a, l, _ in get_rebindable()]
-        items   = [f"{l}  [{self._settings.get_key_name(a)}]" for a, l in actions]
-        item, ok = QInputDialog.getItem(self, "Command Palette", "Action:", items, 0, False)
-        if ok and item:
-            idx = items.index(item)
-            action = actions[idx][0]
-            # Trigger the action
-            self._run_action(action)
+        from command_palette import CommandEntry, CommandPalette
+        entries = [
+            CommandEntry(action, label, self._settings.get_key_name(action),
+                        lambda a=action: self._run_action(a))
+            for action, label, _ in get_rebindable()
+        ]
+        dlg = CommandPalette(entries, self)
+        dlg.show()
 
     def _run_action(self, action: str):
         cmds: dict = {
@@ -2885,12 +3317,24 @@ class MainWindow(QMainWindow):
         }
         cmds.update({
             "Fullscreen":      self._toggle_fullscreen,
+            "Zoom Window":     lambda: self._act_zoom.setChecked(not self._act_zoom.isChecked()),
+            "Zoom In":         lambda: self._zoom_step(+0.5),
+            "Zoom Out":        lambda: self._zoom_step(-0.5),
             "Mirror":          self._toggle_mirror,
             "Calibrate":       lambda: self._act_cal.setChecked(not self._act_cal.isChecked()),
             "Help":            self._toggle_help,
             "Quit":            self._try_quit,
             "HideDataInput":   lambda: self._toggle_hide_data_input(not self._settings.hide_data_input),
             "HideValueInput":  lambda: self._toggle_hide_value_input(not self._settings.hide_value_input),
+            # Sequencer transport + tap tempo (shared with keybind handling)
+            "Seq Locate":  lambda: self._ctrl_send("BUTTON SEQ_LOCATE"),
+            "Seq Rewind":  lambda: self._ctrl_send("BUTTON SEQ_REW"),
+            "Seq Forward": lambda: self._ctrl_send("BUTTON SEQ_FF"),
+            "Seq Pause":   lambda: self._ctrl_send("BUTTON SEQ_PAUSE"),
+            "Seq Record":  lambda: self._ctrl_send("BUTTON SEQ_REC"),
+            "Seq Start":   lambda: self._ctrl_send("BUTTON SEQ_START"),
+            "Seq Save":    lambda: self._ctrl_send("BUTTON SEQ_REC"),
+            "Tap Tempo":   lambda: (self._ctrl_send("BUTTON TAP_TEMPO"), self._flash_tap_tempo()),
         })
         fn = cmds.get(action)
         if fn:
@@ -2958,100 +3402,31 @@ class MainWindow(QMainWindow):
         self._sysex_tool_win.destroyed.connect(lambda: setattr(self, '_sysex_tool_win', None))
         self._sysex_tool_win.show()
 
-    # ── Set List Viewer ──────────────────────────────────────────────────────────
+    # ── Librarian ─────────────────────────────────────────────────────────────────
 
-    def _open_setlist_viewer(self):
-        if self._setlist_viewer_win is not None:
-            self._setlist_viewer_win.raise_()
-            self._setlist_viewer_win.activateWindow()
+    def _open_librarian_shell(self):
+        """Local Library / Merge / PCG three-pane shell — the only Librarian
+        entry point (matches C#'s MNU_Librarian, which opens LibrarianShellWindow
+        directly). Offline local-library curation (Erase, Rename, PCG/Merge
+        staging, Local<->Local swap) needs only a host for the optional FTP
+        pull; Sync Library/Commit Changes additionally need the live MIDI
+        connection, gated inside the window itself."""
+        if self._librarian_shell_win is not None:
+            self._librarian_shell_win.raise_()
+            self._librarian_shell_win.activateWindow()
             return
-        host = self._host or self._settings.kronos_host
-        if not host:
-            QMessageBox.warning(self, "Set List Viewer",
+        if not self._host:
+            QMessageBox.warning(self, "Librarian Shell",
                                 "No Kronos host configured. Set it in Settings first.")
             return
-        from setlist_window import SetListWindow
-        self._setlist_viewer_win = SetListWindow(host, self._sysex_service, self)
-        self._setlist_viewer_win.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
-        self._setlist_viewer_win.destroyed.connect(lambda: setattr(self, '_setlist_viewer_win', None))
-        self._setlist_viewer_win.show()
-
-    # ── Sync Program/Combi Names ─────────────────────────────────────────────────
-
-    def _open_sync_names(self):
-        if not self._settings.midi_monitor_enabled or not self._sysex_service.can_dump:
-            QMessageBox.warning(self, "Sync Names",
-                                "MIDI monitoring is off or not connected. Enable "
-                                "'MIDI bridge' and connect to the Kronos first.")
-            return
-
-        from PySide6.QtWidgets import QProgressDialog
-        dlg = QProgressDialog("Syncing program/combi names…", "Cancel", 0, 100, self)
-        dlg.setWindowTitle("Sync Names")
-        dlg.setWindowModality(Qt.WindowModality.WindowModal)
-        dlg.setMinimumDuration(0)
-        dlg.setValue(0)
-
-        cancel_event = threading.Event()
-        dlg.canceled.connect(cancel_event.set)
-
-        def names_progress(done, total, names):
-            QTimer.singleShot(0, self, lambda: dlg.setLabelText(
-                f"Syncing names… {done}/{total} banks, {names} name(s) cached"))
-            QTimer.singleShot(0, self, lambda: dlg.setValue(int(done * 100 / max(total, 1))))
-
-        def worker():
-            self._sysex_service.sync_names(names_progress, cancel_event)
-            QTimer.singleShot(0, self, dlg.close)
-
-        threading.Thread(target=worker, daemon=True, name="SyncNames").start()
-        dlg.exec()
-
-    # ── Sync All (Names + Set Lists) ─────────────────────────────────────────────
-
-    def _open_sync_all(self):
-        if not self._settings.midi_monitor_enabled or not self._sysex_service.can_dump:
-            QMessageBox.warning(self, "Sync All",
-                                "MIDI monitoring is off or not connected. Enable "
-                                "'MIDI bridge' and connect to the Kronos first.")
-            return
-
-        from PySide6.QtWidgets import QProgressDialog
-        dlg = QProgressDialog("Syncing program/combi names…", "Cancel", 0, 100, self)
-        dlg.setWindowTitle("Sync All")
-        dlg.setWindowModality(Qt.WindowModality.WindowModal)
-        dlg.setMinimumDuration(0)
-        dlg.setValue(0)
-
-        cancel_event = threading.Event()
-        self._sync_all_cancel = cancel_event
-        dlg.canceled.connect(cancel_event.set)
-
-        def names_progress(done, total, names):
-            QTimer.singleShot(0, self, lambda: dlg.setLabelText(
-                f"Syncing names… {done}/{total} banks, {names} name(s) cached"))
-            QTimer.singleShot(0, self, lambda: dlg.setValue(int(done * 50 / max(total, 1))))
-
-        def setlists_progress(done, total, found):
-            QTimer.singleShot(0, self, lambda: dlg.setLabelText(
-                f"Syncing Set Lists… {done}/{total}, {found} with content"))
-            QTimer.singleShot(0, self, lambda: dlg.setValue(50 + int(done * 50 / max(total, 1))))
-
-        def worker():
-            self._sysex_service.sync_names(names_progress, cancel_event)
-            if not cancel_event.is_set():
-                result = self._sysex_service.dump_all_set_lists(setlists_progress, cancel_event)
-                cached = storage.load_setlists(self._host)
-                cached.update(result.found)
-                for n in result.confirmed_empty:
-                    cached.pop(n, None)
-                storage.save_setlists(self._host, cached)
-                if self._setlist_viewer_win is not None:
-                    QTimer.singleShot(0, self, self._setlist_viewer_win._reload_cache)
-            QTimer.singleShot(0, self, dlg.close)
-
-        threading.Thread(target=worker, daemon=True, name="SyncAll").start()
-        dlg.exec()
+        from librarian_shell_window import LibrarianShellWindow
+        self._librarian_shell_win = LibrarianShellWindow(
+            self._host, self._sysex_service,
+            self._settings.ftp_port, self._settings.ftp_username, self._settings.ftp_password, self,
+            settings=self._settings)
+        self._librarian_shell_win.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self._librarian_shell_win.destroyed.connect(lambda: setattr(self, '_librarian_shell_win', None))
+        self._librarian_shell_win.show()
 
     # ── Macro playback ─────────────────────────────────────────────────────────
 
@@ -3078,17 +3453,13 @@ class MainWindow(QMainWindow):
         menu.addSeparator()
 
         a_zi = menu.addAction("Zoom In")
-        a_zi.triggered.connect(lambda: self._zoom_step(+0.25))
+        a_zi.triggered.connect(lambda: self._zoom_step(+0.5))
         a_zo = menu.addAction("Zoom Out")
-        a_zo.triggered.connect(lambda: self._zoom_step(-0.25))
+        a_zo.triggered.connect(lambda: self._zoom_step(-0.5))
         a_zr = menu.addAction("Reset Zoom")
         a_zr.triggered.connect(self._zoom_reset)
         menu.addSeparator()
 
-        a_asp = menu.addAction("Aspect Lock")
-        a_asp.setCheckable(True)
-        a_asp.setChecked(self._aspect_lock)
-        a_asp.triggered.connect(lambda chk: self._act_aspect.setChecked(chk))
         a_fs = menu.addAction("Fullscreen")
         a_fs.triggered.connect(self._toggle_fullscreen)
         menu.addAction("Image Adjustments…",
@@ -3108,9 +3479,16 @@ class MainWindow(QMainWindow):
         menu.exec(global_pos)
 
     def _zoom_step(self, delta: float):
-        self._frame_w._zoom_level = max(1.0, min(8.0, self._frame_w._zoom_level + delta))
-        if not self._zoom_on:
-            self._act_zoom.setChecked(True)
+        """Mirrors C#'s DoZoomIn/DoZoomOut: zooming in clamps at 10.0x and force-enables
+        zoom; zooming out clamps at the configured default level and leaves the
+        enabled/disabled state alone (mirrors DoZoomOut not touching _zoomOn)."""
+        if delta > 0:
+            self._frame_w._zoom_level = min(10.0, self._frame_w._zoom_level + delta)
+            if not self._zoom_on:
+                self._act_zoom.setChecked(True)
+        else:
+            self._frame_w._zoom_level = max(self._settings.zoom_default_level,
+                                            self._frame_w._zoom_level + delta)
         self._frame_w.update()
 
     def _zoom_reset(self):
@@ -3166,14 +3544,45 @@ class MainWindow(QMainWindow):
 
     # ── Connection state ───────────────────────────────────────────────────────
 
+    def _update_seq_enabled(self) -> None:
+        """Gate the sequencer transport on Sequence mode and Save on the four
+        write-capable modes, matching SeqTransportViewModel (IsTransportEnabled =
+        CurrentMode == Sequence; IsSaveEnabled = Setlist/Combi/Program/Global).
+        Tap Tempo is global (enabled whenever connected). When the transport is
+        disabled it is faded (req 12) via a QGraphicsOpacityEffect so it reads as
+        inactive rather than just greyed."""
+        connected = self._conn_state == "connected"
+        mode = self._current_mode
+        transport_on = connected and mode == 4   # Sequence
+        save_on = connected and mode in (1, 2, 3, 6)   # Setlist/Combi/Program/Global
+        for w in (self._seq_locate, self._seq_rew, self._seq_ff, self._seq_pause,
+                  self._seq_rec, self._seq_start):
+            w.setEnabled(transport_on)
+        self._tap_tempo_lbl.setEnabled(connected)
+        self._seq_save_lbl.setEnabled(save_on)
+        opacity = 1.0 if transport_on else 0.4
+        eff = self._seq_box.graphicsEffect()
+        if eff is None:
+            eff = QGraphicsOpacityEffect(self._seq_box)
+            self._seq_box.setGraphicsEffect(eff)
+        eff.setOpacity(opacity)
+        if not transport_on:
+            self._seq_box.setToolTip("Sequencer transport - only available in Sequence mode")
+        else:
+            self._seq_box.setToolTip("Sequencer transport - sends the front-panel SEQUENCER "
+                                     "buttons to the Kronos")
+
     def _set_conn_state(self, state: str, text: str):
         """Update connection dot + status label text together."""
+        self._conn_state = state
         self._conn_dot.set_state(state)
         self._status_label.setText(text)
         color = {"disconnected": T.TEXT_DIM, "connecting": T.WARN,
                  "connected": T.OK_TEXT}.get(state, T.TEXT_DIM)
         # Left padding comes from the label's contentsMargins, not CSS.
         self._status_label.setStyleSheet(f"color: {color}; font-size: {T.FS_SMALL}px;")
+        # Per-mode gating (req 12) - Tap Tempo stays connected-only, the rest follow mode.
+        self._update_seq_enabled()
 
     def _restore_conn_status(self):
         """Restore status to actual connection state after a temporary message."""

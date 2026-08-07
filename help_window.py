@@ -80,8 +80,7 @@ def _build_html() -> str:
 
         _h1("Screen Panel  (centre)"),
         _p("The screen panel streams the Kronos touchscreen display. The image is "
-           "scaled to fill the panel while optionally preserving the original 4:3 "
-           "aspect ratio (" + _key("A") + " or <b>View → Aspect Lock</b>)."),
+           "always letterboxed to preserve the original 4:3 aspect ratio."),
         _kbd_table(
             _kb_row("Click",           "Send a tap to the Kronos touchscreen at that position."),
             _kb_row("Click and drag",  "Send a swipe gesture. Drag must exceed 8 Kronos screen "
@@ -124,7 +123,6 @@ def _build_html() -> str:
         _kbd_table(
             _kb_row("F1",           "Open this help window"),
             _kb_row("F2 – F8",     "Mode Select (Setlist through Disk)"),
-            _kb_row("A",           "Toggle Aspect Lock"),
             _kb_row("C",           "Toggle Calibration Mode"),
             _kb_row("F",           "Toggle Fullscreen"),
             _kb_row("M",           "Toggle VGA Mirror"),

@@ -227,7 +227,12 @@ def from_func33(type_: int, func33_bank: int, number: int) -> Optional[BankId]:
 def all_name_banks() -> List[Tuple[int, int]]:
     """(type, objBank) pairs to sweep for a full Sync Names."""
     banks: List[Tuple[int, int]] = []
-    banks += [(1, b) for b in range(0x00, 0x07)]   # program INT   I-A..I-G
+    # Program INT is I-A..I-F — SIX banks. Object-dump bank 0x06 is not a real
+    # Program bank (see func33_to_obj_bank and the registry's editable-banks
+    # scope), and the instrument rate-limits name dumps, so asking for it spent
+    # a scarce slot on a bank that answers nothing (mirrors KronosBanks.
+    # AllNameBanks' comment). Combi INT genuinely has seven (I-A..I-G).
+    banks += [(1, b) for b in range(0x00, 0x06)]   # program INT   I-A..I-F
     banks += [(0, b) for b in range(0x00, 0x07)]   # combi INT     I-A..I-G
     banks += [(1, b) for b in range(0x10, 0x1B)]   # program GM/g
     banks += [(1, b) for b in range(0x40, 0x4E)]   # program USER
@@ -343,10 +348,10 @@ def parse_name_dump(data: bytes, expected_obj: int) -> Optional[str]:
             data_end = len(data)
         sysex_len = data_end - data_start
         if sysex_len < 2:
-            return None
+            continue   # spurious header match — keep scanning (mirrors C# fix)
         decoded = decode_8to7(data, data_start, sysex_len)
         if len(decoded) < 24:
-            return None
+            continue
         return _ascii_trim(decoded, 0, 24)
     return None
 
@@ -365,7 +370,7 @@ def parse_name_object_dump(msg: bytes) -> Tuple[int, str]:
     if data_end < 0:
         data_end = len(msg)
     if data_end - data_start < 2:
-        return (index, "")
+        return (-1, "")   # too short to hold a name at all (mirrors C# fix)
 
     decode_len = min(data_end - data_start, 32)
     decoded = decode_8to7(msg, data_start, decode_len)
