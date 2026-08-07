@@ -74,6 +74,16 @@ from local_library_store import BlobStore, LocalIndexEntry, LocalLibraryIndex
 from setlist_data import MAX_COUNT
 import kronos_sysex as ksx
 
+_OBJ_TYPE_DISPLAY = {OBJ_PROGRAM: "Program", OBJ_COMBI: "Combi", OBJ_SET_LIST: "Set List"}
+
+
+def _bank_display_label(obj_type: int, bank: int) -> str:
+    if obj_type == OBJ_PROGRAM:
+        return ksx.program_label(bank)
+    if obj_type == OBJ_COMBI:
+        return ksx.combi_label(bank)
+    return ""
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -84,7 +94,14 @@ def _now_iso() -> str:
 # scoping note: read-only factory content browsing is future scope, not v1.
 
 EDITABLE_BANKS: Dict[int, List[int]] = {
-    OBJ_PROGRAM: list(range(0x00, 0x07)) + list(range(0x40, 0x4E)),   # I-A..I-G, U-A..U-GG (21)
+    # Program INT is I-A..I-F — SIX internal banks, not seven: object-dump bank
+    # 0x06 ("I-G") is not a real Program bank (see kronos_sysex.func33_to_obj_bank
+    # and ObjectTypeRegistry.ProgramDescriptor.EditableBanks' own comment). Listing
+    # it here cost twice: every Sync Library swept its 128 slots individually (no
+    # bank digest / bulk dump) and returned nothing, AND it stayed a legal auto-fill
+    # destination — a write aimed at a bank that does not exist. Combi I-G is
+    # unaffected (Combi really does have seven internal banks).
+    OBJ_PROGRAM: list(range(0x00, 0x06)) + list(range(0x40, 0x4E)),   # I-A..I-F, U-A..U-GG (20)
     OBJ_COMBI: list(range(0x00, 0x07)) + list(range(0x40, 0x47)),     # I-A..I-G, U-A..U-G  (14)
     OBJ_SET_LIST: [0],                                                # flat 128-slot pseudo-bank
 }
@@ -176,10 +193,28 @@ def pull(index: LocalLibraryIndex, blobs: BlobStore,
     C# pipeline too)."""
     persisted = dict(index.bank_digest_baseline)
     fresh: Dict[str, str] = {}
+    no_digest: List[str] = []
     for b in all_banks():
         d = get_live_digest(b.bank_key)
         if d:
             fresh[b.bank_key] = d
+        else:
+            no_digest.append(b.bank_key)
+
+    # A bank the instrument never answers a digest request for still needs a PERSISTED
+    # baseline, or it is "changed" forever: plan_pull treats a missing fresh OR missing
+    # persisted digest as changed, so without this the bank was re-swept in full on EVERY
+    # lazy Sync Library — 128 slots, and (since a bank that won't answer a digest generally
+    # won't answer a bulk dump either) 128 individual dump round-trips. Mirrors
+    # LibraryPullPipeline.cs's NoDigest sentinel: the empty string can never collide with a
+    # real digest (always 40 hex chars), and a bank pinned this way is only re-fetched by an
+    # explicit full pull, which bypasses the changed check entirely. Only when at least one
+    # bank DID answer, though: if none did, the instrument is unreachable rather than quiet
+    # about one bank, and overwriting every good baseline with the sentinel would silently
+    # mark the whole library up to date.
+    if fresh and no_digest:
+        for key in no_digest:
+            fresh[key] = ""   # NoDigest sentinel (LocalLibraryIndex.NO_BASELINE_SENTINEL)
 
     plan = plan_pull(persisted, fresh, full)
 
@@ -187,7 +222,10 @@ def pull(index: LocalLibraryIndex, blobs: BlobStore,
     conflicts = 0
     for bank_ref in plan.banks_to_fetch:
         if progress is not None:
-            progress(f"Pulling {bank_ref.bank_key}")
+            display = _OBJ_TYPE_DISPLAY.get(bank_ref.obj_type, "")
+            bank_label = _bank_display_label(bank_ref.obj_type, bank_ref.bank)
+            suffix = f" {bank_label}" if bank_label else ""
+            progress(f"Bulk-dumping {display}{suffix}...")
         objs = get_bank_objects(bank_ref.obj_type, bank_ref.bank) or {}
 
         for number, (version, body) in objs.items():

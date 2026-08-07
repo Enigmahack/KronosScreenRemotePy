@@ -245,6 +245,14 @@ class LocalLibraryIndex:
     def get(self, obj_type: int, bank: int, number: int) -> Optional[LocalIndexEntry]:
         return self.entries.get(self.key(obj_type, bank, number))
 
+    # Optional observer hook, the Python mirror of LocalLibraryCache's
+    # SlotMutating event: called with (obj_type, bank, number, prior_entry)
+    # immediately BEFORE every index write/removal below. Set by
+    # LibrarianUndoRecorder so a scope's captures land automatically no matter
+    # how deep inside LocalEditOps/BatchLibrarian an edit happens. An undo's
+    # own restores suppress capture via the recorder's _restoring flag.
+    slot_mutating_cb = None
+
     def set_entry(self, obj_type: int, bank: int, number: int, entry: LocalIndexEntry) -> None:
         """Install/replace the entry for this slot. Does NOT itself refuse an
         overwrite of a dirty entry — exactly like a dict assignment. Callers
@@ -252,10 +260,35 @@ class LocalLibraryIndex:
         `get(...).is_dirty` first and route to mark_conflicted() instead of
         calling this when the object is locally dirty AND its hardware bank
         changed — never call this unconditionally from a pull."""
-        self.entries[self.key(obj_type, bank, number)] = entry
+        key = self.key(obj_type, bank, number)
+        prior = self.entries.get(key)
+        if self.slot_mutating_cb is not None:
+            self.slot_mutating_cb(obj_type, bank, number, prior)
+        self.entries[key] = entry
 
     def delete(self, obj_type: int, bank: int, number: int) -> None:
-        self.entries.pop(self.key(obj_type, bank, number), None)
+        key = self.key(obj_type, bank, number)
+        prior = self.entries.get(key)
+        if self.slot_mutating_cb is not None:
+            self.slot_mutating_cb(obj_type, bank, number, prior)
+        self.entries.pop(key, None)
+
+    def find_by_content_hash(self, obj_type: int, content_hash: str
+                             ) -> Optional[Tuple[int, int]]:
+        """First (bank, number) of obj_type whose current content IS
+        content_hash — the Python mirror of LocalLibraryCache.
+        FindByContentHash. Pending-delete entries never match (a slot marked
+        for deletion is not a reuse target). Returns None when nothing
+        matches, so a caller falls through to placing a fresh copy."""
+        prefix = f"{obj_type}:"
+        for key, e in self.entries.items():
+            if e.pending_delete or e.current_hash != content_hash:
+                continue
+            if not key.startswith(prefix):
+                continue
+            _, bank_s, num_s = key.split(":")
+            return (int(bank_s), int(num_s))
+        return None
 
     def mark_conflicted(self, obj_type: int, bank: int, number: int, conflicted: bool = True) -> None:
         e = self.get(obj_type, bank, number)

@@ -96,6 +96,100 @@ def parse_combi_body(body: bytes) -> CombiBodyInfo:
     return CombiBodyInfo(name, category, sub_category)
 
 
+# ── INIT/placeholder detection (port of InitObjects.cs + ProgramBody.IsInit /
+# ── CombiBody.IsInit) ────────────────────────────────────────────────────────
+#
+# The Kronos protocol has no empty slot and no delete: an unused Program or
+# Combi holds a full, valid INIT object whose bytes are structurally identical
+# to a real patch's. Two separate parts of the Librarian need to know the
+# difference, and the C# source detects it by SHAPE + NAME, deliberately not by
+# a table of known-init content hashes (a hash table would differ per OS
+# revision and per HD-1/EXi format, and would silently stop matching after any
+# firmware update). These same predicates drive the dependency walker's init
+# skip, the placement orphan gate's init-occupant downgrade, the free-slot
+# scan, and blank-template validation.
+
+
+def program_body_is_init(body: bytes) -> bool:
+    """Port of ProgramBody.IsInit: the NAME is the only thing that can answer
+    for a Program — both wire formats name their init with some spelling of
+    "Init … Program" ("Init Program", "Init EXi Program"), and this app's own
+    erase path writes "INIT PROGRAM". Case-insensitive contains both."""
+    return program_name_is_init(ksx._ascii_trim(body, 0, 24))
+
+
+def program_name_is_init(name: str) -> bool:
+    """Port of ProgramBody.IsInitName — name-only overload, for callers that
+    already hold the decoded display name and must not pay a blob read."""
+    t = name.strip()
+    return "INIT" in t.upper() and "PROGRAM" in t.upper()
+
+
+def combi_body_is_init(body: bytes) -> bool:
+    """Port of CombiBody.IsInit: name says so, OR every one of the 16 timbres
+    still points at the zero default (bank 0, program 0) — the defining
+    property of an init Combi. False for a body too short to hold all 16
+    timbres (a truncated dump must not read as "all defaults")."""
+    return combi_name_is_init(ksx._ascii_trim(body, 0, 24)) or _combi_all_timbres_at_default(body)
+
+
+def combi_name_is_init(name: str) -> bool:
+    """Port of CombiBody.IsInitName."""
+    t = name.strip()
+    return "INIT" in t.upper() and "COMBI" in t.upper()
+
+
+def _combi_all_timbres_at_default(body: bytes) -> bool:
+    """Port of CombiBody.AllTimbresAtDefault — every timbre's func33 bank and
+    number both zero (the encoding of "nothing assigned"). The iter wrapper
+    stops early on a truncated body, so the seen count must equal 16."""
+    try:
+        from librarian_sysex import _TIMBRE_COUNT, iter_combi_timbre_refs
+        seen = 0
+        for _t, bank, number in iter_combi_timbre_refs(body):
+            if bank != 0 or number != 0:
+                return False
+            seen += 1
+        return seen == _TIMBRE_COUNT
+    except Exception:
+        return False
+
+
+def setlist_body_is_init(body: bytes) -> bool:
+    """Port of InitObjects.IsInit for Set Lists: either every slot's name is
+    blank (SetListData.IsEmpty) or every slot still points at the zero default
+    (Program I-A:000 — the encoding of "nothing assigned"). A factory-untouched
+    set list is named "Set List 000".."Set List 127", which the name-blank
+    check alone would miss; a user can also rename a set list without assigning
+    anything, which the all-defaults check alone would miss. Either signal is
+    enough. False for a truncated body (< 128 slots)."""
+    try:
+        from librarian_sysex import iter_setlist_slot_refs
+        slots = list(iter_setlist_slot_refs(body))
+        if len(slots) != 128:
+            return False
+        all_defaults = True
+        all_blank_names = True
+        for s, slot_type, fbank, idx in slots:
+            if slot_type != 1 or fbank != 0 or idx != 0:
+                all_defaults = False
+            if _setlist_slot_name(body, s).strip():
+                all_blank_names = False
+        return all_blank_names or all_defaults
+    except Exception:
+        return False
+
+
+def _setlist_slot_name(body: bytes, slot: int) -> str:
+    """24-byte name field of one set-list slot (mirrors SetListSlot.IsEmpty)."""
+    try:
+        from setlist_data import _SLOT_BASE, _SLOT_SIZE, _NAME_LEN
+        base = _SLOT_BASE + slot * _SLOT_SIZE
+        return ksx._ascii_trim(body, base, _NAME_LEN)
+    except Exception:
+        return ""
+
+
 # ── Mutators (Write* side of ProgramBody.cs / CombiBody.cs / SetListBody.cs) ─
 #
 # Pure functions over immutable byte input: every write_* helper below clones
@@ -374,6 +468,52 @@ def _selftest() -> None:
     # not an exception (mirrors FromRawBody's loop `break`).
     truncated = bytes(sl_body[:40])   # short body: doesn't even reach slot 0's +30
     check("setlistbody-truncated-none", parse_setlist_slot(truncated, 0) is None)
+
+    # 5. INIT detection (InitObjects.cs's predicates, exercised against the same
+    #    synthetic vectors the C# self-tests use):
+    #    - a Program named "Init EXi Program" is init; a real name isn't.
+    prog_init_named = write_program_name(bytes(prog), "Init EXi Program")
+    check("program-init-by-name", program_body_is_init(prog_init_named))
+    check("program-not-init-by-name", not program_body_is_init(bytes(prog_named)))
+    check("program-name-init-case-insensitive", program_name_is_init("  init program  "))
+    check("program-name-not-init", not program_name_is_init("Brass Section"))
+
+    #    - an unnamed Combi with every timbre at the zero default is init
+    #      (the defining property), one assigned timbre is not, a truncated
+    #      body (< 16 timbres) is not. Zero-filled body, matching the C#
+    #      self-test's own `new byte[7810]` vector.
+    zero_combi = bytearray(7810)
+    check("combi-init-unnamed-all-defaults", combi_body_is_init(bytes(zero_combi)))
+    one_timbre = bytearray(zero_combi)
+    from librarian_sysex import set_combi_timbre_ref
+    set_combi_timbre_ref(one_timbre, 4, 17, 9)   # one assigned timbre -> real Combi
+    check("combi-one-timbre-not-init", not combi_body_is_init(bytes(one_timbre)))
+    check("combi-init-by-name", combi_body_is_init(write_combi_name(bytes(one_timbre), "Init Combi")))
+    check("combi-short-not-init", not combi_body_is_init(bytes(zero_combi[:5000])))
+
+    #    - a Set List with all-default slots but non-blank factory names
+    #      ("Set List 007") is init via the all-defaults signal; one assigned
+    #      slot is not. Zero-filled body with names stamped in, matching the
+    #      C# factory init's actual shape ("Set List 127" is the shipped
+    #      blank's name).
+    sl_defaults = bytearray(69416)
+    for s in range(128):
+        sl_defaults[SLOT_BASE + s * SLOT_SIZE:SLOT_BASE + s * SLOT_SIZE + 24] \
+            = f"Set List {s:03d}".ljust(24).encode("ascii")[:24]
+        # All-default slot encoding: type=1 (Program), func33 bank 0 (I-A), index 0
+        # — the literal `1` here is the SLOT TYPE code, NOT LibObj.Program (0x00),
+        # exactly as InitObjects.cs's own comment warns (ObjBankToFunc33(1, 0x00)).
+        sl_defaults[SLOT_BASE + s * SLOT_SIZE + 24] = 1
+        sl_defaults[SLOT_BASE + s * SLOT_SIZE + 25] = 0
+        sl_defaults[SLOT_BASE + s * SLOT_SIZE + 26] = 0
+    check("setlist-init-all-defaults-named", setlist_body_is_init(bytes(sl_defaults)))
+    sl_assigned = bytearray(sl_defaults)
+    ab = SLOT_BASE
+    sl_assigned[ab + 24] = 1 | (0 << 2)   # type=1 (program), color=0
+    sl_assigned[ab + 25] = 18             # func33 bank for U-A
+    sl_assigned[ab + 26] = 5              # index
+    check("setlist-one-assigned-not-init", not setlist_body_is_init(bytes(sl_assigned)))
+    check("setlist-short-not-init", not setlist_body_is_init(bytes(sl_defaults[:5000])))
 
     # 4b. SetListBody mutators: ObjectBodySelfTests.cs's own bit-preserving
     #     color write (WriteSlotColor(9) must not disturb Type/bank/index,

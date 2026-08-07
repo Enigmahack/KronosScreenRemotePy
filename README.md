@@ -48,10 +48,11 @@ A Python application for remotely viewing and controlling a **Korg Kronos** synt
 <img width="1415" height="513" alt="2026-06-19 18_11_31-Kronos ScreenRemote_PERF — 192 168 100 15" src="https://github.com/user-attachments/assets/9ef81aaf-ea4d-4937-81dd-b210cacd44de" />
 
 - **SysEx / MIDI Bridge** — live decode of Kronos SysEx (performance name/mode/bank tracking, bulk Object Dump collection) over the daemon's MIDI bridge port
-- **Librarian** — Program/Combi/Set-List slot move-and-swap tool with referrer-aware relocation, plus a full **Local Library**: an offline-first, dependency-aware mirror of the Kronos's banks (pull from hardware or a `.pcg` file, stage and dedup via a content-addressed merge cache, place into a local library, then Sync/Commit back to hardware) — see [Local Library](#local-library) below
+- **Librarian** — Program/Combi/Set-List slot move-and-swap tool with referrer-aware relocation, plus a full **Local Library**: an offline-first, dependency-aware mirror of the Kronos's banks (pull from hardware or a `.pcg` file, stage and dedup via a content-addressed merge cache, place into a local library, then Sync/Commit back to hardware) — see [Local Library](#local-library) below. **Ctrl+Z undo** rolls back every LOCAL (pre-Commit) edit; a successful Sync/Commit clears the stack. Merge→Local placement dedups byte-identical content (per-type toggle in Settings → Librarian). Category/Sub-Category in the Properties dialog show the real names from the Global object when synced.
 - **Set List Viewer** — decoded Set List contents with real hardware slot colors
 - **Input Tester** — maps host keys to raw Kronos keycodes and records observed hardware behavior (Tools menu)
 - **Command Palette** (Ctrl+K) — live filter-as-you-type launcher for every rebindable action
+- **Sequencer Transport + Tap Tempo** — footer transport row (Locate/Rewind/Fast-Forward/Pause/Record/Start, Write/Save) and tap-tempo, each also reachable via keybind
 - **Paste Clipboard to Kronos** — types the system clipboard's text content to the Kronos via the on-screen keyboard command path
 
 ---
@@ -125,7 +126,6 @@ KronosScreenRemotePy/
   key_map.py                    Qt key -> Linux keycode mapping tables
   char_map.py                   Typed-character -> KEY-command-sequence table
   command_palette.py            Live filter-as-you-type command launcher (Ctrl+K)
-  input_tester_window.py        Keymap/raw-keycode testing tool (Tools menu)
   vu_meter.py                   WASAPI audio capture and VU meter widget
   perf_window.py                Performance / keyboard info window
   help_window.py                Help overlay content
@@ -137,14 +137,17 @@ KronosScreenRemotePy/
   sysex_dump_collector.py       Bulk SysEx Object Dump collection over the MIDI bridge
   sysex_tool_window.py          SysEx monitor/tool window
   setlist_data.py                Set List object decode
-  setlist_window.py              Set List viewer (real hardware slot colors)
 
   librarian_sysex.py            Combi timbre / Set List slot reference accessors
   librarian_model.py            Single-item plan_move/apply_move + multi-item
                                  plan_batch_move (merged cross-referrer patching)
-  librarian_window.py           Existing hardware move/swap tool window
   librarian_shell_window.py     Local Library shell: 3-pane Local/Merge/PCG view,
                                  Sync/Commit, properties + unresolved-deps dialogs
+  librarian_undo.py             Linear Ctrl+Z undo over LOCAL (pre-Commit) state
+  global_body.py                Global-object category/sub-category NAME decode for
+                                 the Properties dialog's named dropdowns
+  object_body.py                INIT/placeholder detection (name + all-defaults)
+                                 powering dependency skips, free-slot scans, erase
 
   pcg_file.py                   .pcg file chunk scanner + PCG<->wire format converter
   local_library_store.py        Content-addressed blob store + index + append-only oplog
@@ -220,8 +223,10 @@ Open via **Connection > File Manager** or right-click the frame and select **Fil
 | Ctrl+Shift+S | Save screenshot as |
 | Ctrl+Scroll | Adjust zoom level |
 | ~ (fullscreen) | Show / hide menu bar while in fullscreen |
+| Ctrl+Z (Librarian) | Undo last local edit |
+| Seq Locate/Rewind/FF/Pause/Rec/Start, Tap Tempo | Sequencer transport + tap tempo (unbound by default; assign in Settings → Key Bindings) |
 
-All shortcuts (except Ctrl combos) are rebindable via **Settings → Settings… → Keybindings**. Click in the frame to capture keyboard input for forwarding to the Kronos.
+All shortcuts (except Ctrl combos) are rebindable via **Settings → Settings… → Keybindings**. Click in the frame to capture keyboard input for forwarding to the Kronos. **Settings → General** adds a *Reverse mouse scrolling direction* toggle that swaps which wheel direction turns the Kronos data wheel CW vs CCW.
 
 ---
 

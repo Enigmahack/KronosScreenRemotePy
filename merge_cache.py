@@ -23,17 +23,15 @@ Design differences from the C# source (deliberate, not oversights):
     blob store, once again into the JSON snapshot), and merge_cache.json
     itself stays small even with many staged objects. Body is looked up from
     the blob store lazily on load().
-  * RefKind/Site: the C# MergeRefSite also carries RefKind/Site so
-    ResolveReferencesForPlacement can patch the exact bytes
-    ObjectReferenceWalker read them from. That placement-time byte-patching
-    step is a separate follow-up concern (LocalEditOps-equivalent, not yet
-    ported) and isn't ported here -- MergeRefSite in this module only tracks
-    target_address + resolved_content_hash. resolve_refs() is deliberately
-    generic (returns only (obj_type, bank, number) target addresses, no
-    ref-kind/site-offset detail) so it works with ANY reference-walking
-    implementation (Combi timbre refs, Set List slot refs, or a test fake)
-    without this module importing librarian_sysex or a sibling
-    dependency-scanner module that may not exist yet.
+  * RefKind/Site: resolve_refs() returns (ref_kind, site, address) triples,
+    not bare addresses -- ref_kind/site are carried into MergeRefSite so
+    resolve_references_for_placement() (port of C#'s
+    MergeCache.ResolveReferencesForPlacement) can patch the exact bytes the
+    caller's own reference walker read them from. resolve_refs stays a
+    plain injected callable rather than a hardcoded
+    dependency_scanner.walk_resolvable_references import so a test fake can
+    still supply synthetic ref_kind/site pairs without that module's byte
+    layout.
   * PullFromPcg/PullFromLocal: the C# MergeCache binds two concrete
     MergePullSource lambdas (one over a loaded PcgLibraryView, one over
     LocalLibraryCache). This port takes resolve_content/resolve_refs as
@@ -64,7 +62,8 @@ from local_library_store import BlobStore, local_library_dir
 Address = Tuple[int, int, int]   # (obj_type, bank, number)
 
 ResolveContent = Callable[[int, int, int], Optional[bytes]]
-ResolveRefs = Callable[[int, bytes], List[Address]]
+ResolveRefs = Callable[[int, bytes], List[Tuple[str, int, Address]]]   # (ref_kind, site, address)
+LocalLookup = Callable[[int, str], Optional[Address]]                 # (obj_type, content_hash) -> address?
 
 
 def _extract_display_name(body: bytes) -> str:
@@ -111,16 +110,22 @@ class MergeOrigin:
 @dataclass
 class MergeRefSite:
     """One outgoing reference site inside a Combi/Set-List entry's own body
-    (a timbre slot, or a Set-List slot). Port of the C# `MergeRefSite`,
-    minus RefKind/Site -- see module docstring for why placement-time byte
-    patching is out of scope here. resolved_content_hash is the dependency's
-    content hash if pulling it succeeded by the time owner_hash's entry was
-    itself pulled; None means it was a gap -- MergeCache.reconcile_gaps can
-    still backfill it later if the exact same address is pulled
-    successfully afterward (e.g. from a second PCG)."""
+    (a timbre slot, or a Set-List slot). Port of the C# `MergeRefSite`.
+    ref_kind/site mirror ObjectReferenceWalker's own (RefKind, Site) pair
+    exactly so resolve_references_for_placement can patch the same bytes
+    dependency_scanner.walk_resolvable_references read them from.
+    resolved_content_hash is the dependency's content hash if pulling it
+    succeeded by the time owner_hash's entry was itself pulled; None means it
+    was a gap -- MergeCache.reconcile_gaps can still backfill it later if the
+    exact same address is pulled successfully afterward (e.g. from a second
+    PCG). ref_kind/site default to ""/-1 for snapshots written before this
+    field existed -- resolve_references_for_placement then leaves that site
+    unresolved rather than guessing, same as a true gap."""
     owner_hash: str            # the entry this reference site belongs to
     target_address: Address    # the original reference, for gap reconciliation
     resolved_content_hash: Optional[str] = None
+    ref_kind: str = ""         # "timbre N" / "slot N" -- which byte-patch fn applies
+    site: int = -1             # 0-based timbre/slot index -- which slot to patch
 
 
 @dataclass
@@ -166,6 +171,12 @@ class MergeCache:
 
     LOCAL_SOURCE_LABEL = "Local Library"
 
+    # Optional observer hook, the Python mirror of MergeCache's Mutating
+    # event: called before every staging change (pull, remove, clear, mark
+    # placed). Set by LibrarianUndoRecorder so a scope captures a merge
+    # snapshot only when the Merge Window actually changed.
+    mutating_cb = None
+
     def __init__(self, root: Optional[pathlib.Path] = None,
                  behavior: MergeCacheBehavior = MergeCacheBehavior.LOCAL_STORAGE):
         self.root = pathlib.Path(root) if root is not None else local_library_dir()
@@ -194,6 +205,68 @@ class MergeCache:
     def _path(self) -> pathlib.Path:
         return self.root / "merge_cache.json"
 
+    def snapshot_to_dict(self) -> dict:
+        """Serialize the current staged state (entries + placed_addresses) to a
+        plain dict — used by the Librarian's undo to capture the Merge Window
+        ONLY when an action actually mutated it (mirrors C# MergeCacheSnapshot).
+        Bodies live in the blob store (content-addressed), so a snapshot is just
+        the entry metadata plus hashes; restore re-reads bodies from blobs."""
+        return {
+            "entries": [
+                {
+                    "content_hash": e.content_hash,
+                    "obj_type": e.obj_type,
+                    "version": e.version,
+                    "display_name": e.display_name,
+                    "is_top_level_pull": e.is_top_level_pull,
+                    "origins": [{"source": o.source, "address": list(o.address)} for o in e.origins],
+                    "referenced_by": sorted(e.referenced_by),
+                    "ref_sites": [
+                        {
+                            "owner_hash": s.owner_hash,
+                            "target_address": list(s.target_address),
+                            "resolved_content_hash": s.resolved_content_hash,
+                            "ref_kind": s.ref_kind,
+                            "site": s.site,
+                        }
+                        for s in e.ref_sites
+                    ],
+                }
+                for e in self._by_hash.values()
+            ],
+            "placed_addresses": {h: list(a) for h, a in self._placed_addresses.items()},
+        }
+
+    def restore_from_dict(self, snap: dict) -> None:
+        """Replace the current staged state with `snap` (undo restore). Bodies
+        are looked up from the blob store by content_hash, exactly like load();
+        an entry whose blob is gone is skipped (shouldn't happen — an undo
+        restore only ever revisits bodies that existed)."""
+        self._by_hash.clear()
+        self._pending_gap_sites.clear()
+        for ed in snap.get("entries", []):
+            content_hash = ed.get("content_hash", "")
+            body = self.blobs.get(content_hash)
+            if body is None:
+                continue
+            entry = MergeEntry(
+                content_hash=content_hash, obj_type=int(ed.get("obj_type", 0)), body=body,
+                version=int(ed.get("version", 0)), display_name=ed.get("display_name", ""),
+                is_top_level_pull=bool(ed.get("is_top_level_pull", False)),
+            )
+            entry.origins.extend(
+                MergeOrigin(o["source"], tuple(o["address"])) for o in ed.get("origins", []))
+            entry.referenced_by.update(ed.get("referenced_by", []))
+            entry.ref_sites.extend(
+                MergeRefSite(owner_hash=s["owner_hash"], target_address=tuple(s["target_address"]),
+                             resolved_content_hash=s.get("resolved_content_hash"),
+                             ref_kind=s.get("ref_kind", ""), site=s.get("site", -1))
+                for s in ed.get("ref_sites", []))
+            self._by_hash[content_hash] = entry
+        self._placed_addresses = {h: tuple(a) for h, a in snap.get("placed_addresses", {}).items()}
+        self._rebuild_pending_gap_index()
+        self.save()
+
     def save(self) -> None:
         """Full rewrite of merge_cache.json -- no incremental diffing, same
         simplicity as the C# FileMergeCachePersistence (a crash mid-write
@@ -203,29 +276,7 @@ class MergeCache:
             return
         try:
             self.root.mkdir(parents=True, exist_ok=True)
-            root_obj = {
-                "entries": [
-                    {
-                        "content_hash": e.content_hash,
-                        "obj_type": e.obj_type,
-                        "version": e.version,
-                        "display_name": e.display_name,
-                        "is_top_level_pull": e.is_top_level_pull,
-                        "origins": [{"source": o.source, "address": list(o.address)} for o in e.origins],
-                        "referenced_by": sorted(e.referenced_by),
-                        "ref_sites": [
-                            {
-                                "owner_hash": s.owner_hash,
-                                "target_address": list(s.target_address),
-                                "resolved_content_hash": s.resolved_content_hash,
-                            }
-                            for s in e.ref_sites
-                        ],
-                    }
-                    for e in self._by_hash.values()
-                ],
-                "placed_addresses": {h: list(a) for h, a in self._placed_addresses.items()},
-            }
+            root_obj = self.snapshot_to_dict()
             self._path().write_text(json.dumps(root_obj, indent=2), encoding="utf-8")
         except Exception as ex:
             print(f"[merge-cache] snapshot save failed: {ex}")
@@ -264,7 +315,8 @@ class MergeCache:
             entry.referenced_by.update(ed.get("referenced_by", []))
             entry.ref_sites.extend(
                 MergeRefSite(owner_hash=s["owner_hash"], target_address=tuple(s["target_address"]),
-                             resolved_content_hash=s.get("resolved_content_hash"))
+                             resolved_content_hash=s.get("resolved_content_hash"),
+                             ref_kind=s.get("ref_kind", ""), site=s.get("site", -1))
                 for s in ed.get("ref_sites", []))
             self._by_hash[content_hash] = entry
 
@@ -312,10 +364,10 @@ class MergeCache:
             with obj_type/bank/number-like attributes (see _normalize_address).
         resolve_content(obj_type, bank, number) -> Optional[bytes]: the
             source lookup (a loaded PCG, Local Library, or a test fake).
-        resolve_refs(obj_type, body) -> list[(obj_type, bank, number)]: the
-            injected reference walker (e.g. Combi timbre refs / Set-List
-            slot refs) -- deliberately not hardcoded here, see module
-            docstring.
+        resolve_refs(obj_type, body) -> list[(ref_kind, site, (obj_type, bank, number))]:
+            the injected reference walker (e.g.
+            dependency_scanner.walk_resolvable_references) -- deliberately
+            not hardcoded here, see module docstring.
         source: label recorded on MergeOrigin (a PCG filename, or
             MergeCache.LOCAL_SOURCE_LABEL).
 
@@ -353,6 +405,8 @@ class MergeCache:
             self.reconcile_gaps(address, content_hash)
             return content_hash   # dedup -- already walked its own deps when first added
 
+        if self.mutating_cb is not None:
+            self.mutating_cb()
         self.blobs.put(body)
         entry = MergeEntry(
             content_hash=content_hash, obj_type=obj_type, body=body,
@@ -363,10 +417,10 @@ class MergeCache:
         added.append(entry)
         self.reconcile_gaps(address, content_hash)
 
-        for ref_address in resolve_refs(obj_type, body):
+        for ref_kind, site, ref_address in resolve_refs(obj_type, body):
             dep_hash = self._pull_one(ref_address, resolve_content, resolve_refs, source, False, added, gaps)
             ref_site = MergeRefSite(owner_hash=content_hash, target_address=ref_address,
-                                     resolved_content_hash=dep_hash)
+                                     resolved_content_hash=dep_hash, ref_kind=ref_kind, site=site)
             entry.ref_sites.append(ref_site)
             if dep_hash is not None:
                 self._by_hash[dep_hash].referenced_by.add(content_hash)
@@ -398,6 +452,56 @@ class MergeCache:
             site.resolved_content_hash = resolved_hash
             self._by_hash[resolved_hash].referenced_by.add(site.owner_hash)
 
+    def resolve_references_for_placement(self, entry: MergeEntry,
+                                         local_lookup: Optional[LocalLookup] = None
+                                         ) -> Tuple[bytes, List[MergeRefSite]]:
+        """Rewrites a COPY of `entry`'s own body so every dependency that can be
+        resolved gets repointed to its actual destination, and reports back
+        whatever's left unresolved. Port of MergeCache.ResolveReferencesForPlacement.
+        A dependency resolves two ways, tried in order:
+          1. self._placed_addresses -- it was placed via THIS cache, this session
+             (or a prior session recovered via Local Storage). Cheapest, most
+             authoritative -- always wins if present.
+          2. local_lookup(obj_type, content_hash) -> address? -- an optional
+             caller-supplied search over Local Library as a WHOLE, by content
+             identity, for a dependency that already exists there regardless of
+             how it got there (a prior Pull, a prior Commit, a manual placement --
+             anything). This is what lets a Combi's reference repoint correctly
+             even when its dependency was never placed FROM this Merge Window at
+             all. None (the self-tests' default) skips this entirely.
+        Anything still unresolved after both -- including a true gap where
+        resolved_content_hash was already None -- is left exactly as pulled
+        (unchanged bytes) and reported in the returned list. Placement itself
+        (choosing entry's OWN destination) is a separate, manual step the caller
+        drives -- this method only patches OUTGOING references, never decides
+        where `entry` itself goes."""
+        from librarian_sysex import (
+            OBJ_PROGRAM, obj_bank_to_func33, set_combi_timbre_ref, set_setlist_slot_ref)
+        body = bytearray(entry.body)
+        unresolved: List[MergeRefSite] = []
+        for site in entry.ref_sites:
+            dest: Optional[Address] = None
+            if site.resolved_content_hash is not None:
+                h = site.resolved_content_hash
+                if h in self._placed_addresses:
+                    dest = self._placed_addresses[h]
+                elif local_lookup is not None:
+                    dest = local_lookup(site.target_address[0], h)
+
+            if dest is not None:
+                d_type, d_bank, d_number = dest
+                ref_type = 1 if d_type == OBJ_PROGRAM else 0   # func33 convention: 1=Program, 0=Combi
+                func33_bank = obj_bank_to_func33(ref_type, d_bank)
+                if site.ref_kind.startswith("timbre"):
+                    set_combi_timbre_ref(body, site.site, func33_bank, d_number)
+                elif site.ref_kind.startswith("slot"):
+                    set_setlist_slot_ref(body, site.site, func33_bank, d_number, type_=None)
+                else:
+                    unresolved.append(site)   # unknown/legacy ref_kind (pre-upgrade snapshot) -- leave as-is
+            else:
+                unresolved.append(site)
+        return bytes(body), unresolved
+
     # -- lookup / lifecycle -----------------------------------------------------
 
     def try_get(self, content_hash: str) -> Optional[MergeEntry]:
@@ -412,6 +516,8 @@ class MergeCache:
         sibling entry still staged resolve against it later."""
         if content_hash not in self._by_hash:
             return False
+        if self.mutating_cb is not None:
+            self.mutating_cb()
         del self._by_hash[content_hash]
         self.save()
         return True
@@ -421,6 +527,8 @@ class MergeCache:
         whether or not any of it was ever placed. Placement bookkeeping is
         cleared too: once the whole batch is gone, nothing remains that
         could ever look it up again."""
+        if self.mutating_cb is not None:
+            self.mutating_cb()
         self._by_hash.clear()
         self._pending_gap_sites.clear()
         self._placed_addresses.clear()
@@ -435,6 +543,8 @@ class MergeCache:
         hash can be repointed at exactly this destination once a
         placement-patching step is built (mirrors MergeCache.RecordPlacement).
         """
+        if self.mutating_cb is not None:
+            self.mutating_cb()
         self._placed_addresses[content_hash] = address
         self.save()
 
@@ -480,7 +590,7 @@ def _selftest() -> None:
 
         def resolve_refs_combi(obj_type, body):
             if obj_type == OBJ_COMBI and body == combi_body:
-                return [(OBJ_PROGRAM, 0, 1), (OBJ_PROGRAM, 0, 2)]
+                return [("timbre 1", 0, (OBJ_PROGRAM, 0, 1)), ("timbre 2", 1, (OBJ_PROGRAM, 0, 2))]
             return []
 
         mc = MergeCache(root)
@@ -508,7 +618,7 @@ def _selftest() -> None:
 
         def resolve_refs_combi2(obj_type, body):
             if obj_type == OBJ_COMBI and body == combi2_body:
-                return [(OBJ_PROGRAM, 0, 3)]
+                return [("timbre 1", 0, (OBJ_PROGRAM, 0, 3))]
             return []
 
         added2, gaps2 = mc.pull_recursive((OBJ_COMBI, 0, 1), resolve_content_2, resolve_refs_combi2,
@@ -566,13 +676,82 @@ def _selftest() -> None:
         check("placed-true-after", mc.is_placed(prog1_hash))
         check("placed-address-correct", mc.placed_address(prog1_hash) == (OBJ_PROGRAM, 0, 1))
 
+        # ── Scenario 5: resolve_references_for_placement patches a Combi's timbre
+        #    bytes to wherever its Program dependency actually landed locally --
+        #    NOT where the PCG source pointed. Uses real timbre-encoded bodies (not
+        #    the synthetic ones above) since this exercises the actual byte patch. ──
+        import dependency_scanner as depscan
+        from librarian_sysex import combi_timbre_ref, obj_bank_to_func33, set_combi_timbre_ref
+        root5 = root / "scenario5"
+        combi5 = bytearray(7810)
+        set_combi_timbre_ref(combi5, 0, 0, 7)    # timbre 0 -> Program I-A:007 (PCG source; resolvable)
+        set_combi_timbre_ref(combi5, 1, 0, 9)    # timbre 1 -> Program I-A:009 (stays a true gap)
+        for t in range(2, 16):
+            set_combi_timbre_ref(combi5, t, 7, 0)   # func33 bank 7 = GM -- always-available, no ref_site
+        combi5_body = bytes(combi5)
+        prog5a_body = bytes(range(200))          # distinguishable content
+
+        source5 = {
+            (OBJ_COMBI, 0, 20): combi5_body,
+            (OBJ_PROGRAM, 0, 7): prog5a_body,
+            # (OBJ_PROGRAM, 0, 9) deliberately absent -> timbre 1 stays unresolved
+        }
+
+        def resolve_content_5(obj_type, bank, number):
+            return source5.get((obj_type, bank, number))
+
+        def resolve_refs_5(obj_type, body):
+            return [(r.ref_kind, r.site, (r.ref.obj_type, r.ref.bank, r.ref.number))
+                    for r in depscan.walk_resolvable_references(obj_type, body)]
+
+        mc5 = MergeCache(root5)
+        mc5.pull_recursive((OBJ_COMBI, 0, 20), resolve_content_5, resolve_refs_5, source="pcg_E.PCG")
+        combi5_hash = BlobStore.compute_hash(combi5_body)
+        combi5_entry = mc5.try_get(combi5_hash)
+        check("s5-combi-2-refsites", combi5_entry is not None and len(combi5_entry.ref_sites) == 2)
+        check("s5-refkind-is-timbre",
+              combi5_entry is not None and all(s.ref_kind.startswith("timbre") for s in combi5_entry.ref_sites))
+
+        # Local Library already has prog5a's content sitting at a DIFFERENT local address
+        # than the PCG source (I-A:007) -- resolve must repoint at THAT local address.
+        prog5a_hash = BlobStore.compute_hash(prog5a_body)
+
+        def local_lookup_5(obj_type, content_hash):
+            return (OBJ_PROGRAM, 0x40, 12) if content_hash == prog5a_hash else None   # U-A:012
+
+        patched5, unresolved5 = mc5.resolve_references_for_placement(combi5_entry, local_lookup_5)
+        check("s5-one-unresolved",
+              len(unresolved5) == 1 and unresolved5[0].target_address == (OBJ_PROGRAM, 0, 9))
+        new_bank0, new_num0 = combi_timbre_ref(patched5, 0)
+        check("s5-timbre0-repointed-to-local",
+              new_bank0 == obj_bank_to_func33(1, 0x40) and new_num0 == 12)
+        old_bank1, old_num1 = combi_timbre_ref(patched5, 1)
+        check("s5-timbre1-left-unchanged", old_bank1 == 0 and old_num1 == 9)
+        check("s5-source-body-not-mutated", combi5_entry.body == combi5_body)   # patch is a COPY
+
+        # _placed_addresses (this session's own placements) wins over local_lookup when
+        # both could answer -- cheaper, most authoritative.
+        mc5.mark_placed(prog5a_hash, (OBJ_PROGRAM, 0x40, 55))
+        patched5b, _ = mc5.resolve_references_for_placement(combi5_entry, local_lookup_5)
+        new_bank0b, new_num0b = combi_timbre_ref(patched5b, 0)
+        check("s5-placed-addresses-wins-over-local-lookup",
+              new_bank0b == obj_bank_to_func33(1, 0x40) and new_num0b == 55)
+
+        # No local_lookup at all -> only _placed_addresses is consulted (self-tests' default).
+        patched5c, unresolved5c = mc5.resolve_references_for_placement(combi5_entry)
+        new_bank0c, new_num0c = combi_timbre_ref(patched5c, 0)
+        check("s5-no-lookup-still-uses-placed-addresses",
+              new_bank0c == obj_bank_to_func33(1, 0x40) and new_num0c == 55)
+        check("s5-no-lookup-timbre1-unresolved", len(unresolved5c) == 1)
+
         # ── Scenario 4: save/load round-trip reproduces the same staging state ──
         def _snapshot(cache: MergeCache):
             return {
                 e.content_hash: (e.obj_type, e.body, e.display_name, e.is_top_level_pull,
                                   sorted((o.source, o.address) for o in e.origins),
                                   sorted(e.referenced_by),
-                                  sorted((s.target_address, s.resolved_content_hash) for s in e.ref_sites))
+                                  sorted((s.target_address, s.resolved_content_hash, s.ref_kind, s.site)
+                           for s in e.ref_sites))
                 for e in cache.entries
             }
 

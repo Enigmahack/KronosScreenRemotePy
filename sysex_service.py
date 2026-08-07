@@ -401,6 +401,16 @@ class SysExService(QObject):
         with self._names_lock:
             return len(self._stream_names)
 
+    def cached_bank_names(self, type_: int, bank: int) -> Dict[int, str]:
+        """{number: name} for one bank's cached names — the Python mirror of
+        ISysExService.CachedBankNames, which feeds the Local pane's read-only
+        GM/g browse rows (names come from the shared name sweep; bodies are
+        never pulled for read-only banks). Empty dict = nothing known yet,
+        which simply means no GM rows appear."""
+        with self._names_lock:
+            return {n: name for (t, b, n), name in self._stream_names.items()
+                    if t == type_ and b == bank}
+
     # ── Sync Names (user-triggered bulk name sweep) ─────────────────────────
 
     def sync_names(self, progress: Optional[Callable[[int, int, int], None]] = None,

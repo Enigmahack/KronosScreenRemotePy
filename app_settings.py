@@ -86,6 +86,7 @@ class AppSettings:
     prompt_before_quitting: bool = True
     hide_data_input:        bool = False
     hide_value_input:       bool = False
+    reverse_scrolling:      bool = False
     screenshot_dir:         str  = ""
 
     # FTP authentication (required by the stream daemon)
@@ -95,6 +96,21 @@ class AppSettings:
 
     # MIDI bridge (port 9875) — SysEx tool, Set List viewer, name caching
     midi_monitor_enabled: bool = True
+
+    # Merge Window -> Local Library duplication policy (mirrors AppSettings.cs's
+    # MergePreserveDuplicatePrograms/Combis). When True, placing a staged object whose
+    # content already exists somewhere in Local Library still writes a FRESH copy
+    # ("preserve duplication"); when False, the existing copy is reused instead of writing
+    # a duplicate (FindExistingLocalCopy). Defaults mirror the long-standing behavior:
+    # Programs dedup, Combis copy as-is.
+    merge_preserve_duplicate_programs: bool = False
+    merge_preserve_duplicate_combis:   bool = True
+
+    # Merge Window staging cache persistence (mirrors AppSettings.cs's MergeBehavior;
+    # values are MergeCacheBehavior's enum values "temporary_memory" / "local_storage").
+    # TemporaryMemory = cleared on restart, never touches disk; LocalStorage = survives a
+    # crash/reboot via a full-rewrite snapshot file.
+    merge_behavior: str = "local_storage"
 
     # VGA output
     vga_mirror_enabled:  bool = False
@@ -191,7 +207,8 @@ REBINDABLE_DEFS: list[tuple[str, str, str]] = [
     ("Quit",          "Quit",                   "Q"),
     ("Fullscreen",    "Toggle Fullscreen",       "F"),
     ("Zoom Window",   "Toggle Zoom Window",      "Z"),
-    ("AspectLock",    "Toggle Aspect Lock",      "A"),
+    ("Zoom In",       "Zoom In",                 ""),
+    ("Zoom Out",      "Zoom Out",                ""),
     ("Mirror",        "Toggle VGA Mirror",       "M"),
     ("Help",          "Toggle Help",             "F1"),
     ("Calibrate",     "Toggle Calibration Mode", "C"),
@@ -215,6 +232,18 @@ REBINDABLE_DEFS: list[tuple[str, str, str]] = [
     ("Bank U-CC", "Bank: U-CC",  ""), ("Bank U-DD", "Bank: U-DD",  ""),
     ("Bank U-EE", "Bank: U-EE",  ""), ("Bank U-FF", "Bank: U-FF",  ""),
     ("Bank U-GG", "Bank: U-GG",  ""),
+    # Sequencer transport (unassigned by default) — mirrors the footer transport row;
+    # "Seq Save" fires the same shared REC/WRITE press as "Seq Record" does.
+    ("Seq Locate",  "Seq: Locate",       ""),
+    ("Seq Rewind",  "Seq: Rewind",       ""),
+    ("Seq Forward", "Seq: Fast-Forward", ""),
+    ("Seq Pause",   "Seq: Pause",        ""),
+    ("Seq Record",  "Seq: Record",       ""),
+    ("Seq Start",   "Seq: Start/Stop",   ""),
+    ("Seq Save",    "Write / Save",      ""),
+    # Tap tempo (unassigned by default) — the bound key taps once per press; hold is
+    # ignored (auto-repeat is filtered) so a held key can't spam phantom taps.
+    ("Tap Tempo",   "Tap Tempo",         ""),
 ]
 
 _REBINDABLE_CACHE: list[tuple[str, str, int]] | None = None

@@ -441,7 +441,8 @@ def plan_batch_move(catalog: LibraryCatalog, obj_type: int,
                     placements: List[BatchPlacement],
                     dest_occupants: Dict[ObjLoc, ObjectDump],
                     divert_displaced: bool = False,
-                    bank_type_of: Optional[Callable[[int], Optional[bool]]] = None
+                    bank_type_of: Optional[Callable[[int], Optional[bool]]] = None,
+                    force_overwrite: bool = False
                     ) -> BatchMovePlan:
     """Compute a coherent multi-item placement. Pure — no hardware access.
 
@@ -453,6 +454,12 @@ def plan_batch_move(catalog: LibraryCatalog, obj_type: int,
     plan.displaced instead of merely warned about.
     bank_type_of — Program HD-1/EXi lookup (True=EXi/False=HD-1/None=
     unknown-or-unverifiable-bank, e.g. I-G). Ignored for Combis/Set Lists.
+    force_overwrite - port of BatchMoveModel.cs's forceOverwrite (the Merge
+    Window's "Force Overwrite" checkbox): bypasses the orphan gate's REFUSE
+    for a referenced, non-relocated destination slot, downgrading it to a
+    CHECK (the write proceeds; the referrer(s) resolve to the NEW object
+    instead of the old one, and the prior occupant is still diverted when
+    divert_displaced is set).
     """
     plan = BatchMovePlan(obj_type=obj_type)
 
@@ -534,9 +541,41 @@ def plan_batch_move(catalog: LibraryCatalog, obj_type: int,
         occ = dest_occupants.get(to)
         first = next(p for p in real if p.dst == to)
         identical = occ is not None and first.dump.body == occ.body
+        # An INIT occupant — Program OR Combi — is a placeholder, not data: the Kronos has no
+        # empty slot, so an unused one holds a full INIT body (see object_body's is_init
+        # predicates). Overwriting it destroys nothing, so the fact that something still POINTS
+        # at that address is not a reason to refuse: the referrer was pointing at an init patch
+        # (i.e. already effectively broken) and will simply resolve to the real object now
+        # landing there. Downgraded to a CHECK exactly like forceOverwrite, so the write
+        # proceeds and the placeholder is still displaced rather than lost — the user just
+        # doesn't have to reach for Force Overwrite to place onto an empty-looking slot.
+        # (Port of BatchMoveModel.cs's orphan-gate init-occupant exemption.)
+        occupant_is_init = False
+        if occ is not None and occ.body:
+            try:
+                from object_body import (
+                    program_body_is_init, combi_body_is_init, setlist_body_is_init)
+                if obj_type == OBJ_PROGRAM:
+                    occupant_is_init = program_body_is_init(occ.body)
+                elif obj_type == OBJ_COMBI:
+                    occupant_is_init = combi_body_is_init(occ.body)
+                elif obj_type == OBJ_SET_LIST:
+                    occupant_is_init = setlist_body_is_init(occ.body)
+            except Exception:
+                occupant_is_init = False
         if identical:
             plan.warnings.append(f"REFUSE: {to.label()} already contains this exact object "
                                  "— nothing to place.")
+        elif occupant_is_init:
+            plan.warnings.append(
+                f"CHECK: {to.label()} holds an INIT placeholder and is referenced by "
+                f"{len(displaced_refs)} object(s) — the INIT placeholder will be overwritten "
+                "(nothing real is lost) and its referrers will resolve to the incoming object.")
+        elif force_overwrite:
+            plan.warnings.append(
+                f"CHECK: {to.label()} was referenced by {len(displaced_refs)} object(s) - "
+                "Force Overwrite placed it anyway, so those referrer(s) now resolve to the "
+                "NEW object instead of the old one.")
         else:
             plan.warnings.append(
                 f"REFUSE: {to.label()} is referenced by {len(displaced_refs)} object(s) and would "
@@ -684,10 +723,20 @@ class SequentialFillItem:
 
 def resolve_sequential_fill(items: List[SequentialFillItem], obj_type: int, dest_bank: int,
                             start_slot: int,
-                            bank_type_of: Optional[Callable[[int], Optional[bool]]] = None
+                            bank_type_of: Optional[Callable[[int], Optional[bool]]] = None,
+                            slot_available: Optional[Callable[[int], bool]] = None
                             ) -> Tuple[List[BatchPlacement], List[Tuple[SequentialFillItem, str]]]:
     """Assign consecutive destination slots (dest_bank, start_slot, start_slot+1, ...) to
     `items`, in order. Pure — no hardware access, no catalog lookups.
+
+    `slot_available` — optional "may an auto-fill write to slot N?" filter (port of
+    BatchMoveModel.ResolveSequentialFill's `slotAvailable` param, which the auto-fill
+    callers supply as LocalEditOps.AvailableSlotsFrom: a slot holding nothing but an INIT
+    placeholder now counts as free, so the writable slots in a bank are commonly SCATTERED
+    rather than one contiguous tail, and a plain start_slot+i walk would write over real
+    patches sitting past the first placeholder). None keeps the original contiguous
+    behaviour, which is what a drop on a SPECIFIC slot wants: the user pointed at it, so
+    filling from exactly there — occupants and all — is the explicit intent.
 
     Returns (placed, still_pending):
       placed        — List[BatchPlacement], src=None, ready to hand straight to
@@ -715,12 +764,18 @@ def resolve_sequential_fill(items: List[SequentialFillItem], obj_type: int, dest
         placeable.extend(items)
 
     placed: List[BatchPlacement] = []
+    next_slot = start_slot
     for i, it in enumerate(placeable):
-        slot = start_slot + i
+        if slot_available is None:
+            slot = start_slot + i
+        else:
+            while next_slot < BANK_SLOT_COUNT and not slot_available(next_slot):
+                next_slot += 1
+            slot = next_slot
+            next_slot += 1
         if slot >= BANK_SLOT_COUNT:
             still_pending.append((it,
-                f"destination bank full — slot {slot} is past the last slot "
-                f"({BANK_SLOT_COUNT - 1}) starting from {start_slot}"))
+                f"destination bank full — no free slot left at or after slot {start_slot}"))
         else:
             dst = ObjLoc(obj_type, dest_bank, slot)
             placed.append(BatchPlacement(dst, it.dump, it.describe(), src=None))
@@ -1028,6 +1083,37 @@ def _selftest() -> None:
                                   divert_displaced=False)
     check("orphan-gate-refuses",
           orphan_plan.is_refusable and any("referenced by" in w for w in orphan_plan.warnings))
+
+    # Orphan gate + Force Overwrite (the Merge Window's checkbox): the same
+    # referenced/non-relocated shape must NOT refuse, downgraded to a CHECK, and
+    # the displaced occupant is still diverted to `displaced` when divert is on.
+    forced_plan = plan_batch_move(cat_o, OBJ_PROGRAM, orphan_placements, orphan_occupants,
+                                  divert_displaced=True, force_overwrite=True)
+    check("orphan-gate-forced-not-refused", not forced_plan.is_refusable)
+    check("orphan-gate-forced-write-present",
+          any(w.obj == orphan_dst.obj_type and w.bank == orphan_dst.bank
+              and w.index == orphan_dst.number for w in forced_plan.writes))
+    check("orphan-gate-forced-displaced-to-clipboard",
+          any(d.origin == orphan_dst for d in forced_plan.displaced))
+    check("orphan-gate-forced-check-warning",
+          any("Force Overwrite" in w for w in forced_plan.warnings))
+
+    # 4d. Orphan gate: an INIT Program occupant is a placeholder, not data — the same
+    #     referenced/non-relocated shape must NOT refuse when the slot merely holds an init
+    #     patch, and must not need Force Overwrite to get through (mirrors BatchMoveModel's
+    #     orphan-gate init-occupant exemption self-tests).
+    from object_body import write_program_name
+    init_occupant_body = write_program_name(bytes(100), "Init EXi Program")
+    init_occupants = {orphan_dst: ObjectDump(OBJ_PROGRAM, 0x40, 10, 1, init_occupant_body)}
+    init_plan = plan_batch_move(cat_o, OBJ_PROGRAM, orphan_placements, init_occupants,
+                                divert_displaced=True)
+    check("orphan-gate-init-occupant-not-refused",
+          not init_plan.is_refusable and any("INIT placeholder" in w for w in init_plan.warnings))
+    check("orphan-gate-init-write-present",
+          any(w.obj == orphan_dst.obj_type and w.bank == orphan_dst.bank
+              and w.index == orphan_dst.number for w in init_plan.writes))
+    check("orphan-gate-init-displaced-to-clipboard",
+          any(d.origin == orphan_dst for d in init_plan.displaced))
 
     # Duplicate destination and mixed-type REFUSE.
     dup_placements = [

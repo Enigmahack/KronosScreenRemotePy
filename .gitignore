@@ -5,3 +5,9 @@ palette_lock.json
 name_cache.json
 setlist_cache.json
 dumped_banks.json
+local_library/
+category_names_cache.json
+merge_cache.json
+blank_templates/
+librarian_backups/
+
