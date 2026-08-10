@@ -195,7 +195,9 @@ from PySide6.QtWidgets import (
 )
 
 from batch_clipboard import BatchClipboard, ClipboardMode
+from blank_template_store import BlankTemplateStore
 import dependency_scanner as depscan
+import erase_body
 import kronos_sysex as ksx
 import object_body
 from changeset_sync import ChangesetPlan, SyncResult, commit_changes, sync_library
@@ -203,7 +205,10 @@ from librarian_model import (
     BatchPlacement, LibraryCatalog, ObjLoc, SequentialFillItem, WriteOp,
     _READONLY_PROGRAM_BANKS, plan_batch_move, plan_move, resolve_sequential_fill,
 )
-from librarian_sysex import OBJ_COMBI, OBJ_PROGRAM, OBJ_SET_LIST, OBJ_VERSION, ObjectDump
+from librarian_sysex import (
+    OBJ_COMBI, OBJ_PROGRAM, OBJ_SET_LIST, OBJ_VERSION, ObjectDump,
+    obj_bank_to_func33, set_combi_timbre_ref, set_setlist_slot_ref,
+)
 from library_pull_pipeline import EDITABLE_BANKS, GetBankObjects, GetLiveDigest, SLOT_COUNT
 from local_library_store import BlobStore, LocalIndexEntry, LocalLibraryIndex, OpLog
 from merge_cache import MergeCache, MergeEntry, MergeRefSite
@@ -756,6 +761,7 @@ class LibrarianShellWindow(QDialog):
         self._index = LocalLibraryIndex()
         self._index.load()
         self._blobs = BlobStore()
+        self._blank_templates = BlankTemplateStore(self._blobs)
         self._oplog = OpLog()
         from merge_cache import MergeCacheBehavior
         behavior = (MergeCacheBehavior.TEMPORARY_MEMORY
@@ -2005,17 +2011,31 @@ class LibrarianShellWindow(QDialog):
             if entry is None:
                 continue
             if not restoring:
-                # Abandon any pending edit first (Discard semantics), then mark for deletion.
+                # Abandon any pending edit first (Discard semantics), then stage a real
+                # blank body as current_hash — the instrument's own captured blank
+                # template if one exists, else erase_body's derived reset-to-INIT/
+                # empty-Set-List fallback. Matches C#'s ChangesetBuilder preference
+                # order ("BlankTemplates.EnsureAsync ?? EraseBody.Build") — the Kronos
+                # protocol has no delete opcode, so a slot must be overwritten with
+                # something recognizably blank, never left as its original content.
+                blank_body = self._blank_templates.blank_body_for(loc.obj_type, entry.is_exi)
+                if blank_body is None:
+                    original_body = self._blobs.get(entry.baseline_hash)
+                    if original_body is not None:
+                        blank_body = erase_body.build(loc.obj_type, original_body)
+                blank_hash = (self._blobs.put(blank_body) if blank_body is not None
+                             else entry.baseline_hash)
                 entry = LocalIndexEntry(
                     version=entry.version, baseline_hash=entry.baseline_hash,
-                    current_hash=entry.baseline_hash, display_name=entry.display_name,
+                    current_hash=blank_hash, display_name=entry.display_name,
                     created_utc=entry.created_utc, modified_utc=now,
                     conflicted=False, has_resolved_dependencies=entry.has_resolved_dependencies,
                     is_exi=entry.is_exi, pending_delete=True)
             else:
+                # Restore: undo the blank-body staging above, back to the real content.
                 entry = LocalIndexEntry(
                     version=entry.version, baseline_hash=entry.baseline_hash,
-                    current_hash=entry.current_hash, display_name=entry.display_name,
+                    current_hash=entry.baseline_hash, display_name=entry.display_name,
                     created_utc=entry.created_utc, modified_utc=now,
                     conflicted=entry.conflicted,
                     has_resolved_dependencies=entry.has_resolved_dependencies,
@@ -2883,11 +2903,73 @@ class LibrarianShellWindow(QDialog):
             return False
         return True
 
+    def _repoint_session_dependency(self, entry: SessionDependencyEntry,
+                                    new_bank: int, new_number: int) -> bool:
+        """Repatch entry.required_by's own stored reference (a Combi timbre or
+        Set List slot) to point at (new_bank, new_number) instead of the
+        original missing address. The broader half of ResolvePendingDependencies:
+        the expected content landed at a DIFFERENT local address than first
+        placed at (e.g. Auto-Fill's free-slot scan didn't pick the same slot
+        twice)."""
+        referrer = self._index.get(entry.required_by.obj_type, entry.required_by.bank,
+                                   entry.required_by.number)
+        if referrer is None:
+            return False
+        body = self._blobs.get(referrer.current_hash)
+        if body is None:
+            return False
+        type_for_func33 = 1 if entry.missing_ref.obj_type == OBJ_PROGRAM else 0
+        func33_bank = obj_bank_to_func33(type_for_func33, new_bank)
+        if func33_bank < 0:
+            return False
+        mutable = bytearray(body)
+        if entry.ref_kind == "combi_timbre":
+            set_combi_timbre_ref(mutable, entry.site, func33_bank=func33_bank, number=new_number)
+        elif entry.ref_kind == "setlist_slot":
+            set_setlist_slot_ref(mutable, entry.site, func33_bank=func33_bank, index=new_number)
+        else:
+            return False
+        new_loc = ObjLoc(entry.missing_ref.obj_type, new_bank, new_number)
+        self._write_local_body_edit(entry.required_by, bytes(mutable),
+                                    f"repointed {entry.ref_kind} to {new_loc.label()}")
+        return True
+
+    def _retry_resolve_pending_dependencies(self) -> None:
+        """Port of ResolvePendingDependencies: before hard-blocking Sync/Commit,
+        re-check every pending session dependency against Local Library's
+        CURRENT state — a dependency the user (or Auto-Fill) placed after it was
+        first flagged no longer needs to block anything. Two cases, matching
+        SessionDependencyClipboard's own split: (1) something now sits at the
+        exact original missing address -> clipboard.resolve(); (2) the expected
+        content landed at a different local address -> repoint the referrer's
+        own reference there, then clipboard.remove() just that entry."""
+        for entry in self._clipboard.pending:
+            local = self._index.get(entry.missing_ref.obj_type, entry.missing_ref.bank,
+                                    entry.missing_ref.number)
+            if local is not None and not local.pending_delete and (
+                    entry.expected_content_hash is None
+                    or local.current_hash == entry.expected_content_hash):
+                self._clipboard.resolve(entry.missing_ref)
+                continue
+            if entry.expected_content_hash is not None:
+                found = self._index.find_by_content_hash(entry.missing_ref.obj_type,
+                                                          entry.expected_content_hash)
+                if found is not None and found != (entry.missing_ref.bank, entry.missing_ref.number):
+                    new_bank, new_number = found
+                    if self._repoint_session_dependency(entry, new_bank, new_number):
+                        self._clipboard.remove(entry)
+
     def _show_sync_gate_dialog_if_blocked(self) -> bool:
-        """Returns True if it's safe to proceed (clipboard is clear); shows the
-        blocking notice and returns False otherwise."""
+        """Returns True if it's safe to proceed. Retries every pending session
+        dependency against Local Library's current state first (see
+        _retry_resolve_pending_dependencies); only what's STILL unresolved after
+        that gets a genuine Continue-Anyway/Cancel choice, matching C#'s
+        PrepareForPushAsync (retry, then a real choice — never a permanent,
+        un-overridable block)."""
+        self._retry_resolve_pending_dependencies()
         pending = self._clipboard.pending
         if not pending:
+            self._refresh_local_tree()
             return True
         grouped: Dict[Tuple[ObjLoc, Optional[str]], int] = {}
         for e in pending:
@@ -2896,10 +2978,13 @@ class LibrarianShellWindow(QDialog):
         rows = [f"{loc.label()}  (needed by {count} placement(s))" for (loc, _h), count in grouped.items()]
         dlg = _UnresolvedDependenciesDialog(
             f"{len(pending)} dependency(ies) are still pending in the session clipboard. "
-            "Place them locally (from the Merge Window or a PCG) before Sync/Commit.",
-            rows, allow_continue=False, parent=self)
-        dlg.exec()
-        return False
+            "Place them locally (from the Merge Window or a PCG), or continue anyway and "
+            "leave those references dangling.",
+            rows, allow_continue=True, parent=self)
+        proceed = dlg.exec() == QDialog.DialogCode.Accepted
+        if proceed:
+            self._refresh_local_tree()
+        return proceed
 
     def _set_busy(self, busy: bool) -> None:
         self._busy = busy
@@ -3011,6 +3096,37 @@ class LibrarianShellWindow(QDialog):
         return out
 
     def _write_to_hardware(self, obj_type: int, bank: int, number: int, body: bytes) -> bool:
+        """Port of ApplyMoveAsync's per-object safety wrapping around a Sync/Commit
+        write: staleness re-check right before the write (catches a front-panel
+        edit landing in the narrow window after changeset_sync's earlier, coarser
+        bank-level pre-scan), then a pre-image backup to a .syx file so a bad push
+        is recoverable. Both are best-effort around the write itself: a failed
+        backup logs and proceeds (nothing to protect if the dump comes back
+        empty), but a stale bank digest hard-aborts the write, matching
+        ApplyMoveAsync's own abort-before-any-Store behavior."""
+        loc = ObjLoc(obj_type, bank, number)
+        bank_key = LocalLibraryIndex.bank_key(obj_type, bank)
+        baseline = self._index.bank_digest_baseline.get(bank_key)
+        if baseline is not None:
+            fresh_hex = self._get_live_digest(bank_key)
+            if fresh_hex is not None and fresh_hex != baseline:
+                self._log(f"ABORT: {loc.label()}'s bank changed on hardware since the "
+                         "last pre-scan (edited at the panel?) — write skipped to avoid "
+                         "clobbering a concurrent edit.")
+                return False
+
+        pre_image = self._service.dump_object_parsed(obj_type, bank, number)
+        if pre_image is not None:
+            try:
+                stamp = _now_iso().replace(":", "").replace("-", "").replace(".", "")
+                backup_path = str(storage.backup_dir() / f"{stamp}_sync_{loc.label()}.syx"
+                                  .replace(" ", "_").replace(":", ""))
+                self._service.backup_objects(
+                    [WriteOp(obj_type, bank, number, pre_image.version, pre_image.body)],
+                    backup_path)
+            except Exception as e:  # pragma: no cover - defensive, backup is best-effort
+                self._log(f"CHECK: pre-write backup of {loc.label()} failed ({e}) — proceeding anyway.")
+
         version = OBJ_VERSION.get(obj_type, 0)
         op = WriteOp(obj_type, bank, number, version, body)
         rc = self._service.write_object(op)

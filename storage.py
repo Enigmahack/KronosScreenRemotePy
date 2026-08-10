@@ -38,6 +38,14 @@ def data_dir() -> pathlib.Path:
     return _data_dir()
 
 
+def backup_dir() -> pathlib.Path:
+    """Directory for pre-write hardware object backups (.syx files) — mirrors
+    the C# client's Storage.BackupDir(). Already gitignored (librarian_backups/)."""
+    d = _data_dir() / "librarian_backups"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 # ── Settings ───────────────────────────────────────────────────────────────────
 
 def load_settings() -> AppSettings:

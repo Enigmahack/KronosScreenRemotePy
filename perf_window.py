@@ -183,6 +183,13 @@ class PerformanceWindow(QDialog):
 
         self._build_ui()
 
+        # Audio Active/Idle tracking: AUDIO_RTO/AUDIO_MIDI_RT are monotonic
+        # counters, not booleans -- "active" means either grew since the last
+        # poll (matches C#'s KeyboardInfoWindow delta tracking).
+        self._prev_rto: int = 0
+        self._prev_midi_rt: int = 0
+        self._prev_rto_set: bool = False
+
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._poll)
         self._set_interval(0)  # start at 1 s
@@ -437,6 +444,7 @@ class PerformanceWindow(QDialog):
 
         # Mode
         mode_names = {
+            "0": "Init",
             "1": "Setlist", "2": "Combi", "3": "Program",
             "4": "Sequence", "5": "Sampling", "6": "Global", "7": "Disk",
         }
@@ -453,9 +461,12 @@ class PerformanceWindow(QDialog):
             if raw:
                 try:
                     temp = float(raw)
-                    color = _RED if temp >= 90 else (_AMBER if temp >= 80 else _TEXT_NORM)
-                    lbl.setText(f"{temp:.1f} °C")
-                    lbl.setStyleSheet(f"color: {color}; font-size: 11px;")
+                    if temp <= 0:
+                        lbl.setText("")
+                    else:
+                        color = _RED if temp >= 90 else (_AMBER if temp >= 80 else _TEXT_NORM)
+                        lbl.setText(f"{temp:.1f} °C")
+                        lbl.setStyleSheet(f"color: {color}; font-size: 11px;")
                 except ValueError:
                     lbl.setText(raw)
             else:
@@ -468,17 +479,27 @@ class PerformanceWindow(QDialog):
         # Audio
         sr       = kv.get("AUDIO_SR", "")
         ch       = kv.get("AUDIO_OUT_CH", "")
-        rto      = kv.get("AUDIO_RTO", "")
-        midi_rt  = kv.get("AUDIO_MIDI_RT", "")
+        rto_raw     = kv.get("AUDIO_RTO", "")
+        midi_rt_raw = kv.get("AUDIO_MIDI_RT", "")
         parts = []
         if sr:
-            parts.append(f"{sr} Hz")
+            try:
+                parts.append(f"{int(sr) / 1000:g} kHz")
+            except ValueError:
+                parts.append(f"{sr} Hz")
         if ch:
             parts.append(f"{ch}ch")
-        if rto == "1":
-            parts.append("Active")
-        elif rto == "0":
-            parts.append("Idle")
+        # AUDIO_RTO/AUDIO_MIDI_RT are monotonic counters, not booleans -- "active"
+        # means either counter grew since the last poll (matches C#'s delta check).
+        try:
+            rto = int(rto_raw)
+            midi_rt = int(midi_rt_raw)
+            if self._prev_rto_set:
+                active = rto > self._prev_rto or midi_rt > self._prev_midi_rt
+                parts.append("Active" if active else "Idle")
+            self._prev_rto, self._prev_midi_rt, self._prev_rto_set = rto, midi_rt, True
+        except ValueError:
+            self._prev_rto_set = False
         self._lbl_audio.setText("  ".join(parts) if parts else "—")
 
     def closeEvent(self, event):

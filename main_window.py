@@ -2140,6 +2140,11 @@ class MainWindow(QMainWindow):
             self._frame_w._disconnect_msg = "Disconnected"
         self._frame_w.update()
         self._act_disconnect.setEnabled(False)
+        # Stop the Performance window's SYSINFO polling — the on-Kronos daemon
+        # is fragile and must not be probed during boot/offline (matches C#'s
+        # KeyboardInfoWindow isParentConnected guard).
+        if self._perf_window:
+            self._perf_window.update_host("", self._ctrl_port)
         if not quiet:
             self._set_conn_state("disconnected", "Disconnected")
             self.setWindowTitle(f"{_APP_TITLE} — disconnected")
@@ -2250,6 +2255,11 @@ class MainWindow(QMainWindow):
             self._combi_prog_edit_active = False
             self._combi_flash_timer.stop()
         self._act_disconnect.setEnabled(False)
+        # Stop the Performance window's SYSINFO polling while offline/reconnecting
+        # — the on-Kronos daemon is fragile and must not be probed during
+        # boot/offline (matches C#'s KeyboardInfoWindow isParentConnected guard).
+        if self._perf_window:
+            self._perf_window.update_host("", self._ctrl_port)
         # Clear receiver so _schedule_reconnect can proceed and _connect_async
         # guard works correctly.  The QThread has already exited (disconnected
         # is emitted from the run() finally block) so no dispose() needed here.

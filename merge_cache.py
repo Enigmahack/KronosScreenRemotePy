@@ -39,8 +39,9 @@ Design differences from the C# source (deliberate, not oversights):
     against a PCG, Local Library, or a self-test fake without a hard
     dependency on pcg_file.py or any not-yet-existing local-library-cache
     module.
-  * version: C# stamps LibObj.CurrentObjectVersion(objType) ?? 0; there is
-    no Python port of that lookup yet, so version defaults to 0 here.
+  * version: stamped from librarian_sysex.OBJ_VERSION (obj_type -> version
+    byte), the same table librarian_shell_window.py's hardware-write path
+    already uses -- mirrors C#'s LibObj.CurrentObjectVersion(objType) ?? 0.
 
 Storage root: {DataDir}/local_library/ -- the SAME root
 local_library_store.py resolves (local_library_store.local_library_dir(),
@@ -57,6 +58,7 @@ from enum import Enum
 from typing import Callable, Dict, List, Optional, Set, Tuple
 
 import kronos_sysex as ksx
+from librarian_sysex import OBJ_VERSION
 from local_library_store import BlobStore, local_library_dir
 
 Address = Tuple[int, int, int]   # (obj_type, bank, number)
@@ -411,6 +413,7 @@ class MergeCache:
         entry = MergeEntry(
             content_hash=content_hash, obj_type=obj_type, body=body,
             display_name=_extract_display_name(body), is_top_level_pull=is_top_level,
+            version=OBJ_VERSION.get(obj_type, 0),
         )
         entry.origins.append(MergeOrigin(source, address))
         self._by_hash[content_hash] = entry
@@ -606,6 +609,13 @@ def _selftest() -> None:
         combi_entry = mc.try_get(combi_hash)
         check("s1-combi-2-refsites", combi_entry is not None and len(combi_entry.ref_sites) == 2)
         check("s1-combi-fully-resolved", combi_entry is not None and not combi_entry.has_unresolved_dependencies)
+        # Version must be stamped from OBJ_VERSION (Combi=3), never left at the
+        # dataclass default of 0 -- a wrong version byte gets a real Kronos'
+        # func-0x24 Reply Code 3 ("mangled message") on write.
+        check("s1-combi-version-stamped", combi_entry is not None and combi_entry.version == 3)
+        prog1_hash = BlobStore.compute_hash(prog1_body)
+        prog1_entry = mc.try_get(prog1_hash)
+        check("s1-program-version-stamped", prog1_entry is not None and prog1_entry.version == 5)
 
         # ── Scenario 2: a reference that ISN'T resolvable yet -> pending gap,
         #    then pull it separately -> retroactive resolution ──
