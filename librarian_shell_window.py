@@ -3265,7 +3265,14 @@ class LibrarianShellWindow(QDialog):
         is recoverable. Both are best-effort around the write itself: a failed
         backup logs and proceeds (nothing to protect if the dump comes back
         empty), but a stale bank digest hard-aborts the write, matching
-        ApplyMoveAsync's own abort-before-any-Store behavior."""
+        ApplyMoveAsync's own abort-before-any-Store behavior.
+
+        After a successful write, the bank's digest baseline is refreshed to the
+        post-write value. Without this, a SECOND dirty object in the SAME bank
+        later in this same Sync/Commit batch would falsely trip the staleness
+        check on its own predecessor's write (Store changes the bank's real
+        digest immediately) and get spuriously aborted as if a front-panel edit
+        had landed — a self-conflict, not a real one."""
         loc = ObjLoc(obj_type, bank, number)
         bank_key = LocalLibraryIndex.bank_key(obj_type, bank)
         baseline = self._index.bank_digest_baseline.get(bank_key)
@@ -3295,7 +3302,13 @@ class LibrarianShellWindow(QDialog):
         if rc != 0:
             return False
         rc2 = self._service.store_bank(obj_type, bank)
-        return rc2 == 0
+        if rc2 != 0:
+            return False
+        if baseline is not None:
+            fresh_after = self._get_live_digest(bank_key)
+            if fresh_after is not None:
+                self._index.set_bank_digest_baseline(obj_type, bank, fresh_after)
+        return True
 
     def _get_live_bank_type(self, bank: int) -> Optional[bool]:
         """changeset_sync.build_changeset's get_live_bank_type adapter — same "adapt

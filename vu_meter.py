@@ -180,6 +180,8 @@ class AudioCapture(QThread):
             n_ch = indata.shape[1]
             ch0 = indata[:, 0]
             ch1 = indata[:, min(1, n_ch - 1)]
+            if ch0.size == 0 or ch1.size == 0:
+                return   # np.max raises on an empty buffer; nothing to measure anyway
             # Peak, not RMS — mirrors C# AudioEngine.cs: RMS runs 6-20dB below
             # peak, so transient-heavy material would never reach amber/red.
             peak_l = float(np.max(np.abs(ch0)) + 1e-12)
