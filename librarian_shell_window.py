@@ -359,6 +359,8 @@ class _PropertiesDialog(QDialog):
                  category_choice: Optional[Tuple[int, int]] = None,
                  setlist_slots: Optional[List["object_body.SetListSlotInfo"]] = None,
                  category_names=None, obj_type: int = 0,
+                 dependencies: Optional[Tuple[List[str], List[str]]] = None,
+                 on_scan_pcg: Optional[Callable[[], None]] = None,
                  parent=None):
         super().__init__(parent)
         self.setWindowTitle(heading)
@@ -473,6 +475,37 @@ class _PropertiesDialog(QDialog):
 
             self._slot_list.itemSelectionChanged.connect(self._on_slot_selected)
 
+        # Dependencies group — port of PropertiesDialog's PNL_Dependencies: Requires
+        # (this object's own outgoing references, recursive through Combis) and Used By
+        # (other local Combis/Set Lists referencing this object), plus a "Scan PCG..."
+        # button that reuses the same context-menu action (staging fixes into the Merge
+        # Window, not an instant in-place resolve — see _scan_dependencies_for_selected).
+        if dependencies is not None:
+            requires_rows, used_by_rows = dependencies
+            deps_box = QGroupBox("Dependencies")
+            deps_v = QVBoxLayout(deps_box)
+            deps_v.addWidget(QLabel("Requires:"))
+            self._requires_list = QListWidget()
+            self._requires_list.setStyleSheet(
+                f"QListWidget {{ background: {T.INSET}; color: {T.TEXT}; border: 1px solid {T.BORDER}; }}")
+            self._requires_list.setMaximumHeight(80)
+            for r in requires_rows:
+                self._requires_list.addItem(QListWidgetItem(r))
+            deps_v.addWidget(self._requires_list)
+            deps_v.addWidget(QLabel("Used By:"))
+            self._used_by_list = QListWidget()
+            self._used_by_list.setStyleSheet(
+                f"QListWidget {{ background: {T.INSET}; color: {T.TEXT}; border: 1px solid {T.BORDER}; }}")
+            self._used_by_list.setMaximumHeight(80)
+            for r in used_by_rows:
+                self._used_by_list.addItem(QListWidgetItem(r))
+            deps_v.addWidget(self._used_by_list)
+            if on_scan_pcg is not None:
+                btn_scan = QPushButton("Scan PCG...")
+                btn_scan.clicked.connect(on_scan_pcg)
+                deps_v.addWidget(btn_scan, alignment=Qt.AlignmentFlag.AlignLeft)
+            v.addWidget(deps_box)
+
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         btns.accepted.connect(self._on_accept)
         btns.rejected.connect(self.reject)
@@ -580,7 +613,14 @@ class _DestinationDialog(QDialog):
 
 class _RemoteFilePickerDialog(QDialog):
     """Port of RemoteFilePickerDialog — reuses file_manager._FtpWorker (no new
-    FTP client). Navigation is synchronous/blocking (see module docstring)."""
+    FTP client). Directory listing (the operation repeated on every navigation
+    click) runs on a background thread so a slow/unreachable Kronos never
+    freezes the dialog; results are marshaled back via Qt's cross-thread queued
+    signal delivery, the same pattern file_manager.py's own transfers use.
+    Filters the listing to directories + *.pcg files, matching the C# source's
+    server-side extension filter."""
+
+    _listing_ready = Signal(str, object, object)   # path, entries|None, error|None
 
     def __init__(self, ftp_worker, start_path: str = "/", parent=None):
         super().__init__(parent)
@@ -600,36 +640,73 @@ class _RemoteFilePickerDialog(QDialog):
         self._list.setStyleSheet(f"QListWidget {{ background: {T.INSET}; color: {T.TEXT}; "
                                  f"border: 1px solid {T.BORDER}; }}")
         self._list.itemDoubleClicked.connect(self._on_double_click)
+        self._list.itemSelectionChanged.connect(self._update_open_enabled)
         v.addWidget(self._list, stretch=1)
+
+        self._status_label = QLabel("")
+        self._status_label.setStyleSheet(f"color: {T.TEXT_DIM}; font-size: 11px;")
+        v.addWidget(self._status_label)
 
         row = QHBoxLayout()
         up_btn = QPushButton("Up")
         up_btn.clicked.connect(self._go_up)
         row.addWidget(up_btn)
         row.addStretch(1)
-        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Open | QDialogButtonBox.StandardButton.Cancel)
-        btns.accepted.connect(self._on_open)
-        btns.rejected.connect(self.reject)
-        row.addWidget(btns)
+        self._btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Open | QDialogButtonBox.StandardButton.Cancel)
+        self._btns.accepted.connect(self._on_open)
+        self._btns.rejected.connect(self.reject)
+        row.addWidget(self._btns)
         v.addLayout(row)
 
+        self._listing_ready.connect(self._on_listing_ready)
+        self._update_open_enabled()
         self._refresh()
+
+    def _open_button(self) -> Optional[QPushButton]:
+        return self._btns.button(QDialogButtonBox.StandardButton.Open)
+
+    def _update_open_enabled(self) -> None:
+        item = self._list.currentItem()
+        entry = item.data(Qt.ItemDataRole.UserRole) if item is not None else None
+        btn = self._open_button()
+        if btn is not None:
+            btn.setEnabled(entry is not None and not entry.is_directory)
 
     def _refresh(self) -> None:
         self._path_label.setText(self._path)
         self._list.clear()
-        try:
-            entries = self._ftp.list_dir(self._path)
-        except Exception as e:  # pragma: no cover - defensive
-            QMessageBox.warning(self, "FTP", f"Could not list {self._path}: {e}")
+        self._status_label.setText("Loading…")
+        self._update_open_enabled()
+        path = self._path
+
+        def worker() -> None:
+            try:
+                entries = self._ftp.list_dir(path)
+                self._listing_ready.emit(path, entries, None)
+            except Exception as e:  # pragma: no cover - defensive
+                self._listing_ready.emit(path, None, e)
+
+        threading.Thread(target=worker, daemon=True, name="PcgPickerList").start()
+
+    def _on_listing_ready(self, path: str, entries, error) -> None:
+        if path != self._path:
+            return   # stale reply from a navigation the user has since moved past
+        if error is not None:
+            self._status_label.setText(f"Error: {error}")
             return
         dir_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon)
+        shown = 0
         for e in sorted(entries, key=lambda x: (not x.is_directory, x.name.lower())):
+            if not e.is_directory and not e.name.lower().endswith(".pcg"):
+                continue
             item = QListWidgetItem(e.name)
             if e.is_directory:
                 item.setIcon(dir_icon)
             item.setData(Qt.ItemDataRole.UserRole, e)
             self._list.addItem(item)
+            shown += 1
+        self._status_label.setText(f"{shown} item(s)")
+        self._update_open_enabled()
 
     def _go_up(self) -> None:
         clean = self._path.rstrip("/")
@@ -647,8 +724,7 @@ class _RemoteFilePickerDialog(QDialog):
         item = self._list.currentItem()
         entry = item.data(Qt.ItemDataRole.UserRole) if item is not None else None
         if entry is None or entry.is_directory:
-            QMessageBox.information(self, "Pull PCG", "Select a .pcg file first.")
-            return
+            return   # Open is disabled in this state; defensive no-op
         self.selected_remote_path = entry.full_path
         self.accept()
 
@@ -1148,8 +1224,19 @@ class LibrarianShellWindow(QDialog):
         self._tree_pcg.itemDoubleClicked.connect(lambda *_: self._show_pcg_properties())
         self._tree_pcg.itemSelectionChanged.connect(
             lambda: self._update_object_dependencies("pcg", self._tree_pcg))
+        self._tree_pcg.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._tree_pcg.customContextMenuRequested.connect(self._show_pcg_context_menu)
         v.addWidget(self._tree_pcg)
         return box
+
+    def _show_pcg_context_menu(self, local_pos) -> None:
+        """Port of PcgNodeTemplate's context menu (MI_MoveToMerge)."""
+        item = self._tree_pcg.itemAt(local_pos)
+        if item is None:
+            return
+        menu = QMenu(self)
+        menu.addAction("Move to Merge Window", self._pull_pcg_selected_into_merge)
+        menu.exec(self._tree_pcg.viewport().mapToGlobal(local_pos))
 
     def _build_history_pane(self) -> QWidget:
         box = QGroupBox("History")
@@ -1483,6 +1570,10 @@ class LibrarianShellWindow(QDialog):
                 else:
                     bank_label = items[0].bank.label if items[0].bank is not None else _bank_label(obj_type, bank)
                     parent = QTreeWidgetItem([bank_label])
+                    # Tagged (distinct from a leaf's "pcg" tag) so selecting a whole
+                    # bank works for "Move to Merge Window", matching Local's
+                    # "local_bank" tag / _selected_local_object_locs expansion.
+                    parent.setData(0, Qt.ItemDataRole.UserRole, ("pcg_bank", obj_type, bank))
                     root.addChild(parent)
                 for e in items:
                     self._pcg_by_addr[(obj_type, bank, e.index)] = e
@@ -1658,11 +1749,21 @@ class LibrarianShellWindow(QDialog):
                  f"Pending delete: {entry.pending_delete}"]
         body = self._blobs.get(entry.current_hash)
         category_choice, setlist_slots = self._object_body_editable_fields(obj_type, body)
+        dependencies = None
+        on_scan_pcg = None
+        if obj_type in (OBJ_COMBI, OBJ_SET_LIST) and body is not None:
+            requires_rows = self._walk_local_deps(obj_type, body, 0, set())
+            used_by_rows = [
+                f"{loc.label()}  used by  {ObjLoc(ref.ref_obj, ref.ref_bank, ref.ref_index).label()}"
+                for ref in self._build_local_catalog().referrers_of(loc)]
+            dependencies = (requires_rows or ["(none)"], used_by_rows or ["(none)"])
+            on_scan_pcg = self._scan_dependencies_for_selected
         dlg = _PropertiesDialog(f"Properties — {loc.label()}", entry.display_name,
                                 editable_name=True, location=f"Location: {loc.label()}",
                                 flag_lines=flags, extra_lines=[],
                                 category_choice=category_choice, setlist_slots=setlist_slots,
                                 category_names=self._category_names, obj_type=obj_type,
+                                dependencies=dependencies, on_scan_pcg=on_scan_pcg,
                                 parent=self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self._apply_local_properties_edit(loc, obj_type, entry.display_name, dlg)
@@ -2781,15 +2882,47 @@ class LibrarianShellWindow(QDialog):
         found = self._index.find_by_content_hash(obj_type, content_hash)   # (bank, number) or None
         return None if found is None else (obj_type, found[0], found[1])
 
+    def _selected_pcg_object_locs(self) -> List[ObjLoc]:
+        """Every selected PCG leaf's ObjLoc, with a selected bank/root ("pcg_bank")
+        node expanded to every leaf inside it — the PCG-pane counterpart of
+        _selected_local_object_locs, same bank-node-expansion contract."""
+        out: List[ObjLoc] = []
+        seen: set = set()
+
+        def add(obj_type: int, bank: int, number: int) -> None:
+            key = (obj_type, bank, number)
+            if key not in seen:
+                seen.add(key)
+                out.append(ObjLoc(obj_type, bank, number))
+
+        for item in self._tree_pcg.selectedItems():
+            data = item.data(0, Qt.ItemDataRole.UserRole)
+            if data is None:
+                continue
+            payload = tuple(data)
+            if payload[0] == "pcg":
+                _, obj_type, bank, number = payload
+                add(obj_type, bank, number)
+            elif payload[0] == "pcg_bank":
+                for i in range(item.childCount()):
+                    child_data = item.child(i).data(0, Qt.ItemDataRole.UserRole)
+                    if child_data is not None and tuple(child_data)[0] == "pcg":
+                        _, obj_type, bank, number = tuple(child_data)
+                        add(obj_type, bank, number)
+        return out
+
     def _pull_pcg_selected_into_merge(self) -> None:
-        payload = self._leaf_payload(self._tree_pcg)
-        if payload is None or payload[0] != "pcg":
-            self._log("Select exactly one PCG item to pull into the Merge Window.")
+        """A selected bank/root node expands to every leaf inside it (matches
+        Local's bank-node behavior); multiple individually-selected leaves are
+        each pulled too (the PCG tree already allows ExtendedSelection)."""
+        locs = self._selected_pcg_object_locs()
+        if not locs:
+            self._log("Select one or more PCG items to pull into the Merge Window.")
             return
-        _, obj_type, bank, number = payload
-        scope = self._undo.begin(
-            f"Pulled {ObjLoc(obj_type, bank, number).label()} into Merge Window")
-        self._pull_pcg_address_into_merge((obj_type, bank, number))
+        label = locs[0].label() if len(locs) == 1 else f"{len(locs)} item(s)"
+        scope = self._undo.begin(f"Pulled {label} into Merge Window")
+        for loc in locs:
+            self._pull_pcg_address_into_merge((loc.obj_type, loc.bank, loc.number))
         if scope is not None:
             scope.dispose()
 
