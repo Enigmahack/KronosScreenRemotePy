@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
 
 import theme as T
 
-APP_VERSION = "1.6.3"
+APP_VERSION = "2.0.0"
 APP_NAME    = "Kronos ScreenRemote (Python)"
 
 

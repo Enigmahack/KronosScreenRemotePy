@@ -3,8 +3,25 @@ Application settings — mirrors AppSettings.cs.
 """
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import Dict, List
+from typing import Dict, List, Tuple
 from models import Keybind
+
+
+# Which slot to source each object kind's "blank/initialized" body template from, for
+# blank_template_store.py's erase-to-blank mechanism (mirrors BlankTemplateStore.cs's
+# `BlankTemplates.SourceFor`). The C# source hardcodes this as a source-code comment —
+# "The user's current-blank slots (2026-07): U-EE000 EXi program, U-GG000 HD-1 program,
+# U-A000 combi, Set List 127" — which which-slots-are-blank is inherently per-installation/
+# per-factory-state (not a fixed protocol constant), so the Python port makes it a
+# configurable AppSettings value instead of a baked-in literal. This default merely
+# reproduces that same 2026-07 hint as a starting point; change it via settings.json if a
+# given Kronos's actual current-blank slots differ.
+DEFAULT_BLANK_TEMPLATE_SOURCE_SLOTS: Dict[str, List[int]] = {
+    "program_exi": [0x4B, 0],   # U-EE:000
+    "program_hd1": [0x4D, 0],   # U-GG:000
+    "combi":       [0x40, 0],   # U-A:000
+    "setlist":     [0, 127],    # Set List 127
+}
 
 
 @dataclass
@@ -69,6 +86,7 @@ class AppSettings:
     prompt_before_quitting: bool = True
     hide_data_input:        bool = False
     hide_value_input:       bool = False
+    reverse_scrolling:      bool = False
     screenshot_dir:         str  = ""
 
     # FTP authentication (required by the stream daemon)
@@ -78,6 +96,21 @@ class AppSettings:
 
     # MIDI bridge (port 9875) — SysEx tool, Set List viewer, name caching
     midi_monitor_enabled: bool = True
+
+    # Merge Window -> Local Library duplication policy (mirrors AppSettings.cs's
+    # MergePreserveDuplicatePrograms/Combis). When True, placing a staged object whose
+    # content already exists somewhere in Local Library still writes a FRESH copy
+    # ("preserve duplication"); when False, the existing copy is reused instead of writing
+    # a duplicate (FindExistingLocalCopy). Defaults mirror the long-standing behavior:
+    # Programs dedup, Combis copy as-is.
+    merge_preserve_duplicate_programs: bool = False
+    merge_preserve_duplicate_combis:   bool = True
+
+    # Merge Window staging cache persistence (mirrors AppSettings.cs's MergeBehavior;
+    # values are MergeCacheBehavior's enum values "temporary_memory" / "local_storage").
+    # TemporaryMemory = cleared on restart, never touches disk; LocalStorage = survives a
+    # crash/reboot via a full-rewrite snapshot file.
+    merge_behavior: str = "local_storage"
 
     # VGA output
     vga_mirror_enabled:  bool = False
@@ -122,6 +155,20 @@ class AppSettings:
     # Raw key mappings (host Qt key → linux keycode)
     raw_key_maps: List[RawKeyMap] = field(default_factory=list)
 
+    # Blank-template source slots (per object kind) — see
+    # DEFAULT_BLANK_TEMPLATE_SOURCE_SLOTS above. Configurable, not hardcoded, because
+    # which slots are currently blank is per-installation/per-factory-state.
+    blank_template_source_slots: Dict[str, List[int]] = field(
+        default_factory=lambda: {k: list(v) for k, v in DEFAULT_BLANK_TEMPLATE_SOURCE_SLOTS.items()})
+
+    def get_blank_template_source(self, key: str) -> Tuple[int, int]:
+        """(bank, number) to source key's blank template from — falls back to the
+        documented default if the key is missing/malformed in settings.json."""
+        pair = self.blank_template_source_slots.get(key) or DEFAULT_BLANK_TEMPLATE_SOURCE_SLOTS.get(key)
+        if not pair or len(pair) != 2:
+            return (0, 0)
+        return (int(pair[0]), int(pair[1]))
+
     def get_keybind(self, action: str) -> Keybind:
         if action in self.keybinds:
             return Keybind.parse(self.keybinds[action])
@@ -160,7 +207,8 @@ REBINDABLE_DEFS: list[tuple[str, str, str]] = [
     ("Quit",          "Quit",                   "Q"),
     ("Fullscreen",    "Toggle Fullscreen",       "F"),
     ("Zoom Window",   "Toggle Zoom Window",      "Z"),
-    ("AspectLock",    "Toggle Aspect Lock",      "A"),
+    ("Zoom In",       "Zoom In",                 ""),
+    ("Zoom Out",      "Zoom Out",                ""),
     ("Mirror",        "Toggle VGA Mirror",       "M"),
     ("Help",          "Toggle Help",             "F1"),
     ("Calibrate",     "Toggle Calibration Mode", "C"),
@@ -184,6 +232,18 @@ REBINDABLE_DEFS: list[tuple[str, str, str]] = [
     ("Bank U-CC", "Bank: U-CC",  ""), ("Bank U-DD", "Bank: U-DD",  ""),
     ("Bank U-EE", "Bank: U-EE",  ""), ("Bank U-FF", "Bank: U-FF",  ""),
     ("Bank U-GG", "Bank: U-GG",  ""),
+    # Sequencer transport (unassigned by default) — mirrors the footer transport row;
+    # "Seq Save" fires the same shared REC/WRITE press as "Seq Record" does.
+    ("Seq Locate",  "Seq: Locate",       ""),
+    ("Seq Rewind",  "Seq: Rewind",       ""),
+    ("Seq Forward", "Seq: Fast-Forward", ""),
+    ("Seq Pause",   "Seq: Pause",        ""),
+    ("Seq Record",  "Seq: Record",       ""),
+    ("Seq Start",   "Seq: Start/Stop",   ""),
+    ("Seq Save",    "Write / Save",      ""),
+    # Tap tempo (unassigned by default) — the bound key taps once per press; hold is
+    # ignored (auto-repeat is filtered) so a held key can't spam phantom taps.
+    ("Tap Tempo",   "Tap Tempo",         ""),
 ]
 
 _REBINDABLE_CACHE: list[tuple[str, str, int]] | None = None

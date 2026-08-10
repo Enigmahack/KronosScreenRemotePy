@@ -5,14 +5,21 @@ Commands are queued and sent in a background thread.  TOUCH_MOVE commands are
 coalesced so only the latest pending position is sent (same logic as the C# version
 using Interlocked.Exchange).
 
-STATE queries use their own short-lived connection (no CTRL_PERSIST prefix) so
-they don't block the command queue.
+STATE polling rides this same persistent connection (query_state()) instead of
+opening a fresh one-shot connection every poll tick — the daemon's control-port
+dispatcher (screenremote.c's process_ctrl_cmd()) answers STATE identically
+whether it arrives over a one-shot connection or an established CTRL_PERSIST
+session, so a poll every ~1s was paying a full TCP connect/close cycle for no
+reason (see api.md section 6). query_state() falls back to the one-shot query()
+if the persistent session doesn't reply in time — e.g. mid-reconnect, or the
+daemon revoked ownership (api.md section 13) — so a transient hiccup degrades
+gracefully instead of reporting the daemon unreachable.
 """
 from __future__ import annotations
 import queue
 import socket
 import threading
-from typing import Optional
+from typing import Callable, List, Optional
 
 CTRL_PORT = 7374
 _PERSIST_HEADER = b"CTRL_PERSIST\n"
@@ -30,6 +37,8 @@ class CtrlClient:
         self._pending_move_lock = threading.Lock()
         self._sock: Optional[socket.socket] = None
         self._sock_lock = threading.Lock()
+        self._line_listeners: List[Callable[[bytes], None]] = []
+        self._listeners_lock = threading.Lock()
         self._thread = threading.Thread(target=self._send_loop, daemon=True, name="CtrlClient")
         self._thread.start()
 
@@ -76,6 +85,43 @@ class CtrlClient:
         except Exception:
             return None
 
+    def query_state(self, host: str, port: int, timeout_ms: int = 800) -> Optional[str]:
+        """STATE query piggy-backed on the persistent connection, matched by the
+        reply's 'MODE=' prefix (unique among control-port replies). Avoids a
+        fresh TCP connect/close every poll tick.
+
+        Rides an *existing* persistent session only — never establishes one.
+        Otherwise a poll that lands after _disconnect()'s reset() (which races
+        the _poll_in_progress guard) would open a fresh CTRL_PERSIST session on
+        the daemon that nothing ever tears down, and a poll during a dead
+        control port (daemon down / still booting) would burn a 2s connect
+        timeout every tick. Falls back to the one-shot query() whenever there's
+        no session to ride or it doesn't reply in time, so both cases still
+        fail (or succeed) in line with the previous one-shot-only behavior."""
+        with self._sock_lock:
+            have_sock = self._sock is not None
+        if not have_sock:
+            return self.query(host, port, "STATE", timeout_ms=timeout_ms)
+
+        result: list = [None]
+        done = threading.Event()
+
+        def on_line(line: bytes):
+            if result[0] is None and line.startswith(b"MODE="):
+                result[0] = line.decode("ascii", errors="replace")
+                done.set()
+
+        self.add_line_listener(on_line)
+        try:
+            self.send(host, port, "STATE")
+            done.wait(timeout_ms / 1000)
+        finally:
+            self.remove_line_listener(on_line)
+
+        if result[0] is not None:
+            return result[0]
+        return self.query(host, port, "STATE", timeout_ms=timeout_ms)
+
     def query_multi(self, host: str, port: int, cmd: str, timeout_ms: int = 5000) -> Optional[str]:
         """
         Send a command and read a multi-line response terminated by 'OK\\n'.
@@ -102,6 +148,26 @@ class CtrlClient:
                 return buf.decode("ascii", errors="replace").strip() if buf else None
         except Exception:
             return None
+
+    # ── Reply-line listeners (thread-safe) ──────────────────────────────────────
+
+    def add_line_listener(self, cb: Callable[[bytes], None]):
+        with self._listeners_lock:
+            self._line_listeners.append(cb)
+
+    def remove_line_listener(self, cb: Callable[[bytes], None]):
+        with self._listeners_lock:
+            if cb in self._line_listeners:
+                self._line_listeners.remove(cb)
+
+    def _dispatch_line(self, line: bytes):
+        with self._listeners_lock:
+            listeners = list(self._line_listeners)
+        for cb in listeners:
+            try:
+                cb(line)
+            except Exception:
+                pass
 
     # ── Background send loop ───────────────────────────────────────────────────
 
@@ -161,13 +227,24 @@ class CtrlClient:
             return None
 
     def _drain_loop(self, sock: socket.socket):
-        """Discard 'OK\\n' responses so the server's send buffer never fills."""
-        buf = bytearray(256)
+        """Line-buffer replies so the server's send buffer never fills, and
+        dispatch each complete line to registered listeners (e.g. query_state's
+        MODE= matcher). Lines nobody is waiting for ('OK\\n'/'ERR\\n' from
+        fire-and-forget commands) are simply dispatched to no listener."""
+        buf = bytearray()
         try:
             while True:
-                n = sock.recv_into(buf)
-                if n == 0:
+                chunk = sock.recv(4096)
+                if not chunk:
                     break
+                buf += chunk
+                while True:
+                    nl = buf.find(b"\n")
+                    if nl < 0:
+                        break
+                    line = bytes(buf[:nl])
+                    del buf[:nl + 1]
+                    self._dispatch_line(line)
         except Exception:
             pass
         finally:

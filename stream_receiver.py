@@ -32,7 +32,10 @@ class StreamReceiver(QThread):
         self._host      = host
         self._port      = port
         self._mode      = _MODE_PULL if pull_mode else _MODE_CHANGE
-        self._fps       = min(max(fps, 1), 15)
+        # Protocol: 1-15, 0 = daemon uses its maximum. Clamp negative garbage from a
+        # hand-edited settings file / CLI arg to 0 (daemon max) rather than letting a
+        # negative int wrap (mirrors StreamReceiver.cs's Math.Clamp(fps, 0, 15)).
+        self._fps       = min(max(fps, 0), 15)
         self._username  = username
         self._password  = password
         self._sock: Optional[socket.socket] = None

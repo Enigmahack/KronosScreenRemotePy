@@ -95,6 +95,7 @@ class KronosControlSurface(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setMinimumSize(200, 150)
+        self._reverse_scroll = False   # set by MainWindow from settings.reverse_scrolling
         self._btns: list[_Btn] = [
             _Btn(name, x, y, w, h, ul, lit, toggle, group)
             for name, x, y, w, h, ul, lit, toggle, group in _BUTTON_DEFS
@@ -255,6 +256,8 @@ class KronosControlSurface(QWidget):
 
     def wheelEvent(self, event: QWheelEvent):
         delta = event.angleDelta().y()
+        if self._reverse_scroll:
+            delta = -delta
         if delta > 0:
             self.wheel_step.emit(1)
         elif delta < 0:
