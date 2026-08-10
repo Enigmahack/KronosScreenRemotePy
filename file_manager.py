@@ -22,7 +22,7 @@ from typing import List, Optional, Tuple
 from PySide6.QtCore import QMimeData, QPoint, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QAction, QDrag, QKeyEvent
 from PySide6.QtWidgets import (
-    QAbstractItemView, QComboBox, QDialog, QDialogButtonBox, QFormLayout,
+    QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout,
     QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit, QMainWindow,
     QMenu, QMessageBox, QProgressBar, QPushButton, QSizePolicy, QSplitter,
     QStatusBar, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
@@ -66,6 +66,62 @@ class ClipboardPayload:
     is_cut: bool
     from_remote: bool
     items: List[FileEntry]
+
+
+class _ConflictRequest:
+    """Cross-thread request/response envelope for a name-collision prompt.
+
+    A background transfer thread emits this via _conflict_signal and blocks on
+    `event`; the GUI-thread slot fills in the fields below and sets the event.
+    """
+    def __init__(self, name: str, suggested_name: str):
+        self.name = name
+        self.new_name = suggested_name
+        self.action = "cancel"   # "rename" | "overwrite" | "skip" | "cancel"
+        self.apply_all = False
+        self.event = threading.Event()
+
+
+class _ConflictDialog(QDialog):
+    """Rename / Overwrite / Skip / Cancel prompt for a file-transfer collision."""
+
+    def __init__(self, name: str, suggested_name: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("File Already Exists")
+        self.setStyleSheet(_STYLE)
+        self.action = "cancel"
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel(f"'{name}' already exists at the destination."))
+
+        rename_row = QHBoxLayout()
+        rename_row.addWidget(QLabel("New name:"))
+        self._name_edit = QLineEdit(suggested_name)
+        rename_row.addWidget(self._name_edit)
+        layout.addLayout(rename_row)
+
+        self._apply_all_cb = QCheckBox("Apply this choice to all remaining conflicts")
+        layout.addWidget(self._apply_all_cb)
+
+        btn_row = QHBoxLayout()
+        for label, action in (("Rename", "rename"), ("Overwrite", "overwrite"),
+                              ("Skip", "skip"), ("Cancel", "cancel")):
+            b = QPushButton(label)
+            b.clicked.connect(lambda checked=False, a=action: self._choose(a))
+            btn_row.addWidget(b)
+        layout.addLayout(btn_row)
+
+    def _choose(self, action: str):
+        self.action = action
+        self.accept()
+
+    @property
+    def new_name(self) -> str:
+        return self._name_edit.text().strip()
+
+    @property
+    def apply_all(self) -> bool:
+        return self._apply_all_cb.isChecked()
 
 
 # Sort helpers
@@ -419,6 +475,7 @@ class FileManagerWindow(QMainWindow):
     _refresh_remote_signal = Signal(list)
     _busy_signal = Signal(bool, str)
     _progress_signal = Signal(int)
+    _conflict_signal = Signal(object)   # _ConflictRequest, filled in on the GUI thread
 
     def __init__(self, host: str, ftp_port: int, user: str, password: str, parent=None):
         super().__init__(parent)
@@ -453,6 +510,7 @@ class FileManagerWindow(QMainWindow):
         self._refresh_remote_signal.connect(self._on_remote_listing)
         self._busy_signal.connect(self._on_busy)
         self._progress_signal.connect(self._on_progress)
+        self._conflict_signal.connect(self._on_conflict_request)
 
         QTimer.singleShot(0, self._initial_connect)
 
@@ -757,24 +815,10 @@ class FileManagerWindow(QMainWindow):
         self._run_bg(self._bg_upload, items, False)
 
     def _bg_upload(self, items: List[FileEntry], delete_source: bool):
-        done = 0
         total = len(items)
-        for i, entry in enumerate(items):
-            dest = f"{self._remote_path.rstrip('/')}/{entry.name}"
-            try:
-                self._status_signal.emit(f"[{i+1}/{total}] Uploading {entry.name}…")
-                self._progress_signal.emit(int((i / total) * 100))
-                self._ftp.upload(entry.full_path, dest)
-                done += 1
-                if delete_source:
-                    try:
-                        os.remove(entry.full_path)
-                    except Exception:
-                        pass
-            except Exception as e:
-                self._status_signal.emit(f"Failed {entry.name}: {e}")
-        self._progress_signal.emit(100)
-        self._status_signal.emit(f"Uploaded {done}/{total} file(s) → {self._remote_path}")
+        done, cancelled = self._do_upload_batch(items, self._remote_path, delete_source)
+        status = "Upload cancelled." if cancelled else f"Uploaded {done}/{total} file(s) → {self._remote_path}"
+        self._status_signal.emit(status)
         self._busy_signal.emit(False, "")
         if delete_source:
             self._refresh_local_signal.emit()
@@ -793,24 +837,10 @@ class FileManagerWindow(QMainWindow):
         self._run_bg(self._bg_download, items, False)
 
     def _bg_download(self, items: List[FileEntry], delete_source: bool):
-        done = 0
         total = len(items)
-        for i, entry in enumerate(items):
-            dest = os.path.join(self._local_path, entry.name)
-            try:
-                self._status_signal.emit(f"[{i+1}/{total}] Downloading {entry.name}…")
-                self._progress_signal.emit(int((i / total) * 100))
-                self._ftp.download(entry.full_path, dest)
-                done += 1
-                if delete_source:
-                    try:
-                        self._ftp.delete_file(entry.full_path)
-                    except Exception:
-                        pass
-            except Exception as e:
-                self._status_signal.emit(f"Failed {entry.name}: {e}")
-        self._progress_signal.emit(100)
-        self._status_signal.emit(f"Downloaded {done}/{total} file(s) → {self._local_path}")
+        done, cancelled = self._do_download_batch(items, self._local_path, delete_source)
+        status = "Download cancelled." if cancelled else f"Downloaded {done}/{total} file(s) → {self._local_path}"
+        self._status_signal.emit(status)
         self._busy_signal.emit(False, "")
         self._refresh_local_signal.emit()
         if delete_source:
@@ -1155,36 +1185,18 @@ class FileManagerWindow(QMainWindow):
             self._run_bg(self._bg_download_to, file_items, dest)
 
     def _bg_upload_to(self, items: List[FileEntry], dest_folder: str):
-        done = 0
         total = len(items)
-        for i, entry in enumerate(items):
-            dest = f"{dest_folder.rstrip('/')}/{entry.name}"
-            try:
-                self._status_signal.emit(f"[{i+1}/{total}] Uploading {entry.name}…")
-                self._progress_signal.emit(int((i / total) * 100))
-                self._ftp.upload(entry.full_path, dest)
-                done += 1
-            except Exception as e:
-                self._status_signal.emit(f"Failed {entry.name}: {e}")
-        self._progress_signal.emit(100)
-        self._status_signal.emit(f"Uploaded {done}/{total} file(s) → {dest_folder}")
+        done, cancelled = self._do_upload_batch(items, dest_folder)
+        status = "Upload cancelled." if cancelled else f"Uploaded {done}/{total} file(s) → {dest_folder}"
+        self._status_signal.emit(status)
         self._busy_signal.emit(False, "")
         self._bg_refresh_remote()
 
     def _bg_download_to(self, items: List[FileEntry], dest_folder: str):
-        done = 0
         total = len(items)
-        for i, entry in enumerate(items):
-            dest = os.path.join(dest_folder, entry.name)
-            try:
-                self._status_signal.emit(f"[{i+1}/{total}] Downloading {entry.name}…")
-                self._progress_signal.emit(int((i / total) * 100))
-                self._ftp.download(entry.full_path, dest)
-                done += 1
-            except Exception as e:
-                self._status_signal.emit(f"Failed {entry.name}: {e}")
-        self._progress_signal.emit(100)
-        self._status_signal.emit(f"Downloaded {done}/{total} file(s) → {dest_folder}")
+        done, cancelled = self._do_download_batch(items, dest_folder)
+        status = "Download cancelled." if cancelled else f"Downloaded {done}/{total} file(s) → {dest_folder}"
+        self._status_signal.emit(status)
         self._busy_signal.emit(False, "")
         self._refresh_local_signal.emit()
 
@@ -1369,6 +1381,130 @@ class FileManagerWindow(QMainWindow):
     @Slot(int)
     def _on_progress(self, value: int):
         self._progress_bar.setValue(value)
+
+    @Slot(object)
+    def _on_conflict_request(self, req: _ConflictRequest):
+        dlg = _ConflictDialog(req.name, req.new_name, self)
+        dlg.exec()
+        req.action = dlg.action
+        req.new_name = dlg.new_name
+        req.apply_all = dlg.apply_all
+        req.event.set()
+
+    def _resolve_conflict(self, name: str, suggested_name: str) -> _ConflictRequest:
+        """Called from a background transfer thread; blocks until the user
+        answers the conflict dialog shown on the GUI thread."""
+        req = _ConflictRequest(name, suggested_name)
+        self._conflict_signal.emit(req)
+        req.event.wait()
+        return req
+
+    @staticmethod
+    def _suggest_name(base_name: str, exists_fn) -> str:
+        if not exists_fn(base_name):
+            return base_name
+        stem, ext = os.path.splitext(base_name)
+        n = 1
+        while True:
+            candidate = f"{stem} ({n}){ext}"
+            if not exists_fn(candidate):
+                return candidate
+            n += 1
+
+    def _do_upload_batch(self, items: List[FileEntry], remote_dir: str,
+                         delete_source: bool = False) -> Tuple[int, bool]:
+        """Uploads items into remote_dir, prompting on name collisions.
+        Returns (done_count, cancelled)."""
+        remote_dir = remote_dir.rstrip("/") or "/"
+        total = len(items)
+        done = 0
+        forced_action: Optional[str] = None   # None='ask' | 'overwrite' | 'skip' | 'rename'
+        cancelled = False
+        for i, entry in enumerate(items):
+            name = entry.name
+            dest = f"{remote_dir}/{name}"
+            if self._ftp.file_exists(dest):
+                action = forced_action
+                new_name = None
+                if action is None:
+                    suggested = self._suggest_name(
+                        name, lambda n, d=remote_dir: self._ftp.file_exists(f"{d}/{n}"))
+                    req = self._resolve_conflict(name, suggested)
+                    if req.action == "cancel":
+                        cancelled = True
+                        break
+                    action = req.action
+                    new_name = req.new_name
+                    if req.apply_all:
+                        forced_action = action
+                if action == "skip":
+                    continue
+                if action == "rename":
+                    if not new_name:
+                        new_name = self._suggest_name(
+                            name, lambda n, d=remote_dir: self._ftp.file_exists(f"{d}/{n}"))
+                    dest = f"{remote_dir}/{new_name}"
+            try:
+                self._status_signal.emit(f"[{i+1}/{total}] Uploading {os.path.basename(dest)}…")
+                self._progress_signal.emit(int((i / total) * 100))
+                self._ftp.upload(entry.full_path, dest)
+                done += 1
+                if delete_source:
+                    try:
+                        os.remove(entry.full_path)
+                    except Exception:
+                        pass
+            except Exception as e:
+                self._status_signal.emit(f"Failed {entry.name}: {e}")
+        self._progress_signal.emit(100)
+        return done, cancelled
+
+    def _do_download_batch(self, items: List[FileEntry], local_dir: str,
+                           delete_source: bool = False) -> Tuple[int, bool]:
+        """Downloads items into local_dir, prompting on name collisions.
+        Returns (done_count, cancelled)."""
+        total = len(items)
+        done = 0
+        forced_action: Optional[str] = None
+        cancelled = False
+        for i, entry in enumerate(items):
+            name = entry.name
+            dest = os.path.join(local_dir, name)
+            if os.path.exists(dest):
+                action = forced_action
+                new_name = None
+                if action is None:
+                    suggested = self._suggest_name(
+                        name, lambda n, d=local_dir: os.path.exists(os.path.join(d, n)))
+                    req = self._resolve_conflict(name, suggested)
+                    if req.action == "cancel":
+                        cancelled = True
+                        break
+                    action = req.action
+                    new_name = req.new_name
+                    if req.apply_all:
+                        forced_action = action
+                if action == "skip":
+                    continue
+                if action == "rename":
+                    if not new_name:
+                        new_name = self._suggest_name(
+                            name, lambda n, d=local_dir: os.path.exists(os.path.join(d, n)))
+                    dest = os.path.join(local_dir, new_name)
+            try:
+                self._status_signal.emit(f"[{i+1}/{total}] Downloading {os.path.basename(dest)}…")
+                self._progress_signal.emit(int((i / total) * 100))
+                self._ftp.download(entry.full_path, dest)
+                done += 1
+                if delete_source:
+                    try:
+                        self._ftp.delete_file(entry.full_path)
+                    except Exception:
+                        pass
+            except Exception as e:
+                self._status_signal.emit(f"Failed {entry.name}: {e}")
+        self._progress_signal.emit(100)
+        return done, cancelled
 
     def eventFilter(self, watched, event):
         from PySide6.QtCore import QEvent

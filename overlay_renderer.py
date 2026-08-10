@@ -167,42 +167,6 @@ class OverlayRenderer:
         p.drawLine(QPointF(cx2, cy2 - 8), QPointF(cx2, cy2 + 8))
         p.restore()
 
-    # ── Help overlay ──────────────────────────────────────────────────────────
-
-    def draw_help(self, p: QPainter, frame_rect: QRectF,
-                  keybinds: list[tuple[str, str]]):
-        """Two-column key/description table centered in frame_rect."""
-        p.fillRect(frame_rect, QColor(0, 0, 0, 210))
-        p.setFont(QFont("Courier New", 9))
-        fm = p.fontMetrics()
-        row_h = fm.height() + 4
-        title_h = row_h + 8
-
-        col_w = 280
-        n_rows = (len(keybinds) + 1) // 2
-        table_w = col_w * 2
-        table_h = title_h + n_rows * row_h
-        ox = frame_rect.x() + (frame_rect.width()  - table_w) / 2
-        oy = frame_rect.y() + (frame_rect.height() - table_h) / 2
-
-        p.setPen(_COL_ACCENT)
-        p.drawText(QRectF(ox, oy, table_w, title_h), Qt.AlignCenter, "Keyboard Shortcuts")
-        oy += title_h
-
-        p.setPen(_COL_SEP)
-        p.drawLine(QPointF(ox, oy), QPointF(ox + table_w, oy))
-
-        for i, (key, desc) in enumerate(keybinds):
-            col   = i % 2
-            row   = i // 2
-            cell_x = ox + col * col_w
-            cell_y = oy + row * row_h
-            p.setPen(_COL_ACCENT2)
-            p.drawText(QRectF(cell_x + 4, cell_y, 70, row_h), Qt.AlignVCenter | Qt.AlignLeft, key)
-            p.setPen(_COL_TEXT_PRIMARY)
-            p.drawText(QRectF(cell_x + 78, cell_y, col_w - 82, row_h),
-                       Qt.AlignVCenter | Qt.AlignLeft, desc)
-
     # ── Palette editor overlay ─────────────────────────────────────────────────
 
     def draw_palette_editor(self, p: QPainter, frame_rect: QRectF,

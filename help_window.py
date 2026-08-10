@@ -128,7 +128,7 @@ def _build_html() -> str:
             _kb_row("M",           "Toggle VGA Mirror"),
             _kb_row("Q",           "Quit"),
             _kb_row("Z",           "Toggle Zoom Window"),
-            _kb_row("+  /  −",     "Zoom in / zoom out (enables zoom automatically if off)"),
+            _kb_row("=  /  −",     "Zoom in / zoom out (enables zoom automatically if off)"),
             _kb_row("Escape",      "Send EXIT to Kronos (also dismisses overlays / exits fullscreen)"),
             _kb_row("Enter",       "Send ENTER to Kronos"),
             _kb_row("Ctrl+1 – Ctrl+5", "Window size: 75% / 100% / 125% / 150% / 200%"),

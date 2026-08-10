@@ -168,6 +168,24 @@ _MODE_CMDS  = ("", "SETLIST", "COMBI",  "PROGRAM", "SEQUENCE", "SAMPLING", "GLOB
 # _MODE_NAMES). Kept separate so _MODE_NAMES stays clean for keybind/command lookups.
 _MODE_MENU_LABELS = ("", "&Setlist", "&Combi", "&Program", "S&equence", "S&ampling", "&Global", "&Disk")
 
+# "Bank <suffix>" rebindable-action names -> daemon command, matching the handlers
+# wired in _build_bank_menu (Internal I-A..I-G, User U-A..U-G, double-press U-AA..U-GG).
+def _bank_action_cmd(action: str) -> str | None:
+    if not action.startswith("Bank "):
+        return None
+    suffix = action[len("Bank "):]
+    if suffix.startswith("I-") and len(suffix) == 3:
+        return f"BUTTON BANK_I{suffix[2]}"
+    if suffix.startswith("U-"):
+        letters = suffix[2:]
+        if len(letters) == 1:
+            return f"BUTTON BANK_U{letters}"
+        if len(letters) == 2 and letters[0] == letters[1]:
+            l = letters[0]
+            return f"CHORD BANK_U{l} BANK_I{l}"
+    return None
+
+
 # Keys eligible for held-key auto-repeat when forwarded to the Kronos (mirrors the
 # C# RepeatableKeys set): letters, digits, edit/nav keys, common punctuation.
 # Deliberately excludes Escape, function keys, etc. so a held Escape can't spam EXIT.
@@ -294,7 +312,6 @@ class FrameWidget(QWidget):
         self._scale_mode = "HighQuality"   # Sharp | Smooth | HighQuality
         self._frame_rect     = QRectF()
         self._palette: list[PaletteEntry] = []
-        self._help_rows: list[tuple[str, str]] = []
 
         self._drag_pending    = False
         self._drag_pending_pos: Optional[QPoint] = None
@@ -311,7 +328,6 @@ class FrameWidget(QWidget):
 
         self._ed_open     = False
         self._cal_mode    = False
-        self._help_open   = False
         self._kbd_capture = False
         self._boot_phase  = True
         self._is_connected = False
@@ -500,10 +516,6 @@ class FrameWidget(QWidget):
             self._panel_rect  = panel
             self._grid_origin = grid_org
             self._slider_top  = sl_top
-
-        # Help overlay
-        if self._help_open:
-            self._renderer.draw_help(p, fr, self._help_rows)
 
         p.end()
 
@@ -2711,11 +2723,8 @@ class MainWindow(QMainWindow):
             self._handle_cal_key(event)
             return
 
-        # Escape: close help overlay → exit fullscreen → send BUTTON EXIT
+        # Escape: exit fullscreen → send BUTTON EXIT
         if key == Qt.Key_Escape:
-            if self._frame_w._help_open:
-                self._toggle_help()
-                return
             if self._is_fullscreen:
                 self._toggle_fullscreen()
                 return
@@ -2749,6 +2758,13 @@ class MainWindow(QMainWindow):
             self._ctrl_send("BUTTON ENTER")
             return
 
+        # ~ (tilde/backtick) — show/hide the menu bar while fullscreen. Hardcoded,
+        # not rebindable, matching the C# client's MainWindow.Input.cs.
+        if key in (Qt.Key_QuoteLeft, Qt.Key_AsciiTilde) and self._is_fullscreen:
+            mb = self.menuBar()
+            mb.setVisible(not mb.isVisible())
+            return
+
         # Global shortcuts
         if not (mods & Qt.ControlModifier):
             if self._matches_keybind(event, "Quit"):
@@ -2777,6 +2793,13 @@ class MainWindow(QMainWindow):
             if self._matches_keybind(event, f"Mode {_MODE_NAMES[i]}"):
                 self._ctrl_send(f"BUTTON {_MODE_CMDS[i]}")
                 self._set_pending_mode(i)
+                return
+
+        # Bank select keybinds (unassigned by default — see REBINDABLE_DEFS)
+        for action, _label, _key in get_rebindable():
+            bank_cmd = _bank_action_cmd(action)
+            if bank_cmd and self._matches_keybind(event, action):
+                self._ctrl_send(bank_cmd)
                 return
 
         # Sequencer transport keybinds (unassigned by default — see REBINDABLE_DEFS)
@@ -2940,6 +2963,7 @@ class MainWindow(QMainWindow):
     def _toggle_fullscreen(self):
         if self._is_fullscreen:
             self.showNormal()
+            self.menuBar().setVisible(True)   # undo any '~' menu-bar hide from fullscreen
         else:
             self.showFullScreen()
         self._is_fullscreen = not self._is_fullscreen
@@ -3309,6 +3333,10 @@ class MainWindow(QMainWindow):
         dlg.show()
 
     def _run_action(self, action: str):
+        bank_cmd = _bank_action_cmd(action)
+        if bank_cmd:
+            self._ctrl_send(bank_cmd)
+            return
         cmds: dict = {
             f"Mode {_MODE_NAMES[i]}": (
                 lambda c=_MODE_CMDS[i], m=i: (self._ctrl_send(f"BUTTON {c}"), self._set_pending_mode(m))

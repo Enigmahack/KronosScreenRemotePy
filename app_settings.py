@@ -117,7 +117,7 @@ class AppSettings:
     screensaver_timeout: int  = 300
 
     # UI layout
-    layout_preset: str = "Full"  # "Full" | "Focused" | "Detached"
+    layout_preset: str = "Full"  # "Full" | "Focused"
     focused_data_expanded:  bool = False
     focused_value_expanded: bool = False
 
@@ -207,8 +207,8 @@ REBINDABLE_DEFS: list[tuple[str, str, str]] = [
     ("Quit",          "Quit",                   "Q"),
     ("Fullscreen",    "Toggle Fullscreen",       "F"),
     ("Zoom Window",   "Toggle Zoom Window",      "Z"),
-    ("Zoom In",       "Zoom In",                 ""),
-    ("Zoom Out",      "Zoom Out",                ""),
+    ("Zoom In",       "Zoom In",                 "Equal"),
+    ("Zoom Out",      "Zoom Out",                "Minus"),
     ("Mirror",        "Toggle VGA Mirror",       "M"),
     ("Help",          "Toggle Help",             "F1"),
     ("Calibrate",     "Toggle Calibration Mode", "C"),
@@ -256,7 +256,8 @@ def get_rebindable() -> list[tuple[str, str, int]]:
         result = []
         fk = {f"F{n}": int(Qt.Key_F1) + n - 1 for n in range(1, 13)}
         letters = {c: int(getattr(Qt, f"Key_{c}")) for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"}
-        named = {**fk, **letters, "": 0}
+        named = {**fk, **letters, "": 0,
+                 "Equal": int(Qt.Key_Equal), "Minus": int(Qt.Key_Minus)}
         for action, label, key_name in REBINDABLE_DEFS:
             dk = named.get(key_name, 0)
             result.append((action, label, dk))

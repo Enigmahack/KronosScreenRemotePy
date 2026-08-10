@@ -216,7 +216,7 @@ Open via **Connection > File Manager** or right-click the frame and select **Fil
 | M | Toggle VGA mirror |
 | Q | Quit |
 | Z | Toggle zoom window |
-| + / − | Zoom in / zoom out (enables zoom automatically if off) |
+| = / − | Zoom in / zoom out (enables zoom automatically if off) |
 | Esc | Send EXIT to Kronos / exit fullscreen / dismiss overlays |
 | Enter | Send ENTER to Kronos |
 | Ctrl+1–5 | Window size: 75% / 100% / 125% / 150% / 200% |

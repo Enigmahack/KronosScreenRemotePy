@@ -180,10 +180,12 @@ class AudioCapture(QThread):
             n_ch = indata.shape[1]
             ch0 = indata[:, 0]
             ch1 = indata[:, min(1, n_ch - 1)]
-            rms_l = float(np.sqrt(np.mean(ch0 ** 2) + 1e-12))
-            rms_r = float(np.sqrt(np.mean(ch1 ** 2) + 1e-12))
-            db_l  = 20.0 * math.log10(rms_l)
-            db_r  = 20.0 * math.log10(rms_r)
+            # Peak, not RMS — mirrors C# AudioEngine.cs: RMS runs 6-20dB below
+            # peak, so transient-heavy material would never reach amber/red.
+            peak_l = float(np.max(np.abs(ch0)) + 1e-12)
+            peak_r = float(np.max(np.abs(ch1)) + 1e-12)
+            db_l  = 20.0 * math.log10(peak_l)
+            db_r  = 20.0 * math.log10(peak_r)
             self.levels_updated.emit(db_l, db_r)
 
         kwargs: dict = {"channels": 2, "callback": callback, "blocksize": 2048}
