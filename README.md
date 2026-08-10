@@ -38,6 +38,12 @@ A Python application for remotely viewing and controlling a **Korg Kronos** synt
 - **Hardware Stats Monitoring** — Monitor hard drive space, CPU core usage, Fan speed, CPU temperatures, and more.
 <img width="1415" height="513" alt="2026-06-19 18_11_31-Kronos ScreenRemote_PERF — 192 168 100 15" src="https://github.com/user-attachments/assets/9ef81aaf-ea4d-4937-81dd-b210cacd44de" />
 
+- **SysEx / MIDI Bridge** — Live decode of Kronos SysEx (performance name/mode/bank tracking, bulk Object Dump collection) over the daemon's MIDI bridge port
+- **Set List Viewer** — Decoded Set List contents with real hardware slot colors
+- **Image Adjustments** — Tone (brightness / contrast / gamma) and saturation curves plus 3×3 unsharp-mask sharpening, applied to the streamed frame via the palette color table
+- **Boot Phase Detection** — Reference-image detection of the Kronos boot loading phase, with client-side boot splash overlay when the daemon isn't compositing
+- **Command Palette** (Ctrl+K) — Live filter-as-you-type launcher for every rebindable action
+
 
 ---
 
@@ -96,19 +102,29 @@ KronosScreenRemotePy/
   main_window.py        Primary window — frame rendering, input, menus
   control_surface.py    Virtual button panel / data wheel widget
   stream_receiver.py    TCP stream client — handshake, frame decoding
-  ctrl_client.py        UDP control command sender
+  ctrl_client.py        TCP control command sender
   file_manager.py       Dual-pane FTP file manager window
-  settings_window.py    Settings dialog (7 tabs)
+  settings_window.py    Settings dialog (8 tabs)
   app_settings.py       AppSettings dataclass and keybind definitions
   storage.py            JSON persistence for settings, calibration, palette
   overlay_renderer.py   Paint helpers for zoom, calibration, palette editor
+  image_adjust.py       Tone/sharpen curve math for the video pipeline
   mode_detector.py      Frame-based Kronos mode/help detection
+  boot_phase_detector.py Reference-image boot phase detection
   models.py             Shared data models (Keybind, PaletteEntry, CalMesh)
   key_map.py            Qt key → Linux keycode mapping tables
   vu_meter.py           WASAPI audio capture and VU meter widget
   perf_window.py        Performance / keyboard info window
   help_window.py        Help overlay content
   about_dialog.py       About dialog
+
+  kronos_sysex.py       Bank-ID / name-bank decode helpers
+  sysex_service.py      SysEx decode + passive name/mode/bank tracking
+  sysex_dump_collector.py Bulk SysEx Object Dump collection over the MIDI bridge
+  sysex_tool_window.py  SysEx monitor/tool window
+  setlist_data.py       Set List object decode
+  setlist_window.py     Set List Viewer window
+  midi_bridge.py        Bidirectional client for the daemon's MIDI bridge port
 ```
 
 ---
