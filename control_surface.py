@@ -15,7 +15,7 @@ import time
 
 from PySide6.QtCore import Qt, QPoint, QRect, QSize, QTimer, Signal
 from PySide6.QtGui import QImage, QMouseEvent, QPainter, QPixmap, QWheelEvent
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QMenu, QWidget
 
 # Design space
 _DS_W = 800
@@ -91,6 +91,7 @@ class KronosControlSurface(QWidget):
     button_pressed  = Signal(str)
     button_released = Signal(str)
     wheel_step      = Signal(int)   # positive=CW, negative=CCW
+    wheel_settings_requested = Signal()   # right-click wheel -> "Settings..."
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -152,6 +153,14 @@ class KronosControlSurface(QWidget):
 
     def rotate_wheel(self, angle: float):
         self._wheel_angle = angle
+        self.update()
+
+    def reset_wheel_animation(self):
+        """Data-wheel context menu's "Reset Animation" — snaps back to the
+        neutral angle and stops any in-flight rock animation."""
+        self._wheel_timer.stop()
+        self._wheel_anim_state = 0
+        self._wheel_angle = 0.0
         self.update()
 
     # ── Painting ───────────────────────────────────────────────────────────────
@@ -226,6 +235,16 @@ class KronosControlSurface(QWidget):
                 self.update()
                 self._handle_click(btn)
                 return
+
+    def contextMenuEvent(self, event):
+        ds = self._to_design(event.pos())
+        if not (_WHEEL_X <= ds.x() <= _WHEEL_X + _WHEEL_W and
+                _WHEEL_Y <= ds.y() <= _WHEEL_Y + _WHEEL_H):
+            return
+        menu = QMenu(self)
+        menu.addAction("Settings…", self.wheel_settings_requested.emit)
+        menu.addAction("Reset Animation", self.reset_wheel_animation)
+        menu.exec(event.globalPos())
 
     def mouseMoveEvent(self, event: QMouseEvent):
         if not self._wheel_dragging:

@@ -10,4 +10,5 @@ category_names_cache.json
 merge_cache.json
 blank_templates/
 librarian_backups/
+*.log
 

@@ -1838,23 +1838,29 @@ class LibrarianShellWindow(QDialog):
         return True
 
     def _stage_local_selected_to_merge(self) -> None:
-        """Requirement 2 / MergePaneViewModel.cs's PullFromLocal — stage a Local Library
-        object (and its dependencies, transitively) back into the Merge Window so it can be
-        rearranged and pushed to a different destination. Composes MergeCache's existing
-        pull_recursive against a LOCAL resolve_content/source instead of a PCG one — no new
-        merge_cache.py API needed (see module docstring)."""
-        payload = self._leaf_payload(self._tree_local)
-        if payload is None or payload[0] != "local":
-            self._log("Select exactly one Local Library item to stage for a batch placement.")
+        """Requirement 2 / MergePaneViewModel.cs's PullFromLocal — stage the selected Local
+        Library object(s) (and their dependencies, transitively) back into the Merge Window
+        so they can be rearranged and pushed to a different destination. A selected bank/root
+        node expands to every leaf inside it (SelectedLocs expansion), matching Cut/Copy/
+        Delete. Composes MergeCache's existing pull_recursive against a LOCAL resolve_content/
+        source instead of a PCG one — no new merge_cache.py API needed (see module docstring)."""
+        locs = self._selected_local_object_locs()
+        if not locs:
+            self._log("Select one or more Local Library items to stage for a batch placement.")
             return
-        _, obj_type, bank, number = payload
-        scope = self._undo.begin(f"Pulled {ObjLoc(obj_type, bank, number).label()} into Merge Window")
-        added, gaps = self._merge.pull_recursive(
-            (obj_type, bank, number), self._local_resolve_content, self._resolve_refs,
-            source=MergeCache.LOCAL_SOURCE_LABEL)
-        self._log(f"Staged into Merge Window: {len(added)} new item(s), {len(gaps)} unresolved "
+        label = locs[0].label() if len(locs) == 1 else f"{len(locs)} item(s)"
+        scope = self._undo.begin(f"Pulled {label} into Merge Window")
+        total_added = 0
+        total_gaps: list = []
+        for loc in locs:
+            added, gaps = self._merge.pull_recursive(
+                (loc.obj_type, loc.bank, loc.number), self._local_resolve_content, self._resolve_refs,
+                source=MergeCache.LOCAL_SOURCE_LABEL)
+            total_added += len(added)
+            total_gaps.extend(gaps)
+        self._log(f"Staged into Merge Window: {total_added} new item(s), {len(total_gaps)} unresolved "
                  f"reference(s).")
-        for addr, kind in gaps:
+        for addr, kind in total_gaps:
             self._log(f"  gap: obj {addr[0]:02X} bank {addr[1]:02X} idx {addr[2]} ({kind})")
         self._refresh_merge_tree()
         if scope is not None:
@@ -1894,11 +1900,35 @@ class LibrarianShellWindow(QDialog):
     # ── Local pane: Cut / Copy / Paste (batch_clipboard.BatchClipboard) ─────────
 
     def _selected_local_object_locs(self) -> List[ObjLoc]:
+        """Every selected leaf's ObjLoc, with a selected bank/root ("local_bank")
+        node expanded to every leaf inside it — mirrors C#'s SelectedLocs(),
+        which treats selecting a bank as selecting its whole contents for
+        Cut/Copy/Delete/Move-to-Merge. leaf_payloads() alone (used for drag)
+        deliberately skips bank nodes; this is the selection-based counterpart
+        that doesn't."""
         out: List[ObjLoc] = []
-        for p in self._tree_local.leaf_payloads():
-            if p and p[0] == "local":
-                _, obj_type, bank, number = p
+        seen: set = set()
+
+        def add(obj_type: int, bank: int, number: int) -> None:
+            key = (obj_type, bank, number)
+            if key not in seen:
+                seen.add(key)
                 out.append(ObjLoc(obj_type, bank, number))
+
+        for item in self._tree_local.selectedItems():
+            data = item.data(0, Qt.ItemDataRole.UserRole)
+            if data is None:
+                continue
+            payload = tuple(data)
+            if payload[0] == "local":
+                _, obj_type, bank, number = payload
+                add(obj_type, bank, number)
+            elif payload[0] == "local_bank":
+                for i in range(item.childCount()):
+                    child_data = item.child(i).data(0, Qt.ItemDataRole.UserRole)
+                    if child_data is not None and tuple(child_data)[0] == "local":
+                        _, obj_type, bank, number = tuple(child_data)
+                        add(obj_type, bank, number)
         return out
 
     def _local_dump_of(self, loc: ObjLoc) -> Optional[ObjectDump]:
@@ -1986,17 +2016,16 @@ class LibrarianShellWindow(QDialog):
         pending item Restores it. Local-only: hardware is untouched until Sync/Commit.
         Each mutation goes through index.set_entry so the undo recorder's slot_mutating_cb
         captures the pre-state (one Ctrl+Z restores the edit AND the flag together)."""
-        payloads = [p for p in self._selected_payloads(self._tree_local) if p[0] == "local"]
-        if not payloads:
+        selected_locs = self._selected_local_object_locs()
+        if not selected_locs:
             self._local_status_label.setText("Select one or more Local Library items to delete/restore.")
             return
         # Skip read-only GM/g rows (browse-only, never writable).
-        editable = [p for p in payloads
-                    if not (p[1] == OBJ_PROGRAM and p[2] in _READONLY_PROGRAM_BANKS)]
-        if not editable:
+        locs = [l for l in selected_locs
+                if not (l.obj_type == OBJ_PROGRAM and l.bank in _READONLY_PROGRAM_BANKS)]
+        if not locs:
             self._local_status_label.setText("Read-only bank - cannot delete.")
             return
-        locs = [ObjLoc(p[1], p[2], p[3]) for p in editable]
         restoring = all(self._index.get(l.obj_type, l.bank, l.number) is not None
                         and self._index.get(l.obj_type, l.bank, l.number).pending_delete
                         for l in locs)

@@ -15,6 +15,7 @@ Control surface widget handles:
   - Data wheel drag
 """
 from __future__ import annotations
+import dataclasses
 import datetime
 import logging
 import math
@@ -36,7 +37,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QDialog, QFileDialog, QFormLayout, QFrame,
     QGraphicsOpacityEffect, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMainWindow, QMenu,
-    QMenuBar, QMessageBox, QPushButton, QSizePolicy, QStatusBar, QTextEdit,
+    QMenuBar, QMessageBox, QPushButton, QSizePolicy, QStatusBar, QSystemTrayIcon, QTextEdit,
     QVBoxLayout, QWidget,
 )
 
@@ -167,6 +168,13 @@ _MODE_CMDS  = ("", "SETLIST", "COMBI",  "PROGRAM", "SEQUENCE", "SAMPLING", "GLOB
 # Mode-menu display labels carrying the C# accelerator mnemonics (index-aligned to
 # _MODE_NAMES). Kept separate so _MODE_NAMES stays clean for keybind/command lookups.
 _MODE_MENU_LABELS = ("", "&Setlist", "&Combi", "&Program", "S&equence", "S&ampling", "&Global", "&Disk")
+
+# Ctrl+1..Ctrl+5 -> Window Size menu scale, matching the C# hardcoded shortcuts
+# (MainWindow.Input.cs) and the View > Window Size menu's own scale values.
+_WINDOW_SIZE_CTRL_KEYS = {
+    Qt.Key_1: 0.75, Qt.Key_2: 1.0, Qt.Key_3: 1.25, Qt.Key_4: 1.50, Qt.Key_5: 2.00,
+}
+
 
 # "Bank <suffix>" rebindable-action names -> daemon command, matching the handlers
 # wired in _build_bank_menu (Internal I-A..I-G, User U-A..U-G, double-press U-AA..U-GG).
@@ -1166,14 +1174,29 @@ class _ShutdownOverlay(QWidget):
         p.end()
 
 
+def _log_file_path() -> pathlib.Path:
+    return storage.data_dir() / "kronos_screen_remote.log"
+
+
 def _setup_logging(debug: bool):
     level = logging.DEBUG if debug else logging.INFO
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s [%(levelname)s] %(message)s",
-        datefmt="%H:%M:%S",
-    )
-    logging.getLogger().setLevel(level)
+    root = logging.getLogger()
+    root.setLevel(level)
+    fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
+    if not any(isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler)
+              for h in root.handlers):
+        console = logging.StreamHandler()
+        console.setFormatter(fmt)
+        root.addHandler(console)
+    if not any(isinstance(h, logging.FileHandler) for h in root.handlers):
+        try:
+            file_handler = logging.FileHandler(_log_file_path(), encoding="utf-8")
+            file_handler.setFormatter(fmt)
+            root.addHandler(file_handler)
+        except OSError as e:
+            print(f"[log] could not open log file: {e}")
+    for h in root.handlers:
+        h.setLevel(level)
 
 
 def _verify_ftp_login(host: str, port: int, user: str, password: str) -> Tuple[bool, str]:
@@ -1401,6 +1424,7 @@ class MainWindow(QMainWindow):
         self._librarian_shell_win = None
         self._sysex_service = SysExService(self)
         self._shutting_down = False
+        self._tray_icon = None   # QSystemTrayIcon, set up in _init_tray_icon
 
         # Ping
         self._ping_inflight = False
@@ -1476,6 +1500,8 @@ class MainWindow(QMainWindow):
         self._ctrl_surface.button_pressed.connect(self._on_ctrl_button)
         self._ctrl_surface.button_released.connect(self._on_ctrl_button_released)
         self._ctrl_surface.wheel_step.connect(self._on_wheel_step)
+        self._ctrl_surface.wheel_settings_requested.connect(
+            lambda: self._open_settings(initial_tab="View"))
         layout.addWidget(self._ctrl_surface, 800)
 
         # Focused-mode data rail (right edge)
@@ -1720,6 +1746,7 @@ class MainWindow(QMainWindow):
         self._status_bar.addPermanentWidget(self._seq_save_box)
 
         self._build_menu()
+        self._init_tray_icon()
 
     def _build_menu(self):
         # Menu bar mirrors the C# MainWindow.xaml layout exactly:
@@ -1738,6 +1765,8 @@ class MainWindow(QMainWindow):
         self._act_quick_save  = file_menu.addAction("Q&uick Save Screenshot")
         self._act_copy_frame  = file_menu.addAction("&Copy Frame to Clipboard")
         self._act_open_ss_dir = file_menu.addAction("Open Screenshots &Folder")
+        file_menu.addSeparator()
+        self._act_open_log    = file_menu.addAction("Open &Log File")
         file_menu.addSeparator()
         self._act_quit        = file_menu.addAction("&Quit")
 
@@ -1888,6 +1917,7 @@ class MainWindow(QMainWindow):
         self._act_screenshot.triggered.connect(self._save_screenshot)
         self._act_copy_frame.triggered.connect(self._copy_frame_to_clipboard)
         self._act_open_ss_dir.triggered.connect(self._open_screenshots_folder)
+        self._act_open_log.triggered.connect(self._open_log_file)
         self._act_keyboard_info.triggered.connect(self._open_keyboard_info)
         self._act_sysex_tool.triggered.connect(self._open_sysex_tool)
         self._act_librarian_shell.triggered.connect(self._open_librarian_shell)
@@ -1944,8 +1974,8 @@ class MainWindow(QMainWindow):
         # New C#-parity menu items whose backing features are not implemented
         # yet. Wired to _todo so testing surfaces exactly which are missing;
         # each is filled in one at a time per the feature-parity plan.
-        self._act_import_settings.triggered.connect(lambda: self._todo("Import Settings"))
-        self._act_export_settings.triggered.connect(lambda: self._todo("Export Settings"))
+        self._act_import_settings.triggered.connect(self._import_settings)
+        self._act_export_settings.triggered.connect(self._export_settings)
         self._act_scale_sharp.triggered.connect(lambda: self._set_scale_quality("Sharp"))
         self._act_scale_smooth.triggered.connect(lambda: self._set_scale_quality("Smooth"))
         self._act_scale_hq.triggered.connect(lambda: self._set_scale_quality("HighQuality"))
@@ -1998,6 +2028,22 @@ class MainWindow(QMainWindow):
             logging.info("[paste] %d chars typed", char_count)
 
         threading.Thread(target=worker, daemon=True, name="PasteClipboard").start()
+
+    def _macro_select_all(self):
+        """Port of MainWindow.Input.cs's MacroSelectAll(): End, then Shift+Home,
+        as raw KEY press/release pairs — a "select all" for whatever text field
+        the Kronos currently has focused, since it has no native select-all key."""
+        end_code = key_map.to_linux(Qt.Key_End)
+        home_code = key_map.to_linux(Qt.Key_Home)
+        shift_code = key_map.to_linux(Qt.Key_Shift)
+        if end_code:
+            self._ctrl_send(f"KEY {end_code} 1")
+            self._ctrl_send(f"KEY {end_code} 0")
+        if shift_code and home_code:
+            self._ctrl_send(f"KEY {shift_code} 1")
+            self._ctrl_send(f"KEY {home_code} 1")
+            self._ctrl_send(f"KEY {home_code} 0")
+            self._ctrl_send(f"KEY {shift_code} 0")
 
     def _apply_settings_to_ui(self):
         focused = self._layout_preset == "Focused"
@@ -2717,7 +2763,12 @@ class MainWindow(QMainWindow):
         # ── Kronos capture mode ─────────────────────────────────────────────
         # eventFilter already forwarded this key and consumed it; this branch
         # is a belt-and-suspenders fallback in case a key event slips through.
-        if self._kbd_capture:
+        # Ctrl+V/Ctrl+A are local actions even while capturing (C# gates them on
+        # capture+send-enabled rather than forwarding them as raw keystrokes) —
+        # eventFilter already let these two through, so fall into the normal
+        # Ctrl-shortcut handling below instead of being swallowed here too.
+        if self._kbd_capture and not (
+                (mods & Qt.ControlModifier) and key in (Qt.Key_V, Qt.Key_A)):
             if self._kbd_send_en:
                 self._forward_key(event, pressed=True)
             return  # always block local shortcuts when captured
@@ -2743,12 +2794,16 @@ class MainWindow(QMainWindow):
 
         # Ctrl shortcuts
         if mods & Qt.ControlModifier:
-            if key == Qt.Key_S and not (mods & Qt.ShiftModifier):
-                self._quick_save_screenshot(); return
-            if key == Qt.Key_S and (mods & Qt.ShiftModifier):
+            if key == Qt.Key_S:
                 self._save_screenshot(); return
             if key == Qt.Key_K:
                 self._open_command_palette(); return
+            if key == Qt.Key_V and self._kbd_capture and self._kbd_send_en:
+                self._paste_clipboard_to_kronos(); return
+            if key in _WINDOW_SIZE_CTRL_KEYS:
+                self._set_window_size(_WINDOW_SIZE_CTRL_KEYS[key]); return
+            if key == Qt.Key_A and self._kbd_capture and self._kbd_send_en:
+                self._macro_select_all(); return
 
         # Macro trigger check (triggers must include a modifier)
         macro = self._settings.get_macro_for_trigger(key, _mods_to_int(mods))
@@ -3251,6 +3306,18 @@ class MainWindow(QMainWindow):
         else:
             subprocess.Popen(["xdg-open", d])
 
+    def _open_log_file(self):
+        path = str(_log_file_path())
+        if not os.path.exists(path):
+            QMessageBox.information(self, "Open Log File", "No log file has been written yet.")
+            return
+        if sys.platform == "win32":
+            os.startfile(path)
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", path])
+        else:
+            subprocess.Popen(["xdg-open", path])
+
     def _screenshot_default_path(self) -> pathlib.Path:
         base = pathlib.Path(self._settings.screenshot_dir.strip() or
                             str(pathlib.Path(__file__).parent))
@@ -3290,39 +3357,84 @@ class MainWindow(QMainWindow):
         dlg = SettingsWindow(self._settings, self, initial_tab=initial_tab,
                              on_image_preview=self._preview_image_adjust)
         if dlg.exec() == QDialog.Accepted:
-            storage.save_settings(self._settings)
-            self._host        = self._settings.kronos_host
-            self._ctrl_port   = self._settings.ctrl_port
-            self._stream_port = self._settings.stream_port
-            self._pull_mode   = self._settings.pull_mode
-            self._fps         = self._settings.max_fps
-            self._update_conn_mode_label()
-            # Apply zoom default
-            self._zoom_level = self._settings.zoom_default_level
-            self._frame_w._zoom_level = self._zoom_level
-            # Apply boot screen setting
-            self._frame_w._disable_boot_screen = self._settings.disable_boot_screen
-            # Apply image adjustments (brightness/contrast/gamma/saturation/sharpen)
-            self._apply_image_adjust()
-            # Apply hide data/value input only if visibility changed
-            if (self._settings.hide_data_input != hide_data_before or
-                    self._settings.hide_value_input != hide_value_before):
-                self._apply_layout(self._layout_preset)
-            # Apply debug logging change immediately
-            if self._settings.debug_logging != debug_before:
-                _setup_logging(self._settings.debug_logging)
-            if self._receiver:
-                if self._settings.vga_mirror_enabled != mirror_before:
-                    self._mirror_state = self._settings.vga_mirror_enabled
-                    self._ctrl_send("MIRROR_ON" if self._mirror_state else "MIRROR_OFF")
-                if self._settings.screensaver_timeout != ss_before:
-                    self._ctrl_send(f"SS_TIMEOUT {self._settings.screensaver_timeout}")
-            # Update perf window host if open
-            if self._perf_window:
-                self._perf_window.update_host(self._host, self._ctrl_port)
+            self._apply_settings_side_effects(mirror_before, ss_before, debug_before,
+                                              hide_data_before, hide_value_before)
         else:
             # Cancelled — revert any live image-adjust preview to pre-dialog state.
             self._frame_w.set_image_adjust(*img_before)
+
+    def _apply_settings_side_effects(self, mirror_before: bool, ss_before: int,
+                                     debug_before: bool, hide_data_before: bool,
+                                     hide_value_before: bool) -> None:
+        """Everything that must happen after self._settings' fields change,
+        whether from the Settings dialog's OK button or an Import Settings…
+        round-trip — persists to disk and pushes each changed value out to the
+        live connection/UI it affects."""
+        storage.save_settings(self._settings)
+        self._host        = self._settings.kronos_host
+        self._ctrl_port   = self._settings.ctrl_port
+        self._stream_port = self._settings.stream_port
+        self._pull_mode   = self._settings.pull_mode
+        self._fps         = self._settings.max_fps
+        self._update_conn_mode_label()
+        # Apply zoom default
+        self._zoom_level = self._settings.zoom_default_level
+        self._frame_w._zoom_level = self._zoom_level
+        # Apply boot screen setting
+        self._frame_w._disable_boot_screen = self._settings.disable_boot_screen
+        # Apply image adjustments (brightness/contrast/gamma/saturation/sharpen)
+        self._apply_image_adjust()
+        # Apply hide data/value input only if visibility changed
+        if (self._settings.hide_data_input != hide_data_before or
+                self._settings.hide_value_input != hide_value_before):
+            self._apply_layout(self._layout_preset)
+        # Apply debug logging change immediately
+        if self._settings.debug_logging != debug_before:
+            _setup_logging(self._settings.debug_logging)
+        if self._receiver:
+            if self._settings.vga_mirror_enabled != mirror_before:
+                self._mirror_state = self._settings.vga_mirror_enabled
+                self._ctrl_send("MIRROR_ON" if self._mirror_state else "MIRROR_OFF")
+            if self._settings.screensaver_timeout != ss_before:
+                self._ctrl_send(f"SS_TIMEOUT {self._settings.screensaver_timeout}")
+        # Update perf window host if open
+        if self._perf_window:
+            self._perf_window.update_host(self._host, self._ctrl_port)
+
+    def _import_settings(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Import Settings", "", "JSON Files (*.json)")
+        if not path:
+            return
+        mirror_before     = self._settings.vga_mirror_enabled
+        ss_before         = self._settings.screensaver_timeout
+        debug_before      = self._settings.debug_logging
+        hide_data_before  = self._settings.hide_data_input
+        hide_value_before = self._settings.hide_value_input
+        try:
+            imported = storage.import_settings(path)
+        except Exception as e:
+            QMessageBox.warning(self, "Import Settings", f"Failed to import settings:\n{e}")
+            return
+        # Mutate self._settings in place field-by-field rather than replacing the
+        # object outright — other components (SysExService, keybind lookups, etc.)
+        # hold a reference to this same AppSettings instance.
+        for f in dataclasses.fields(AppSettings):
+            setattr(self._settings, f.name, getattr(imported, f.name))
+        self._apply_settings_side_effects(mirror_before, ss_before, debug_before,
+                                          hide_data_before, hide_value_before)
+        QMessageBox.information(self, "Import Settings", "Settings imported successfully.")
+
+    def _export_settings(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(self, "Export Settings", "kronos_settings.json",
+                                              "JSON Files (*.json)")
+        if not path:
+            return
+        try:
+            storage.export_settings(self._settings, path)
+        except Exception as e:
+            QMessageBox.warning(self, "Export Settings", f"Failed to export settings:\n{e}")
+            return
+        QMessageBox.information(self, "Export Settings", f"Settings exported to:\n{path}")
 
     def _preview_image_adjust(self, brightness: int, contrast: int, gamma: float,
                               saturation: int, sharpen: int):
@@ -3339,6 +3451,36 @@ class MainWindow(QMainWindow):
                         lambda a=action: self._run_action(a))
             for action, label, _ in get_rebindable()
         ]
+        # C#'s BuildCommandRegistry() is a superset of the rebindable-action list
+        # (which only backs the Key Bindings tab) — these are reachable from the
+        # menu bar but had no Command Palette entry at all.
+        entries.extend([
+            CommandEntry("Reconnect", "Reconnect", "", self._trigger_reconnect),
+            CommandEntry("RefreshDisplay", "Refresh Display", "",
+                        lambda: self._ctrl_send("REFRESH")),
+            CommandEntry("Disconnect", "Disconnect", "", self._disconnect),
+            CommandEntry("Settings", "Settings…", "", self._open_settings),
+            CommandEntry("WindowSize75", "Window Size: Small (75%)", "",
+                        lambda: self._set_window_size(0.75)),
+            CommandEntry("WindowSize100", "Window Size: Normal (100%)", "",
+                        lambda: self._set_window_size(1.0)),
+            CommandEntry("WindowSize125", "Window Size: Large (125%)", "",
+                        lambda: self._set_window_size(1.25)),
+            CommandEntry("WindowSize150", "Window Size: Extra Large (150%)", "",
+                        lambda: self._set_window_size(1.50)),
+            CommandEntry("WindowSize200", "Window Size: Huge (200%)", "",
+                        lambda: self._set_window_size(2.00)),
+            CommandEntry("LayoutFull", "Layout Preset: Full", "",
+                        lambda: self._apply_layout("Full")),
+            CommandEntry("LayoutFocused", "Layout Preset: Focused", "",
+                        lambda: self._apply_layout("Focused")),
+            CommandEntry("KeyboardInfo", "Keyboard Info…", "", self._open_keyboard_info),
+            CommandEntry("SaveScreenshot", "Save Screenshot…", "", self._save_screenshot),
+            CommandEntry("ToggleKeyboardSend", "Toggle Keyboard Send", "",
+                        lambda: self._act_disable_kbd.setChecked(
+                            not self._act_disable_kbd.isChecked())),
+            CommandEntry("About", "About…", "", self._open_about),
+        ])
         dlg = CommandPalette(entries, self)
         dlg.show()
 
@@ -3500,6 +3642,13 @@ class MainWindow(QMainWindow):
 
         a_fs = menu.addAction("Fullscreen")
         a_fs.triggered.connect(self._toggle_fullscreen)
+        # Reuses the exact same QActions as the View menu's Scaling Quality
+        # submenu (a QAction can live in more than one menu), so checked-state
+        # stays in sync automatically with no extra bookkeeping.
+        scale_menu = menu.addMenu("Scaling Quality")
+        scale_menu.addAction(self._act_scale_sharp)
+        scale_menu.addAction(self._act_scale_smooth)
+        scale_menu.addAction(self._act_scale_hq)
         menu.addAction("Image Adjustments…",
                        lambda: self._open_settings(initial_tab="Image"))
         menu.addSeparator()
@@ -3844,6 +3993,8 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self._do_shutdown)
 
     def _do_shutdown(self):
+        if self._tray_icon:
+            self._tray_icon.hide()
         self._stop_ping()
         self._mode_poll_timer.stop()
         if self._combi_prog_edit_active:
@@ -3914,6 +4065,14 @@ class MainWindow(QMainWindow):
                 # Only intercept events aimed at widgets inside our window
                 # (not child dialogs, which have their own window()).
                 if isinstance(watched, QWidget) and watched.window() is self:
+                    # Ctrl+V/Ctrl+A are local actions even while capturing (C#
+                    # gates them on capture+send-enabled instead of forwarding
+                    # them as raw keystrokes) — let these two fall through to
+                    # keyPressEvent's normal Ctrl-shortcut handling instead of
+                    # being swallowed and forwarded here.
+                    if (t == QEvent.Type.KeyPress and (event.modifiers() & Qt.ControlModifier)
+                            and event.key() in (Qt.Key_V, Qt.Key_A)):
+                        return False
                     if not event.isAutoRepeat():
                         if self._kbd_send_en:
                             self._forward_key(event,
@@ -3933,4 +4092,36 @@ class MainWindow(QMainWindow):
     def changeEvent(self, event):
         if event.type() == QEvent.ActivationChange and not self.isActiveWindow():
             self._release_kbd_capture()
+        if (event.type() == QEvent.Type.WindowStateChange and self.isMinimized()
+                and self._tray_icon is not None):
+            # Minimize-to-tray (matches C#'s MainWindow StateChanged handler) —
+            # deferred a tick so the native minimize animation isn't fighting hide().
+            QTimer.singleShot(0, self.hide)
         super().changeEvent(event)
+
+    def _init_tray_icon(self):
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return   # not every desktop environment provides one
+        icon = QApplication.instance().windowIcon()
+        tray = QSystemTrayIcon(icon, self)
+        tray.setToolTip(_APP_TITLE)
+        menu = QMenu()
+        menu.addAction("Show", self._tray_show)
+        menu.addSeparator()
+        menu.addAction("Reconnect", self._trigger_reconnect)
+        menu.addAction("Disconnect", self._disconnect)
+        menu.addSeparator()
+        menu.addAction("Quit", self._try_quit)
+        tray.setContextMenu(menu)
+        tray.activated.connect(self._on_tray_activated)
+        tray.show()
+        self._tray_icon = tray
+
+    def _on_tray_activated(self, reason):
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:   # single left-click
+            self._tray_show()
+
+    def _tray_show(self):
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
