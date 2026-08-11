@@ -7,13 +7,12 @@ uptime, and current mode. Polls the daemon via SYSINFO at a configurable interva
 """
 from __future__ import annotations
 import collections
-import re
 from typing import Dict, Optional
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QBrush, QColor, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import (
-    QComboBox, QDialog, QFrame, QGridLayout, QGroupBox, QHBoxLayout,
+    QComboBox, QDialog, QGridLayout, QGroupBox, QHBoxLayout,
     QLabel, QProgressBar, QSizePolicy, QVBoxLayout, QWidget,
 )
 

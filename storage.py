@@ -6,6 +6,7 @@ falls back to ~/.config/KronosScreenRemote/ if the script dir is not writable
 (typical install on Linux/Mac).
 """
 from __future__ import annotations
+import logging
 import json
 import os
 import pathlib
@@ -16,6 +17,48 @@ from models import PaletteEntry, CalMesh, CalBiasDot
 from app_settings import AppSettings, MacroDef, RawKeyMap
 from kronos_sysex import CachedName
 from setlist_data import SetListData, SetListSlot
+
+log = logging.getLogger(__name__)
+
+
+# ── Atomic writes ──────────────────────────────────────────────────────────────
+# Every persisted file here is a FULL REWRITE of its previous contents, and every
+# loader below treats a parse failure as "no data" and silently returns defaults.
+# A plain write_text() that is interrupted (crash, power loss, disk full) leaves a
+# truncated file, which those loaders then read as an empty cache — i.e. silent
+# total loss of the name cache, the set-list cache, or the local library index.
+#
+# The temp file MUST be created in the target's own directory: os.replace is only
+# atomic within a single filesystem, so a /tmp staging file would degrade to a
+# copy+unlink and reintroduce exactly the torn-write window this closes.
+
+def _atomic_write(path: pathlib.Path, data: bytes, mode: Optional[int] = None):
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        with open(tmp, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        if mode is not None:
+            os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+
+
+def atomic_write_text(path: pathlib.Path, text: str, encoding: str = "utf-8",
+                      mode: Optional[int] = None):
+    """Replace `path`'s contents with `text`, or leave the old file untouched."""
+    _atomic_write(path, text.encode(encoding), mode)
+
+
+def atomic_write_bytes(path: pathlib.Path, data: bytes, mode: Optional[int] = None):
+    """Replace `path`'s contents with `data`, or leave the old file untouched."""
+    _atomic_write(path, data, mode)
 
 
 def _data_dir() -> pathlib.Path:
@@ -122,7 +165,7 @@ def load_settings() -> AppSettings:
                 pass
 
     except Exception as e:
-        print(f"[settings] load failed: {e}")
+        log.warning("settings load failed: %s", e)
     return s
 
 
@@ -187,10 +230,11 @@ def save_settings(s: AppSettings):
                 for r in s.raw_key_maps
             ],
         }
-        _path("settings.json").write_text(
-            json.dumps(root, indent=2), encoding="utf-8")
+        # 0o600: this file stores the FTP password in cleartext (the daemon's
+        # stream handshake requires it), so keep it unreadable to other users.
+        atomic_write_text(_path("settings.json"), json.dumps(root, indent=2), mode=0o600)
     except Exception as e:
-        print(f"[settings] save failed: {e}")
+        log.error("settings save failed: %s", e)
 
 
 def export_settings(s: AppSettings, path: str):
@@ -216,7 +260,7 @@ def reset_all():
             if p.exists():
                 p.unlink()
         except Exception as e:
-            print(f"[reset] could not delete {name}: {e}")
+            log.warning("could not delete %s: %s", name, e)
 
 
 # ── Palette overrides ──────────────────────────────────────────────────────────
@@ -241,9 +285,8 @@ def load_overrides() -> Dict[int, PaletteEntry]:
 
 def save_overrides(overrides: Dict[int, PaletteEntry]):
     root = {str(k): [v.r, v.g, v.b] for k, v in sorted(overrides.items())}
-    _path("palette_override.json").write_text(
-        json.dumps(root, indent=2), encoding="utf-8")
-    print(f"[palette] {len(overrides)} override(s) saved")
+    atomic_write_text(_path("palette_override.json"), json.dumps(root, indent=2))
+    log.debug("%d palette override(s) saved", len(overrides))
 
 
 # ── Palette locks ──────────────────────────────────────────────────────────────
@@ -260,9 +303,8 @@ def load_locks() -> Set[int]:
 
 
 def save_locks(locked: Set[int]):
-    _path("palette_lock.json").write_text(
-        json.dumps(sorted(locked)), encoding="utf-8")
-    print(f"[lock] {len(locked)} locked entry/entries saved")
+    atomic_write_text(_path("palette_lock.json"), json.dumps(sorted(locked)))
+    log.debug("%d locked palette entry/entries saved", len(locked))
 
 
 # ── Calibration ────────────────────────────────────────────────────────────────
@@ -312,10 +354,9 @@ def save_cal(mesh: CalMesh, dots: List[CalBiasDot]):
             "mesh":       mesh_arr,
             "bias_dots":  [[d.nx, d.ny] for d in dots],
         }
-        _path("cal_data.json").write_text(
-            json.dumps(root, indent=2), encoding="utf-8")
+        atomic_write_text(_path("cal_data.json"), json.dumps(root, indent=2))
     except Exception as e:
-        print(f"[cal] save failed: {e}")
+        log.error("calibration save failed: %s", e)
 
 
 # ── Program/Combi name cache ────────────────────────────────────────────────
@@ -343,7 +384,7 @@ def load_names(cache_key: str) -> List[CachedName]:
                 pass
         return out
     except Exception as e:
-        print(f"[names] load failed: {e}")
+        log.warning("name cache load failed: %s", e)
         return []
 
 
@@ -361,9 +402,9 @@ def save_names(cache_key: str, names: List[CachedName]):
                 {"type": n.type, "bank": n.bank, "number": n.number, "name": n.name}
                 for n in names
             ]
-            p.write_text(json.dumps(root, indent=2), encoding="utf-8")
+            atomic_write_text(p, json.dumps(root, indent=2))
     except Exception as e:
-        print(f"[names] save failed: {e}")
+        log.error("name cache save failed: %s", e)
 
 
 # ── Dumped-bank ledger ───────────────────────────────────────────────────────
@@ -387,7 +428,7 @@ def load_dumped_banks(cache_key: str) -> Set[Tuple[int, int]]:
                 pass
         return out
     except Exception as e:
-        print(f"[dumped-banks] load failed: {e}")
+        log.warning("dumped-bank ledger load failed: %s", e)
         return set()
 
 
@@ -402,9 +443,9 @@ def save_dumped_banks(cache_key: str, banks: Set[Tuple[int, int]]):
                 except Exception:
                     root = {}
             root[cache_key] = sorted(f"{t}:{b:02x}" for t, b in banks)
-            p.write_text(json.dumps(root, indent=2), encoding="utf-8")
+            atomic_write_text(p, json.dumps(root, indent=2))
     except Exception as e:
-        print(f"[dumped-banks] save failed: {e}")
+        log.error("dumped-bank ledger save failed: %s", e)
 
 
 # ── Category names cache (GlobalBody.ReadCategoryNames) ────────────────────
@@ -435,7 +476,7 @@ def load_category_names(cache_key: str) -> Optional[dict]:
             "combi_sub": d.get("combi_sub"),
         }
     except Exception as e:
-        print(f"[category-names] load failed: {e}")
+        log.warning("category-name cache load failed: %s", e)
         return None
 
 
@@ -450,9 +491,9 @@ def save_category_names(cache_key: str, names: dict):
                 except Exception:
                     root = {}
             root[cache_key] = names
-            p.write_text(json.dumps(root, indent=2), encoding="utf-8")
+            atomic_write_text(p, json.dumps(root, indent=2))
     except Exception as e:
-        print(f"[category-names] save failed: {e}")
+        log.error("category-name cache save failed: %s", e)
 
 
 # ── Set List cache ───────────────────────────────────────────────────────────
@@ -481,7 +522,7 @@ def load_setlists(cache_key: str) -> Dict[int, SetListData]:
                 pass
         return out
     except Exception as e:
-        print(f"[setlists] load failed: {e}")
+        log.warning("set-list cache load failed: %s", e)
         return {}
 
 
@@ -507,6 +548,6 @@ def save_setlists(cache_key: str, setlists: Dict[int, SetListData]):
                 }
                 for num, data in setlists.items()
             }
-            p.write_text(json.dumps(root, indent=2), encoding="utf-8")
+            atomic_write_text(p, json.dumps(root, indent=2))
     except Exception as e:
-        print(f"[setlists] save failed: {e}")
+        log.error("set-list cache save failed: %s", e)

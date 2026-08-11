@@ -51,6 +51,7 @@ store both live alongside index.json/oplog.jsonl/blobs/.
 """
 from __future__ import annotations
 
+import logging
 import json
 import pathlib
 from dataclasses import dataclass, field
@@ -59,7 +60,10 @@ from typing import Callable, Dict, List, Optional, Set, Tuple
 
 import kronos_sysex as ksx
 from librarian_sysex import OBJ_VERSION
+import storage as _storage
 from local_library_store import BlobStore, local_library_dir
+
+log = logging.getLogger(__name__)
 
 Address = Tuple[int, int, int]   # (obj_type, bank, number)
 
@@ -271,17 +275,19 @@ class MergeCache:
 
     def save(self) -> None:
         """Full rewrite of merge_cache.json -- no incremental diffing, same
-        simplicity as the C# FileMergeCachePersistence (a crash mid-write
-        skips a clean-shutdown path entirely, so saves must always be
-        complete on their own). No-op under TEMPORARY_MEMORY."""
+        simplicity as the C# FileMergeCachePersistence. There is no
+        clean-shutdown path to fall back on, so a save must always be complete
+        on its own: the write goes through storage.atomic_write_text, which
+        replaces the file only once it is fully on disk. No-op under
+        TEMPORARY_MEMORY."""
         if self.behavior is not MergeCacheBehavior.LOCAL_STORAGE:
             return
         try:
             self.root.mkdir(parents=True, exist_ok=True)
             root_obj = self.snapshot_to_dict()
-            self._path().write_text(json.dumps(root_obj, indent=2), encoding="utf-8")
+            _storage.atomic_write_text(self._path(), json.dumps(root_obj, indent=2))
         except Exception as ex:
-            print(f"[merge-cache] snapshot save failed: {ex}")
+            log.error("snapshot save failed: %s", ex)
 
     def load(self) -> None:
         """Load merge_cache.json into this instance in place (missing file =
@@ -297,7 +303,7 @@ class MergeCache:
         try:
             raw = json.loads(p.read_text(encoding="utf-8"))
         except Exception as ex:
-            print(f"[merge-cache] snapshot load failed: {ex}")
+            log.warning("snapshot load failed: %s", ex)
             return
 
         self._by_hash.clear()
@@ -305,7 +311,7 @@ class MergeCache:
             content_hash = ed.get("content_hash", "")
             body = self.blobs.get(content_hash)
             if body is None:
-                print(f"[merge-cache] snapshot entry {content_hash[:8]} has no matching blob, skipping")
+                log.warning("snapshot entry %s has no matching blob, skipping", content_hash[:8])
                 continue
             entry = MergeEntry(
                 content_hash=content_hash, obj_type=int(ed.get("obj_type", 0)), body=body,
@@ -346,7 +352,7 @@ class MergeCache:
             try:
                 self._path().unlink(missing_ok=True)
             except Exception as ex:
-                print(f"[merge-cache] snapshot clear failed: {ex}")
+                log.warning("snapshot clear failed: %s", ex)
         self.behavior = new_behavior
         self.save()
 

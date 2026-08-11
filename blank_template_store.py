@@ -54,13 +54,17 @@ an actual successful hardware write.
 """
 from __future__ import annotations
 
+import logging
 import json
 import pathlib
 from typing import Optional, Tuple
 
 import librarian_sysex as lsx
 from app_settings import AppSettings, DEFAULT_BLANK_TEMPLATE_SOURCE_SLOTS
+import storage as _storage
 from local_library_store import BlobStore, LocalLibraryIndex
+
+log = logging.getLogger(__name__)
 
 
 def template_key(obj_type: int, is_exi: bool = True) -> str:
@@ -95,15 +99,15 @@ class BlankTemplateStore:
         try:
             self._map = json.loads(p.read_text(encoding="utf-8"))
         except Exception as e:
-            print(f"[blank-template] map load failed: {e}")
+            log.warning("map load failed: %s", e)
             self._map = {}
 
     def _save_map(self) -> None:
         try:
             self.root.mkdir(parents=True, exist_ok=True)
-            self._map_path().write_text(json.dumps(self._map, indent=2), encoding="utf-8")
+            _storage.atomic_write_text(self._map_path(), json.dumps(self._map, indent=2))
         except Exception as e:
-            print(f"[blank-template] map save failed: {e}")
+            log.error("map save failed: %s", e)
 
     def _template_hash(self, obj_type: int, is_exi: bool = True) -> Optional[str]:
         return self._map.get(template_key(obj_type, is_exi))

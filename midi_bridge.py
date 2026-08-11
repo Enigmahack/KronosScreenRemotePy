@@ -24,6 +24,13 @@ from PySide6.QtCore import QThread, Signal
 
 MIDI_BRIDGE_PORT = 9875
 
+# Ceiling on a single in-progress SysEx. The stream is remote and byte-oriented,
+# so an F0 whose matching F7 never arrives (garbled link, wedged daemon) would
+# otherwise accumulate without limit until the process runs out of memory. The
+# largest legitimate Kronos message is a Set List dump at roughly 80 KB, so 1 MB
+# leaves two orders of magnitude of headroom over anything real.
+_MAX_SYSEX_BYTES = 1024 * 1024
+
 
 class MidiStreamParser:
     """Stateful MIDI byte stream parser with running-status support.
@@ -78,6 +85,14 @@ class MidiStreamParser:
                 self._state = self._IDLE
                 self._process_status(b)
             else:
+                if len(self._sysex) >= _MAX_SYSEX_BYTES:
+                    # Treat it exactly like a status-byte abort: report it, drop
+                    # the partial message, and resynchronise on the next status.
+                    if self._on_aborted:
+                        self._on_aborted(len(self._sysex), 0)
+                    self._sysex.clear()
+                    self._state = self._IDLE
+                    return
                 self._sysex.append(b)
                 if self._on_activity and (len(self._sysex) & 0x1FF) == 0:
                     self._on_activity()  # pulse every 512 bytes
@@ -232,11 +247,13 @@ class MidiBridgeClient(QThread):
     def run(self):
         retry_s = 2.0
         while not self._stop:
+            connected = False
             try:
                 sock = socket.create_connection((self._host, self._port), timeout=5.0)
                 sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                 with self._sock_lock:
                     self._sock = sock
+                connected = True
                 self.connection_changed.emit(True)
                 retry_s = 2.0
                 self._read_loop(sock)
@@ -250,7 +267,11 @@ class MidiBridgeClient(QThread):
                         except OSError:
                             pass
                         self._sock = None
-                self.connection_changed.emit(False)
+                # Only report a drop if we ever reported a connection. A failed
+                # connect would otherwise emit False on every retry for as long
+                # as the daemon is down.
+                if connected:
+                    self.connection_changed.emit(False)
 
             if self._stop:
                 return

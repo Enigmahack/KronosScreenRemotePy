@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import ftplib
 import logging
-import math
 import os
 import pathlib
 import shutil
@@ -20,11 +19,11 @@ from datetime import datetime
 from typing import List, Optional, Tuple
 
 from PySide6.QtCore import QMimeData, QPoint, Qt, QTimer, Signal, Slot
-from PySide6.QtGui import QAction, QDrag, QKeyEvent
+from PySide6.QtGui import QDrag, QKeyEvent
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout,
+    QAbstractItemView, QCheckBox, QComboBox, QDialog,
     QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit, QMainWindow,
-    QMenu, QMessageBox, QProgressBar, QPushButton, QSizePolicy, QSplitter,
+    QMenu, QMessageBox, QProgressBar, QPushButton, QSplitter,
     QStatusBar, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -317,6 +316,26 @@ class _FtpWorker:
         except Exception:
             pass
         return False
+
+
+def _safe_local_join(local_dir: str, name: str) -> Optional[str]:
+    """Join a *server-supplied* filename onto a local directory, or None if the
+    result would escape that directory.
+
+    Names here come from the remote MLSD/LIST listing (and from the rename
+    dialog), so they are not trustworthy: os.path.join discards its first
+    argument entirely when the second is absolute, so a listing entry named
+    "/etc/cron.d/x" would otherwise be written straight to that path, and
+    "../../.bashrc" would climb out of the download folder.
+    """
+    base = os.path.basename(name.replace("\\", "/").rstrip("/"))
+    if not base or base in (".", ".."):
+        return None
+    dest = os.path.join(local_dir, base)
+    if os.path.commonpath((os.path.abspath(local_dir),
+                           os.path.abspath(dest))) != os.path.abspath(local_dir):
+        return None
+    return dest
 
 
 def _ftp_parent(path: str) -> str:
@@ -1469,7 +1488,10 @@ class FileManagerWindow(QMainWindow):
         cancelled = False
         for i, entry in enumerate(items):
             name = entry.name
-            dest = os.path.join(local_dir, name)
+            dest = _safe_local_join(local_dir, name)
+            if dest is None:
+                self._status_signal.emit(f"Skipped {name}: unsafe file name from server")
+                continue
             if os.path.exists(dest):
                 action = forced_action
                 new_name = None
@@ -1490,7 +1512,10 @@ class FileManagerWindow(QMainWindow):
                     if not new_name:
                         new_name = self._suggest_name(
                             name, lambda n, d=local_dir: os.path.exists(os.path.join(d, n)))
-                    dest = os.path.join(local_dir, new_name)
+                    dest = _safe_local_join(local_dir, new_name)
+                    if dest is None:
+                        self._status_signal.emit(f"Skipped {name}: unsafe replacement name")
+                        continue
             try:
                 self._status_signal.emit(f"[{i+1}/{total}] Downloading {os.path.basename(dest)}…")
                 self._progress_signal.emit(int((i / total) * 100))

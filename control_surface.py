@@ -9,12 +9,12 @@ Button images are shared with the C# project under
 """
 from __future__ import annotations
 import pathlib
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Optional
 
 import time
 
-from PySide6.QtCore import Qt, QPoint, QRect, QSize, QTimer, Signal
-from PySide6.QtGui import QImage, QMouseEvent, QPainter, QPixmap, QWheelEvent
+from PySide6.QtCore import Qt, QPoint, QRect, QTimer, Signal
+from PySide6.QtGui import QMouseEvent, QPainter, QPixmap, QWheelEvent
 from PySide6.QtWidgets import QMenu, QWidget
 
 # Design space

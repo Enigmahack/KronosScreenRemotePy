@@ -177,6 +177,7 @@ Changes, opening a local .pcg file) are cheap disk/CPU work and run synchronousl
 from __future__ import annotations
 
 import json
+import logging
 import os
 import tempfile
 import threading
@@ -184,6 +185,8 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Callable, Dict, List, Optional, Tuple
+
+log = logging.getLogger(__name__)
 
 from PySide6.QtCore import QByteArray, QMimeData, Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QDrag, QIcon, QPainter, QPixmap
@@ -209,7 +212,7 @@ from librarian_sysex import (
     OBJ_COMBI, OBJ_PROGRAM, OBJ_SET_LIST, OBJ_VERSION, ObjectDump,
     obj_bank_to_func33, set_combi_timbre_ref, set_setlist_slot_ref,
 )
-from library_pull_pipeline import EDITABLE_BANKS, GetBankObjects, GetLiveDigest, SLOT_COUNT
+from library_pull_pipeline import EDITABLE_BANKS, SLOT_COUNT
 from local_library_store import BlobStore, LocalIndexEntry, LocalLibraryIndex, OpLog
 from merge_cache import MergeCache, MergeEntry, MergeRefSite
 from pcg_file import PcgFile, PcgObjectEntry, WIRE_SIZE_EXI, open_pcg, wire_body_from_pcg_entry
@@ -3240,7 +3243,7 @@ class LibrarianShellWindow(QDialog):
             self._category_names = names
             storage.save_category_names(host, names.to_dict())
         except Exception as e:  # pragma: no cover - defensive
-            print(f"[librarian] category-name warm-up failed: {e}")
+            log.warning("category-name warm-up failed: %s", e)
 
     def _get_live_digest(self, bank_key: str) -> Optional[str]:
         obj_type, bank = (int(x) for x in bank_key.split(":"))

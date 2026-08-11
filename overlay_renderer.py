@@ -5,14 +5,12 @@ All drawing is in widget coordinates (frame rect + overlay rect passed in).
 This mirrors OverlayRenderer.cs which draws directly onto a DrawingContext.
 """
 from __future__ import annotations
-import math
 import pathlib
-import time
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, Optional, Set, Tuple
 
-from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, Qt
+from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import (
-    QBrush, QColor, QFont, QImage, QPainter, QPen, QPixmap, QPolygonF,
+    QColor, QFont, QPainter, QPen, QPixmap,
 )
 
 from models import CalBiasDot, CalMesh, PaletteEntry

@@ -8,11 +8,14 @@ Transparent pixels (alpha=0) are ignored; row bands are enforced at load time.
 Mode indices: Setlist=1  Combi=2  Program=3  Sequence=4  Sampling=5  Global=6  Disk=7
 """
 from __future__ import annotations
+import logging
 import pathlib
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Optional
 
-from models import PaletteEntry
+import numpy as np
+
+log = logging.getLogger(__name__)
 
 
 COLOR_TOLERANCE = 30    # ±30 per channel
@@ -72,7 +75,7 @@ class ModeDetector:
             self._mode_refs[m] = self._try_load(f"mode_{m}.png", 0, 26)
         self._help_ref = self._try_load("help.png", 27, 55)
         loaded = sum(1 for r in self._mode_refs[1:] if r is not None)
-        print(f"[mode] {loaded}/7 refs loaded from {self._refs_dir}")
+        log.debug("%d/7 refs loaded from %s", loaded, self._refs_dir)
 
     def _try_load(self, filename: str, y_min: int, y_max: int) -> Optional[list[_PixelRef]]:
         path = self._refs_dir / filename
@@ -81,7 +84,7 @@ class ModeDetector:
         try:
             return _load_ref(path, y_min, y_max)
         except Exception as e:
-            print(f"[mode] failed to load {filename}: {e}")
+            log.warning("failed to load %s: %s", filename, e)
             return None
 
     @staticmethod
@@ -105,17 +108,40 @@ class ModeDetector:
         return matches / len(refs)
 
 
-def is_frame_mostly_black(frame8bpp: bytes, lut: list[int],
-                          threshold: float = 0.90) -> bool:
-    """True when more than `threshold` fraction of pixels are near-black (all channels ≤ 20).
-    Default 0.90 suppresses mode detection during boot."""
-    black = sum(
-        1 for b in frame8bpp
-        if ((lut[b] >> 16) & 0xFF) <= 20
-        and ((lut[b] >>  8) & 0xFF) <= 20
-        and  (lut[b]        & 0xFF) <= 20
-    )
-    return black > len(frame8bpp) * threshold
+_BLACK_LEVEL = 20   # per-channel ceiling for "near-black"
+
+_mask_cache_key: Optional[tuple] = None
+_mask_cache: Optional[np.ndarray] = None
+
+
+def _black_palette_mask(lut: list[int]) -> np.ndarray:
+    """256-entry bool mask: which palette indices are near-black. Cached on the
+    LUT's contents, since the palette changes only on a handshake or a
+    palette-editor edit, never per frame."""
+    global _mask_cache_key, _mask_cache
+    key = tuple(lut)
+    if key != _mask_cache_key:
+        packed = np.array(lut, dtype=np.uint32)
+        _mask_cache = (((packed >> 16) & 0xFF) <= _BLACK_LEVEL) \
+            & (((packed >> 8) & 0xFF) <= _BLACK_LEVEL) \
+            & ((packed & 0xFF) <= _BLACK_LEVEL)
+        _mask_cache_key = key
+    return _mask_cache
+
+
+def frame_black_fraction(frame8bpp: bytes, lut: list[int]) -> float:
+    """Fraction of pixels that are near-black (all channels ≤ 20).
+
+    Counts palette indices with bincount and weights them by the near-black
+    mask, so the cost is one pass over the frame in C rather than 480k Python
+    iterations — this runs on the GUI thread for every frame received.
+    """
+    if not frame8bpp:
+        return 0.0
+    counts = np.bincount(np.frombuffer(frame8bpp, dtype=np.uint8), minlength=256)
+    return float(counts[_black_palette_mask(lut)].sum()) / len(frame8bpp)
+
+
 
 
 # ── Combi Program-Edit Detector ────────────────────────────────────────────────
@@ -148,9 +174,9 @@ class CombiProgramEditDetector:
             if path.exists():
                 try:
                     self._refs = _load_combi_ref(path)
-                    print(f"[mode] combi-edit ref: {len(self._refs)} pixels from {path.name}")
+                    log.debug("combi-edit ref: %d pixels from %s", len(self._refs), path.name)
                 except Exception as e:
-                    print(f"[mode] combi-edit ref load failed: {e}")
+                    log.warning("combi-edit ref load failed: %s", e)
 
     def _score(self, frame8bpp: bytes, frame_w: int, lut: list[int]) -> float:
         refs = self._refs

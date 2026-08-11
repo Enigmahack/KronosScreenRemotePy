@@ -323,10 +323,27 @@ def build_changeset(index: LocalLibraryIndex, blobs: BlobStore,
         return plan
 
     # Step 4: assemble the plan.
+    #
+    # These are the only two blob reads whose bytes reach the instrument, so
+    # they go through get_verified: a blob that no longer hashes to the key it
+    # is stored under is damaged, and writing it would corrupt the slot. A
+    # damaged blob REFUSEs the whole plan rather than being skipped quietly —
+    # silently declining to push an edit the user explicitly asked for would
+    # leave them believing it landed.
+    def _body_for_hardware(entry, k: str) -> Optional[bytes]:
+        body = blobs.get_verified(entry.current_hash)
+        if body is None and blobs.exists(entry.current_hash):
+            obj_type, bank, number = _parse_key(k)
+            plan.warnings.append(
+                f"REFUSE: {ObjLoc(obj_type, bank, number).label()}'s stored content is "
+                f"damaged (blob {entry.current_hash[:8]} no longer matches its hash) — "
+                "re-pull it from hardware or from the source PCG before pushing")
+        return body
+
     for k in surviving:
         obj_type, bank, number = _parse_key(k)
         entry = index.entries[k]
-        body = blobs.get(entry.current_hash)
+        body = _body_for_hardware(entry, k)
         if body is None:
             continue
         plan.entries.append(ChangesetEntry(k, obj_type, bank, number, body,
@@ -341,11 +358,14 @@ def build_changeset(index: LocalLibraryIndex, blobs: BlobStore,
             continue
         # entry.current_hash is already the blank-template body — staged by
         # blank_template_store.erase() at "mark for delete" time, not derived here.
-        body = blobs.get(entry.current_hash)
+        body = _body_for_hardware(entry, k)
         if body is None:
             continue
         plan.entries.append(ChangesetEntry(k, obj_type, bank, number, body,
                                             entry.version, is_erase=True))
+
+    if plan.is_refusable:
+        return plan
 
     if not plan.entries and not plan.local_only_deletes:
         plan.warnings.append("CHECK: every pending change conflicted or was rejected — nothing left to push")

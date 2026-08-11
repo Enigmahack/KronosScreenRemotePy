@@ -28,16 +28,16 @@ import time
 from typing import Dict, List, Optional, Set, Tuple
 
 from PySide6.QtCore import (
-    QEvent, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal, Slot,
+    QEvent, QPoint, QPointF, QRect, QRectF, Qt, QTimer, Signal, Slot,
 )
 from PySide6.QtGui import (
-    QAction, QActionGroup, QBrush, QClipboard, QColor, QFont, QIcon, QImage, QKeyEvent,
-    QMouseEvent, QPainter, QPainterPath, QPen, QPixmap, QPolygonF, QResizeEvent, QWheelEvent,
+    QAction, QActionGroup, QBrush, QColor, QFont, QImage, QKeyEvent,
+    QMouseEvent, QPainter, QPainterPath, QPixmap, QPolygonF, QWheelEvent,
 )
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QDialog, QFileDialog, QFormLayout, QFrame,
     QGraphicsOpacityEffect, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMainWindow, QMenu,
-    QMenuBar, QMessageBox, QPushButton, QSizePolicy, QStatusBar, QSystemTrayIcon, QTextEdit,
+    QMessageBox, QPushButton, QSizePolicy, QStatusBar, QSystemTrayIcon, QTextEdit,
     QVBoxLayout, QWidget,
 )
 
@@ -50,7 +50,7 @@ import theme as T
 from app_settings import AppSettings, get_rebindable
 from boot_phase_detector import BootPhaseDetector, Phase as BootPhase
 from control_surface import KronosControlSurface
-from mode_detector import CombiProgramEditDetector, ModeDetector, is_frame_mostly_black
+from mode_detector import CombiProgramEditDetector, ModeDetector, frame_black_fraction
 from models import CalBiasDot, CalHistEntry, CalHistKind, CalMesh, HistEntry, PaletteEntry
 from overlay_renderer import OverlayRenderer
 from stream_receiver import StreamReceiver
@@ -240,6 +240,10 @@ def _numpad_btn(qt_key: int, modifiers) -> str | None:
     if not (modifiers & Qt.KeypadModifier):
         return None
     return _NUMPAD_MAP.get(qt_key)
+# Native Kronos display size. Used as the startup default only — the real
+# dimensions come from the stream handshake and live on FrameWidget as _fw/_fh
+# (see FrameWidget.set_frame_size), so a daemon reporting anything else renders
+# correctly instead of feeding QImage an undersized buffer.
 _FRAME_W    = 800
 _FRAME_H    = 600
 _DRAG_START = 8    # px manhattan to start drag
@@ -248,13 +252,6 @@ _CAL_NODE_R = 18.0
 _CAL_MARGIN = 20
 _TOUCH_FADE = 0.6  # seconds for touch marker fade
 _MODE_POLL_INTERVAL_MS = 1000
-
-# Kronos ADC coordinate mapping (pixel → ADC value)
-def _px_to_adc_h(px: int) -> int:
-    return max(10, min(246, round(10 + px * (246 - 10) / (_FRAME_W - 1))))
-
-def _px_to_adc_v(py: int) -> int:
-    return max(8,  min(245, round(8  + py * (245 - 8)  / (_FRAME_H - 1))))
 
 
 def _paint_seq_icon(kind: str, color: str, size: int) -> QPixmap:
@@ -306,6 +303,11 @@ class FrameWidget(QWidget):
 
         self._frame_image: Optional[QImage]   = None   # Format_Indexed8
         self._frame_pixmap: Optional[QPixmap] = None   # converted for drawPixmap
+        # Live frame dimensions, negotiated by the stream handshake. Every
+        # coordinate mapping, the aspect lock, and the calibration mesh read
+        # these rather than the _FRAME_W/_FRAME_H defaults.
+        self._fw = _FRAME_W
+        self._fh = _FRAME_H
         self._lut: list[int] = [0] * 256               # packed 0xRRGGBB — UNADJUSTED (detection/editor)
         self._cached_ct: list[int] = []                # base (unadjusted) QImage color table
         self._display_ct: list[int] = []               # tone/saturation-adjusted table (display only)
@@ -419,15 +421,32 @@ class FrameWidget(QWidget):
                 rgb, self._img_sharp / 100.0 * image_adjust.MAX_SHARPEN)
         return QPixmap.fromImage(rgb)
 
+    def set_frame_size(self, width: int, height: int):
+        """Adopt the dimensions the stream handshake negotiated. Anything
+        non-positive keeps the current size — QImage would read out of bounds
+        on a zero-size buffer, and a bad handshake shouldn't reshape the UI."""
+        if width <= 0 or height <= 0:
+            return
+        if (width, height) == (self._fw, self._fh):
+            return
+        self._fw, self._fh = width, height
+        self._frame_image  = None
+        self._frame_pixmap = None
+
     def on_frame(self, raw: bytes, palette: list[PaletteEntry],
                  overrides: Dict[int, PaletteEntry], locked: Set[int]):
         """Called from main thread with a new 8bpp frame and current palette."""
+        # QImage does not copy or bounds-check `raw`: a buffer shorter than
+        # _fw*_fh is an out-of-bounds read that segfaults the process the
+        # moment Qt paints the last row. Drop the frame instead.
+        if len(raw) < self._fw * self._fh:
+            return
         self._overrides = overrides
         self._locked    = locked
         if self._ct_dirty or not self._cached_ct:
             self._rebuild_color_tables(palette, overrides)
             self._ct_dirty = False
-        img = QImage(raw, _FRAME_W, _FRAME_H, _FRAME_W, QImage.Format_Indexed8)
+        img = QImage(raw, self._fw, self._fh, self._fw, QImage.Format_Indexed8)
         img.setColorTable(self._display_ct)
         self._frame_image  = img
         self._frame_pixmap = self._make_pixmap(img)
@@ -532,7 +551,7 @@ class FrameWidget(QWidget):
         # (MainWindow.Streaming.cs): always letterboxed to the Kronos' native ratio,
         # never stretched to fill. There is no toggle for it.
         w, h = self.width(), self.height()
-        aspect = _FRAME_W / _FRAME_H
+        aspect = self._fw / self._fh
         if w / h > aspect:
             fw = h * aspect
             return QRectF((w - fw) / 2, 0, fw, h)
@@ -546,17 +565,17 @@ class FrameWidget(QWidget):
         fr = self._frame_rect
         if fr.width() <= 0 or fr.height() <= 0:
             return None
-        fx = int((pos.x() - fr.x()) * _FRAME_W / fr.width())
-        fy = int((pos.y() - fr.y()) * _FRAME_H / fr.height())
+        fx = int((pos.x() - fr.x()) * self._fw / fr.width())
+        fy = int((pos.y() - fr.y()) * self._fh / fr.height())
         if self._cal_mode:
             return QPoint(fx, fy)
-        if fx < 0 or fy < 0 or fx >= _FRAME_W or fy >= _FRAME_H:
+        if fx < 0 or fy < 0 or fx >= self._fw or fy >= self._fh:
             return None
         return QPoint(fx, fy)
 
     def _apply_cal(self, fx: int, fy: int) -> Tuple[int, int]:
         """Apply inverse calibration mesh to get Kronos natural coords."""
-        return self._cal_mesh.inverse_apply(fx, fy, _FRAME_W, _FRAME_H)
+        return self._cal_mesh.inverse_apply(fx, fy, self._fw, self._fh)
 
     # ── Mouse ──────────────────────────────────────────────────────────────────
 
@@ -620,8 +639,8 @@ class FrameWidget(QWidget):
         if self._cal_mode and fp:
             if self._cal_dragging:
                 col, row = self._cal_dragging
-                nat_x = self._cal_mesh.nat_x(col, _FRAME_W)
-                nat_y = self._cal_mesh.nat_y(row, _FRAME_H)
+                nat_x = self._cal_mesh.nat_x(col, self._fw)
+                nat_y = self._cal_mesh.nat_y(row, self._fh)
                 self._cal_mesh.set_offset(col, row, fp.x() - nat_x, fp.y() - nat_y)
                 self._cal_dirty = True
                 self.update()
@@ -759,12 +778,12 @@ class FrameWidget(QWidget):
         if not fp:
             return None
         fr = self._frame_rect
-        scale_x = fr.width()  / _FRAME_W if fr.width()  > 0 else 1
-        scale_y = fr.height() / _FRAME_H if fr.height() > 0 else 1
+        scale_x = fr.width()  / self._fw if fr.width()  > 0 else 1
+        scale_y = fr.height() / self._fh if fr.height() > 0 else 1
         best_d, best = 1e9, None
         for c in range(self._cal_mesh.cols):
             for r in range(self._cal_mesh.rows):
-                nx, ny = self._cal_mesh.node_dst(c, r, _FRAME_W, _FRAME_H)
+                nx, ny = self._cal_mesh.node_dst(c, r, self._fw, self._fh)
                 dx = (nx - fp.x()) * scale_x
                 dy = (ny - fp.y()) * scale_y
                 d  = math.hypot(dx, dy)
@@ -781,7 +800,7 @@ class FrameWidget(QWidget):
         """Place or remove a bias dot at the clicked frame position."""
         _HIT_R = 12  # pixel hit radius for removal
         for i, d in enumerate(self._cal_bias_dots):
-            disp_x, disp_y = self._cal_mesh.apply(d.nx, d.ny, _FRAME_W, _FRAME_H)
+            disp_x, disp_y = self._cal_mesh.apply(d.nx, d.ny, self._fw, self._fh)
             if math.hypot(fx - disp_x, fy - disp_y) <= _HIT_R:
                 removed = self._cal_bias_dots.pop(i)
                 self._cal_push_hist(CalHistEntry(CalHistKind.DotRemoved,
@@ -790,7 +809,7 @@ class FrameWidget(QWidget):
                 self.update()
                 return
         # Dots stored in natural (pre-mesh) coordinates so they follow the mesh
-        nat_x, nat_y = self._cal_mesh.inverse_apply(fx, fy, _FRAME_W, _FRAME_H)
+        nat_x, nat_y = self._cal_mesh.inverse_apply(fx, fy, self._fw, self._fh)
         dot = CalBiasDot(nat_x, nat_y)
         self._cal_bias_dots.append(dot)
         self._cal_push_hist(CalHistEntry(CalHistKind.DotAdded,
@@ -1194,6 +1213,8 @@ def _setup_logging(debug: bool):
             file_handler.setFormatter(fmt)
             root.addHandler(file_handler)
         except OSError as e:
+            # print, not logging: this is the failure to set up file logging,
+            # so the file handler is exactly what isn't available to report it.
             print(f"[log] could not open log file: {e}")
     for h in root.handlers:
         h.setLevel(level)
@@ -1457,7 +1478,7 @@ class MainWindow(QMainWindow):
         # Load cal
         self._frame_w._cal_mesh, self._frame_w._cal_bias_dots = storage.load_cal()
         if not self._frame_w._cal_mesh.is_identity():
-            print(f"[cal] mesh loaded, {len(self._frame_w._cal_bias_dots)} bias dot(s)")
+            logging.debug("cal mesh loaded, %d bias dot(s)", len(self._frame_w._cal_bias_dots))
 
         self._ctrl = CtrlClient.get()
 
@@ -2211,10 +2232,13 @@ class MainWindow(QMainWindow):
             self._fps_time     = now
             self._fps_label.setText(f"{self._measured_fps:.1f} fps")
 
-        # Per-frame black checks
-        mostly_black = is_frame_mostly_black(raw, self._frame_w._lut)
-        likely_boot = is_frame_mostly_black(
-            raw, self._frame_w._lut, self._settings.boot_screen_threshold / 100.0)
+        # Per-frame black checks. Both thresholds are answered from a single
+        # scan of the frame — the black fraction doesn't depend on which
+        # threshold it's compared against.
+        frame_w_px = self._frame_w._fw
+        black_frac = frame_black_fraction(raw, self._frame_w._lut)
+        mostly_black = black_frac > 0.90
+        likely_boot = black_frac > self._settings.boot_screen_threshold / 100.0
         self._frame_w._frame_is_likely_boot_screen = likely_boot
 
         # Pixel detection is only a FALLBACK (req 13): the daemon's STATE poll is the
@@ -2226,7 +2250,7 @@ class MainWindow(QMainWindow):
         if not mostly_black:
             # Help overlay is still pixel-detected (the daemon exposes no help signal).
             if self._mode_detector.has_any():
-                help_now = self._mode_detector.is_help_active(raw, _FRAME_W, self._frame_w._lut)
+                help_now = self._mode_detector.is_help_active(raw, frame_w_px, self._frame_w._lut)
                 if help_now != self._help_active:
                     self._help_active = help_now
                     self._ctrl_surface.set_active("Help", help_now)
@@ -2235,12 +2259,12 @@ class MainWindow(QMainWindow):
                 # Last-case fallback: daemon STATE never answered - use the client-side
                 # pixel mode detector.
                 if self._mode_detector.has_any():
-                    mode = self._mode_detector.identify(raw, _FRAME_W, self._frame_w._lut)
+                    mode = self._mode_detector.identify(raw, frame_w_px, self._frame_w._lut)
                     if mode != self._current_mode and mode > 0:
                         self._set_mode_button(mode)
 
                 # Combi program-edit indicator - checked every frame (outside top-left region)
-                indicator = self._combi_detector.is_active(raw, _FRAME_W, self._frame_w._lut)
+                indicator = self._combi_detector.is_active(raw, frame_w_px, self._frame_w._lut)
                 if (not self._combi_prog_edit_active
                         and self._current_mode == 3
                         and self._prev_mode in (2, 0)
@@ -2274,7 +2298,7 @@ class MainWindow(QMainWindow):
         # Boot load-phase detection - advance phases strictly forward (fallback only;
         # the daemon's own progress bar is composited server-side into the stream).
         if self._boot_phase and not daemon_authoritative:
-            detected = self._boot_detector.identify(raw, _FRAME_W, self._frame_w._lut)
+            detected = self._boot_detector.identify(raw, frame_w_px, self._frame_w._lut)
             if (detected == BootPhase.FINISHING
                     and self._boot_load_phase < BootPhase.FINISHING):
                 self._finishing_fill_frac = self._compute_boot_fill_fraction()
@@ -2352,15 +2376,16 @@ class MainWindow(QMainWindow):
 
     def _apply_new_receiver(self, rx: StreamReceiver):
         """Main thread: wire up the newly connected receiver (after a successful connect)."""
-        print(f"[connect] _apply_new_receiver called, _receiver already set={self._receiver is not None}")
+        logging.debug("_apply_new_receiver: receiver already set=%s", self._receiver is not None)
         self._connecting = False
         if self._receiver:  # user already reconnected manually between the two calls
-            print("[connect] _apply_new_receiver: receiver already set — disposing new rx (causes 'client disconnected' on daemon)")
+            logging.info("discarding duplicate receiver — the daemon will log a client disconnect")
             rx.dispose()
             return
         self._receiver = rx
         self._palette  = list(rx.palette)
         self._frame_w._palette = self._palette
+        self._frame_w.set_frame_size(rx.width, rx.height)
         rx.frame_received.connect(self._on_frame)
         rx.disconnected.connect(self._on_disconnected)
         rx.start()
@@ -2553,7 +2578,7 @@ class MainWindow(QMainWindow):
         self._mode_label.setText(_MODE_NAMES[self._current_mode]
                                  if 1 <= self._current_mode <= 7 else "")
         self._update_seq_enabled()
-        print("[mode] combi program-edit: exited")
+        logging.debug("combi program-edit: exited")
 
     @Slot(int)
     def _on_sysex_mode_hint(self, _mode: int):
@@ -2660,7 +2685,7 @@ class MainWindow(QMainWindow):
         self._mode_label.setText("Mode: Program (from "
                                  + ("Combi" if ctx == 1 else "Sequence") + ")")
         self._update_seq_enabled()
-        print(f"[mode] program-edit-from-{'Combi' if ctx == 1 else 'Sequence'}: entered")
+        logging.debug("program-edit-from-%s: entered", "Combi" if ctx == 1 else "Sequence")
 
     # ── Touch ──────────────────────────────────────────────────────────────────
 
@@ -3613,13 +3638,7 @@ class MainWindow(QMainWindow):
     def _play_macro(self, macro):
         """Run macro steps in a background thread, using the current delay setting."""
         import ctrl_client as CC
-        host = self._host
-        port = self._ctrl_port
-        if not host:
-            return
-        for step in macro.steps:
-            CC.get().send(host, port, step)
-            time.sleep(macro.step_delay_ms / 1000.0)
+        CC.play_macro(self._host, self._ctrl_port, macro.steps, macro.step_delay_ms)
 
     # ── Context menus ──────────────────────────────────────────────────────────
 

@@ -42,6 +42,7 @@ checks cache.IsDirty BEFORE ever constructing a new baseline record).
 """
 from __future__ import annotations
 
+import logging
 import hashlib
 import json
 import pathlib
@@ -51,6 +52,8 @@ from datetime import datetime, timezone
 from typing import Dict, Iterable, Iterator, Optional
 
 import storage as _storage
+
+log = logging.getLogger(__name__)
 
 
 def local_library_dir() -> pathlib.Path:
@@ -88,12 +91,18 @@ class BlobStore:
     def put(self, data: bytes) -> str:
         """Write `data` if not already present; return its sha1 hex digest.
         Idempotent — writing the same content twice is a no-op the second
-        time (mirrors LocalObjectStore.Put)."""
+        time (mirrors LocalObjectStore.Put).
+
+        The write is atomic. A torn write here is worse than a torn write
+        anywhere else in this project: a truncated file would sit at the
+        correct content-addressed path, so put() would report success forever
+        after (the `exists()` guard short-circuits) and get() would hand back
+        corrupt bytes that changeset_sync pushes straight to the synth."""
         sha1 = self.compute_hash(data)
         path = self._path_for(sha1)
         if not path.exists():
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(data)
+            _storage.atomic_write_bytes(path, data)
         return sha1
 
     def get(self, sha1: str) -> Optional[bytes]:
@@ -105,6 +114,21 @@ class BlobStore:
             return None
         path = self._path_for(sha1)
         return path.read_bytes() if path.exists() else None
+
+    def get_verified(self, sha1: str) -> Optional[bytes]:
+        """Like get(), but re-hashes the blob and returns None if it does not
+        match the key it was stored under.
+
+        Use this on any path whose bytes reach hardware. put() is atomic, so a
+        mismatch means the blob predates that guarantee or the file was damaged
+        after the fact; either way, writing it to a synth would corrupt the
+        slot, and refusing is always the better failure."""
+        data = self.get(sha1)
+        if data is None:
+            return None
+        if self.compute_hash(data) != sha1:
+            return None
+        return data
 
     def exists(self, sha1: str) -> bool:
         if not sha1:
@@ -223,7 +247,7 @@ class LocalLibraryIndex:
                 int(k): bool(v) for k, v in root.get("bank_type_pending", {}).items()
             }
         except Exception as e:
-            print(f"[local-library] index load failed: {e}")
+            log.warning("index load failed: %s", e)
         return self
 
     def save(self) -> None:
@@ -236,9 +260,9 @@ class LocalLibraryIndex:
                     # JSON object keys are always strings; int-ified back on load() above.
                     "bank_type_pending": {str(k): v for k, v in self.bank_type_pending.items()},
                 }
-                self._path().write_text(json.dumps(root, indent=2), encoding="utf-8")
+                _storage.atomic_write_text(self._path(), json.dumps(root, indent=2))
         except Exception as e:
-            print(f"[local-library] index save failed: {e}")
+            log.error("index save failed: %s", e)
 
     # -- entry access -----------------------------------------------------------
 
@@ -385,7 +409,7 @@ class OpLog:
                 with open(self._path(), "a", encoding="utf-8") as f:
                     f.write(json.dumps(op) + "\n")
             except Exception as e:
-                print(f"[local-library] oplog append failed: {e}")
+                log.error("oplog append failed: %s", e)
 
     def replay(self) -> Iterator[dict]:
         """Disk-authoritative full read — the fold/recovery source of truth.
@@ -399,7 +423,7 @@ class OpLog:
             try:
                 lines = path.read_text(encoding="utf-8").splitlines()
             except Exception as e:
-                print(f"[local-library] oplog read failed: {e}")
+                log.warning("oplog read failed: %s", e)
                 return
         for line in lines:
             if not line.strip():
@@ -407,7 +431,7 @@ class OpLog:
             try:
                 yield json.loads(line)
             except Exception as e:
-                print(f"[local-library] oplog line parse failed: {e}")
+                log.warning("oplog line parse failed: %s", e)
 
     def clear_all(self) -> None:
         """Wipe the audit trail (e.g. user 'Clear History'). Doesn't touch
@@ -418,7 +442,7 @@ class OpLog:
             try:
                 self._path().unlink(missing_ok=True)
             except Exception as e:
-                print(f"[local-library] oplog clear failed: {e}")
+                log.warning("oplog clear failed: %s", e)
 
 
 # ── Self-test (python local_library_store.py) ───────────────────────────────

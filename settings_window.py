@@ -13,9 +13,9 @@ from typing import List, Optional
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
-    QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
-    QListWidget, QListWidgetItem, QMessageBox, QPushButton, QScrollArea,
-    QSlider, QSpinBox, QSplitter, QTabWidget, QTextEdit, QVBoxLayout, QWidget,
+    QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
+    QListWidget, QMessageBox, QPushButton, QScrollArea,
+    QSlider, QSpinBox, QTabWidget, QTextEdit, QVBoxLayout, QWidget,
 )
 
 import storage
@@ -823,13 +823,8 @@ class SettingsWindow(QDialog):
 
     def _play_macro(self, m: MacroDef):
         import ctrl_client as CC
-        host = self._settings.kronos_host
-        port = self._settings.ctrl_port
-        if not host:
-            return
-        for step in m.steps:
-            CC.get().send(host, port, step)
-            time.sleep(m.step_delay_ms / 1000.0)
+        CC.play_macro(self._settings.kronos_host, self._settings.ctrl_port,
+                      m.steps, m.step_delay_ms)
 
     def _on_macro_selection_changed(self, idx: int):
         has = 0 <= idx < len(self._settings.macros)

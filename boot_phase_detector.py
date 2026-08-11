@@ -11,10 +11,13 @@ must match within ±30 per channel.
 """
 from __future__ import annotations
 
+import logging
 import pathlib
 from dataclasses import dataclass
 from enum import IntEnum
 from typing import List, Optional
+
+log = logging.getLogger(__name__)
 
 
 class Phase(IntEnum):
@@ -70,7 +73,7 @@ class BootPhaseDetector:
         self._finishing_ref = self._try_load("phase_finishing.png")
         count = sum(1 for r in (self._preload_ref, self._bankdata_ref, self._finishing_ref)
                     if r is not None)
-        print(f"[boot] {count}/3 phase refs loaded from {self._refs_dir}")
+        log.debug("%d/3 phase refs loaded from %s", count, self._refs_dir)
 
     def _try_load(self, filename: str) -> Optional[List[_PixelRef]]:
         path = self._refs_dir / filename
@@ -79,7 +82,7 @@ class BootPhaseDetector:
         try:
             return _load_ref(path)
         except Exception as e:
-            print(f"[boot] failed to load {filename}: {e}")
+            log.warning("failed to load %s: %s", filename, e)
             return None
 
     @staticmethod

@@ -3,7 +3,6 @@ About dialog — shows app version, Python version, and daemon version (fetched 
 """
 from __future__ import annotations
 import platform
-import sys
 import threading
 from typing import Optional
 

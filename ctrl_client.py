@@ -16,16 +16,24 @@ daemon revoked ownership (api.md section 13) — so a transient hiccup degrades
 gracefully instead of reporting the daemon unreachable.
 """
 from __future__ import annotations
+import logging
 import queue
 import socket
 import threading
+import time
 from typing import Callable, List, Optional
+
+log = logging.getLogger(__name__)
 
 CTRL_PORT = 7374
 _PERSIST_HEADER = b"CTRL_PERSIST\n"
 
 # Sentinel for "flush the pending TOUCH_MOVE"
 _FLUSH_MOVE = object()
+
+# Marker for a queued command that must NOT establish a connection — see
+# send_existing_only. Queued as (_ONLY_IF_CONNECTED, cmd).
+_ONLY_IF_CONNECTED = object()
 
 
 class CtrlClient:
@@ -60,6 +68,25 @@ class CtrlClient:
                 self._queue.put(pm)
             self._queue.put(cmd)
 
+    def send_existing_only(self, host: str, port: int, cmd: str) -> bool:
+        """Queue `cmd` to be sent only if a persistent session is established.
+
+        Returns False immediately when there is visibly no session, so a caller
+        that merely wants to piggy-back on an open one can fall back at once
+        instead of waiting out its timeout. A True return is not a delivery
+        guarantee: the session can still be gone by the time the send loop gets
+        there, in which case the command is dropped rather than triggering a
+        connect. Goes through the same queue as send() so the socket keeps a
+        single writer and command ordering is preserved.
+        """
+        self._host = host
+        self._port = port
+        with self._sock_lock:
+            if self._sock is None:
+                return False
+        self._queue.put((_ONLY_IF_CONNECTED, cmd))
+        return True
+
     def reset(self):
         """Drop the persistent connection (e.g. on host change or reconnect)."""
         with self._sock_lock:
@@ -90,19 +117,16 @@ class CtrlClient:
         reply's 'MODE=' prefix (unique among control-port replies). Avoids a
         fresh TCP connect/close every poll tick.
 
-        Rides an *existing* persistent session only — never establishes one.
-        Otherwise a poll that lands after _disconnect()'s reset() (which races
-        the _poll_in_progress guard) would open a fresh CTRL_PERSIST session on
-        the daemon that nothing ever tears down, and a poll during a dead
-        control port (daemon down / still booting) would burn a 2s connect
-        timeout every tick. Falls back to the one-shot query() whenever there's
-        no session to ride or it doesn't reply in time, so both cases still
-        fail (or succeed) in line with the previous one-shot-only behavior."""
-        with self._sock_lock:
-            have_sock = self._sock is not None
-        if not have_sock:
-            return self.query(host, port, "STATE", timeout_ms=timeout_ms)
-
+        Rides an *existing* persistent session only — never establishes one,
+        enforced by send_existing_only all the way down to the send loop rather
+        than by a check the send could race past. Otherwise a poll that lands
+        after _disconnect()'s reset() (which races the _poll_in_progress guard)
+        would open a fresh CTRL_PERSIST session on the daemon that nothing ever
+        tears down, and a poll during a dead control port (daemon down / still
+        booting) would burn a 2s connect timeout every tick. Falls back to the
+        one-shot query() whenever there's no session to ride or it doesn't reply
+        in time, so both cases still fail (or succeed) in line with the previous
+        one-shot-only behavior."""
         result: list = [None]
         done = threading.Event()
 
@@ -113,7 +137,12 @@ class CtrlClient:
 
         self.add_line_listener(on_line)
         try:
-            self.send(host, port, "STATE")
+            # send_existing_only, not send: the check-then-send below is racy,
+            # and a plain send() would have _send_one open a fresh CTRL_PERSIST
+            # session on a miss — the exact orphan-session and 2s-connect-stall
+            # behaviour this method exists to avoid.
+            if not self.send_existing_only(host, port, "STATE"):
+                return self.query(host, port, "STATE", timeout_ms=timeout_ms)
             done.wait(timeout_ms / 1000)
         finally:
             self.remove_line_listener(on_line)
@@ -180,12 +209,13 @@ class CtrlClient:
                     cmd, self._pending_move = self._pending_move, None
                 if cmd is None:
                     continue
+                self._send_one(cmd)
+            elif isinstance(item, tuple) and item[0] is _ONLY_IF_CONNECTED:
+                self._send_one(item[1], allow_connect=False)
             else:
-                cmd = item
+                self._send_one(item)
 
-            self._send_one(cmd)
-
-    def _send_one(self, cmd: str):
+    def _send_one(self, cmd: str, allow_connect: bool = True):
         if not self._host:
             return
         data = (cmd + "\n").encode("ascii")
@@ -200,6 +230,9 @@ class CtrlClient:
                 return
             except OSError:
                 self._drop_socket(sock)
+
+        if not allow_connect:
+            return
 
         # Need a new persistent connection
         sock = self._connect_persistent()
@@ -223,7 +256,7 @@ class CtrlClient:
                              name="CtrlDrain").start()
             return s
         except Exception as e:
-            print(f"[ctrl] persistent connect failed: {e}")
+            log.warning("persistent connect failed: %s", e)
             return None
 
     def _drain_loop(self, sock: socket.socket):
@@ -262,10 +295,30 @@ class CtrlClient:
 
 # Module-level singleton — mirrors the C# static class pattern
 _instance: Optional[CtrlClient] = None
+_instance_lock = threading.Lock()
 
 
 def get() -> CtrlClient:
     global _instance
     if _instance is None:
-        _instance = CtrlClient()
+        with _instance_lock:
+            if _instance is None:
+                _instance = CtrlClient()
     return _instance
+
+
+def play_macro(host: str, port: int, steps: List[str], step_delay_ms: int):
+    """Send a macro's steps in order, pausing step_delay_ms between them.
+
+    Blocking — callers run it on a background thread. Shared by the main
+    window's keybind trigger and the Settings macro editor's Play button, which
+    previously carried identical copies differing only in where they read the
+    host and port from.
+    """
+    if not host or not steps:
+        return
+    client = get()
+    for i, step in enumerate(steps):
+        if i:
+            time.sleep(step_delay_ms / 1000.0)
+        client.send(host, port, step)

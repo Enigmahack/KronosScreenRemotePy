@@ -20,7 +20,7 @@ import threading
 import time
 from typing import Callable, Dict, List, Optional, Set, Tuple
 
-from PySide6.QtCore import QObject, QTimer, Signal
+from PySide6.QtCore import QObject, Signal
 
 import kronos_sysex as ksx
 import librarian_sysex as lsx
