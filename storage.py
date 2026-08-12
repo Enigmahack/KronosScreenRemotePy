@@ -61,13 +61,83 @@ def atomic_write_bytes(path: pathlib.Path, data: bytes, mode: Optional[int] = No
     _atomic_write(path, data, mode)
 
 
+_data_dir_cache: Optional[pathlib.Path] = None
+_data_dir_lock = threading.Lock()
+#: Set when _data_dir() had to fall back off the script directory. The UI reads it
+#: at startup: silently using a DIFFERENT data directory means the user's settings,
+#: caches and whole local library appear to be empty, which needs saying out loud.
+data_dir_fallback_reason: Optional[str] = None
+
+
+def _really_writable(d: pathlib.Path) -> bool:
+    """os.access(W_OK) is a permission-BIT check, not a can-I-write check.
+
+    On the network shares this app is routinely run from (a CIFS/SMB mount of the
+    project directory, the app itself launched from another machine) the mode
+    bits advertise write access that the server then refuses, or the share is
+    mounted read-only, or it has gone away entirely. os.access says yes and every
+    subsequent write raises — which is how an unwritable data directory used to
+    surface as a mid-operation crash instead of a fallback. Probe with a real
+    create/write/unlink instead."""
+    probe = d / f".kronos_write_probe.{os.getpid()}"
+    try:
+        with open(probe, "wb") as f:
+            f.write(b"0")
+        return True
+    except OSError:
+        return False
+    finally:
+        try:
+            probe.unlink()
+        except OSError:
+            pass
+
+
 def _data_dir() -> pathlib.Path:
-    script_dir = pathlib.Path(__file__).resolve().parent
-    if os.access(script_dir, os.W_OK):
-        return script_dir
-    cfg = pathlib.Path.home() / ".config" / "KronosScreenRemote"
-    cfg.mkdir(parents=True, exist_ok=True)
-    return cfg
+    """Resolved once per process — the probe costs a file create, and every
+    persisted file in the app routes through here."""
+    global _data_dir_cache, data_dir_fallback_reason
+    if _data_dir_cache is not None:
+        return _data_dir_cache
+    with _data_dir_lock:
+        if _data_dir_cache is not None:
+            return _data_dir_cache
+        script_dir = pathlib.Path(__file__).resolve().parent
+        if _really_writable(script_dir):
+            _data_dir_cache = script_dir
+            return _data_dir_cache
+        cfg = pathlib.Path.home() / ".config" / "KronosScreenRemote"
+        try:
+            cfg.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            log.error("fallback data dir %s is also unusable: %s", cfg, e)
+        data_dir_fallback_reason = (
+            f"{script_dir} is not writable — settings and the local library are being "
+            f"read from and written to {cfg} instead.")
+        log.warning("%s", data_dir_fallback_reason)
+        _data_dir_cache = cfg
+        return _data_dir_cache
+
+
+def scratch_dir() -> pathlib.Path:
+    """A directory this process can definitely write scratch/temp files into.
+
+    Tries the system temp dir first, then the app data dir, then the user's home
+    — the first one that survives a real write probe. Callers that can work
+    entirely in memory should do that instead; this exists for the ones that
+    genuinely need a path, so "temp is not writable" degrades to "somewhere else"
+    rather than to an exception out of a UI handler."""
+    import tempfile
+    candidates = [pathlib.Path(tempfile.gettempdir()), _data_dir(), pathlib.Path.home()]
+    for d in candidates:
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            continue
+        if _really_writable(d):
+            return d
+    raise OSError("no writable directory available for temporary files "
+                  f"(tried: {', '.join(str(c) for c in candidates)})")
 
 
 def _path(name: str) -> pathlib.Path:
@@ -83,10 +153,24 @@ def data_dir() -> pathlib.Path:
 
 def backup_dir() -> pathlib.Path:
     """Directory for pre-write hardware object backups (.syx files) — mirrors
-    the C# client's Storage.BackupDir(). Already gitignored (librarian_backups/)."""
+    the C# client's Storage.BackupDir(). Already gitignored (librarian_backups/).
+
+    Falls back to a scratch location if the data directory can't take it. These
+    are pre-image snapshots taken immediately before overwriting a slot on the
+    instrument — the one recovery path for a bad push — so "somewhere else" beats
+    "skip the backup and write anyway", which is what the caller does when this
+    raises."""
     d = _data_dir() / "librarian_backups"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        if _really_writable(d):
+            return d
+    except OSError as e:
+        log.warning("backup dir %s unusable (%s)", d, e)
+    alt = scratch_dir() / "KronosScreenRemote_backups"
+    alt.mkdir(parents=True, exist_ok=True)
+    log.warning("using %s for hardware pre-write backups", alt)
+    return alt
 
 
 # ── Settings ───────────────────────────────────────────────────────────────────

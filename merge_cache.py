@@ -51,9 +51,11 @@ store both live alongside index.json/oplog.jsonl/blobs/.
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import json
 import pathlib
+import threading
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable, Dict, List, Optional, Set, Tuple
@@ -200,6 +202,13 @@ class MergeCache:
         # _placedAddresses, which is keyed by content hash despite the name).
         self._placed_addresses: Dict[str, Address] = {}
 
+        # defer_saves() batching — see that method.
+        self._defer_lock = threading.RLock()
+        self._defer_depth = 0
+        self._save_pending = False
+        #: Last save failure, or None — mirrors LocalLibraryIndex.last_save_error.
+        self.last_save_error: Optional[str] = None
+
         self.load()
 
     @property
@@ -273,6 +282,31 @@ class MergeCache:
         self._rebuild_pending_gap_index()
         self.save()
 
+    @contextlib.contextmanager
+    def defer_saves(self):
+        """Coalesce every save() inside the block into ONE save on exit.
+
+        Each mutation here (pull, remove, mark_placed, clear) rewrites the whole
+        snapshot, and a single placement performs TWO of them — mark_placed then
+        remove. Auto-Filling n items therefore cost 2n full rewrites plus fsyncs
+        of an O(n)-sized file, which on a network-mounted data directory is the
+        difference between seconds and many minutes. Same contract as
+        LocalLibraryIndex.defer_saves: re-entrant, only the outermost exit
+        writes, and a crash inside the block costs at most the staging state the
+        Merge Window can be rebuilt by re-pulling."""
+        with self._defer_lock:
+            self._defer_depth += 1
+        try:
+            yield self
+        finally:
+            with self._defer_lock:
+                self._defer_depth -= 1
+                flush = self._defer_depth == 0 and self._save_pending
+                if flush:
+                    self._save_pending = False
+            if flush:
+                self._save_now()
+
     def save(self) -> None:
         """Full rewrite of merge_cache.json -- no incremental diffing, same
         simplicity as the C# FileMergeCachePersistence. There is no
@@ -282,11 +316,22 @@ class MergeCache:
         TEMPORARY_MEMORY."""
         if self.behavior is not MergeCacheBehavior.LOCAL_STORAGE:
             return
+        with self._defer_lock:
+            if self._defer_depth > 0:
+                self._save_pending = True
+                return
+        self._save_now()
+
+    def _save_now(self) -> None:
+        if self.behavior is not MergeCacheBehavior.LOCAL_STORAGE:
+            return
         try:
             self.root.mkdir(parents=True, exist_ok=True)
             root_obj = self.snapshot_to_dict()
             _storage.atomic_write_text(self._path(), json.dumps(root_obj, indent=2))
+            self.last_save_error = None
         except Exception as ex:
+            self.last_save_error = str(ex)
             log.error("snapshot save failed: %s", ex)
 
     def load(self) -> None:

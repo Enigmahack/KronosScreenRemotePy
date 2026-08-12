@@ -281,6 +281,18 @@ class _FtpWorker:
         with open(local_path, "wb") as f:
             self._ftp.retrbinary(f"RETR {remote_path}", f.write)
 
+    def retrieve(self, remote_path: str, on_chunk, blocksize: int = 65536):
+        """Stream a remote file to a callback instead of to a local path.
+
+        For callers that want the bytes in memory (the Librarian's PCG pull) or
+        want per-chunk progress/cancellation: `on_chunk(bytes)` is invoked for
+        each block as it arrives, and any exception it raises propagates out —
+        which is how a cancel aborts a transfer mid-flight. Avoids inventing a
+        temp file, and with it the "temp directory is not writable" failure mode,
+        for data that is only going to be parsed and discarded."""
+        self.ensure_connected()
+        self._ftp.retrbinary(f"RETR {remote_path}", on_chunk, blocksize)
+
     def delete_file(self, path: str):
         self.ensure_connected()
         self._ftp.delete(path)

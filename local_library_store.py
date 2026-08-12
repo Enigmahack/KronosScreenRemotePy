@@ -42,18 +42,31 @@ checks cache.IsDirty BEFORE ever constructing a new baseline record).
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import hashlib
 import json
 import pathlib
 import threading
+from collections import OrderedDict
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
-from typing import Dict, Iterable, Iterator, Optional
+from typing import Dict, Iterable, Iterator, List, Optional, Tuple
 
 import storage as _storage
 
 log = logging.getLogger(__name__)
+
+
+class LocalLibraryWriteError(OSError):
+    """A local-library write could not be completed (read-only/disconnected
+    share, disk full, permissions).
+
+    Raised rather than swallowed: a BlobStore.put() that silently did nothing
+    would leave the index pointing at a body that does not exist, and
+    changeset_sync would later push that missing blob's slot to the synth.
+    Callers in the UI catch this per user action, report it, and stop — which is
+    what makes an unwritable data directory a message instead of a crash."""
 
 
 def local_library_dir() -> pathlib.Path:
@@ -76,10 +89,27 @@ class BlobStore:
     unique body is written once; dedup is free because identical content
     hashes to the identical path. No compaction/GC subsystem, same as
     LocalObjectStore.cs — an unreferenced blob left behind by a discard is a
-    harmless orphan file, not a correctness problem."""
+    harmless orphan file, not a correctness problem.
+
+    get() is served from a bounded in-memory LRU. Blobs are immutable by
+    construction (the path IS the hash of the contents), so a cached body can
+    never be stale — the only thing the cache can be wrong about is a blob
+    deleted out from under the process, which nothing in this app does. The
+    cache is what makes the hot read paths viable: a free-slot scan reads every
+    occupied slot's body, a tree refresh reads every dirty Combi/Set List's, and
+    the catalog build reads all of them — on a network-mounted data directory
+    those were thousands of individual round trips per user action."""
+
+    #: Cache budget in bytes. Bodies run 3.7 KB (HD-1 Program) to 69 KB (Set
+    #: List), so this holds a few thousand Programs or a few hundred Set Lists —
+    #: comfortably the whole working set of a full library.
+    CACHE_BUDGET_BYTES = 64 * 1024 * 1024
 
     def __init__(self, root: Optional[pathlib.Path] = None):
         self.root = pathlib.Path(root) if root is not None else local_library_dir()
+        self._cache: "OrderedDict[str, bytes]" = OrderedDict()
+        self._cache_bytes = 0
+        self._cache_lock = threading.Lock()
 
     @staticmethod
     def compute_hash(data: bytes) -> str:
@@ -87,6 +117,35 @@ class BlobStore:
 
     def _path_for(self, sha1: str) -> pathlib.Path:
         return self.root / "blobs" / sha1[:2] / f"{sha1}.bin"
+
+    # -- cache ---------------------------------------------------------------
+
+    def _cache_get(self, sha1: str) -> Optional[bytes]:
+        with self._cache_lock:
+            data = self._cache.get(sha1)
+            if data is not None:
+                self._cache.move_to_end(sha1)
+            return data
+
+    def _cache_put(self, sha1: str, data: bytes) -> None:
+        if len(data) > self.CACHE_BUDGET_BYTES:
+            return
+        with self._cache_lock:
+            if sha1 in self._cache:
+                self._cache_bytes -= len(self._cache[sha1])
+                del self._cache[sha1]
+            self._cache[sha1] = data
+            self._cache_bytes += len(data)
+            while self._cache_bytes > self.CACHE_BUDGET_BYTES and self._cache:
+                _, evicted = self._cache.popitem(last=False)
+                self._cache_bytes -= len(evicted)
+
+    def clear_cache(self) -> None:
+        with self._cache_lock:
+            self._cache.clear()
+            self._cache_bytes = 0
+
+    # -- read/write ----------------------------------------------------------
 
     def put(self, data: bytes) -> str:
         """Write `data` if not already present; return its sha1 hex digest.
@@ -97,23 +156,46 @@ class BlobStore:
         anywhere else in this project: a truncated file would sit at the
         correct content-addressed path, so put() would report success forever
         after (the `exists()` guard short-circuits) and get() would hand back
-        corrupt bytes that changeset_sync pushes straight to the synth."""
+        corrupt bytes that changeset_sync pushes straight to the synth.
+
+        Raises LocalLibraryWriteError if the blob could not be written —
+        never returns a hash for content that isn't on disk."""
         sha1 = self.compute_hash(data)
         path = self._path_for(sha1)
         if not path.exists():
-            path.parent.mkdir(parents=True, exist_ok=True)
-            _storage.atomic_write_bytes(path, data)
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                _storage.atomic_write_bytes(path, data)
+            except OSError as e:
+                raise LocalLibraryWriteError(
+                    f"could not write object body to {path}: {e}") from e
+        self._cache_put(sha1, data)
         return sha1
 
     def get(self, sha1: str) -> Optional[bytes]:
         """Return the blob's bytes, or None if absent. `sha1` may be
         LocalLibraryIndex.NO_BASELINE_SENTINEL (empty string) — that is
         never a real SHA-1 hash, so it always returns None rather than
-        raising (mirrors LocalObjectStore.TryGet's own guard)."""
+        raising (mirrors LocalObjectStore.TryGet's own guard).
+
+        A read error (share went away mid-session) is reported as absent, the
+        same as a missing file: every caller already handles None, and raising
+        here would take out an unrelated tree refresh."""
         if not sha1:
             return None
+        cached = self._cache_get(sha1)
+        if cached is not None:
+            return cached
         path = self._path_for(sha1)
-        return path.read_bytes() if path.exists() else None
+        try:
+            if not path.exists():
+                return None
+            data = path.read_bytes()
+        except OSError as e:
+            log.warning("blob read failed for %s: %s", sha1, e)
+            return None
+        self._cache_put(sha1, data)
+        return data
 
     def get_verified(self, sha1: str) -> Optional[bytes]:
         """Like get(), but re-hashes the blob and returns None if it does not
@@ -133,6 +215,8 @@ class BlobStore:
     def exists(self, sha1: str) -> bool:
         if not sha1:
             return False
+        if self._cache_get(sha1) is not None:
+            return True
         return self._path_for(sha1).exists()
 
 
@@ -215,6 +299,14 @@ class LocalLibraryIndex:
         # subsystem (see changeset_sync.py's module docstring).
         self.bank_type_pending: Dict[int, bool] = {}
         self._lock = threading.Lock()
+        # defer_saves() batching — see that method.
+        self._defer_lock = threading.RLock()
+        self._defer_depth = 0
+        self._save_pending = False
+        #: Last save failure, or None. The UI reads this to tell the user their
+        #: edits are in memory only (unwritable share) instead of leaving them
+        #: to find out at Sync time.
+        self.last_save_error: Optional[str] = None
 
     @staticmethod
     def key(obj_type: int, bank: int, number: int) -> str:
@@ -250,7 +342,40 @@ class LocalLibraryIndex:
             log.warning("index load failed: %s", e)
         return self
 
+    @contextlib.contextmanager
+    def defer_saves(self):
+        """Coalesce every save() inside the block into ONE save on exit.
+
+        index.json is a full rewrite of every tracked slot (a real library is
+        ~2 MB of JSON) followed by an fsync, so a bulk operation that saves
+        per item costs O(n) full rewrites — which is what made Auto-Fill and
+        multi-item placement lock the UI up for minutes on a network-mounted
+        data directory. The op-log is the write-ahead authority and is still
+        appended per item (see OpLog's class docstring), so a crash inside the
+        block loses nothing that rebuild_current_from_oplog can't fold back.
+
+        Re-entrant and safe to nest; only the outermost exit writes."""
+        with self._defer_lock:
+            self._defer_depth += 1
+        try:
+            yield self
+        finally:
+            with self._defer_lock:
+                self._defer_depth -= 1
+                flush = self._defer_depth == 0 and self._save_pending
+                if flush:
+                    self._save_pending = False
+            if flush:
+                self._save_now()
+
     def save(self) -> None:
+        with self._defer_lock:
+            if self._defer_depth > 0:
+                self._save_pending = True
+                return
+        self._save_now()
+
+    def _save_now(self) -> None:
         try:
             with self._lock:
                 self.root.mkdir(parents=True, exist_ok=True)
@@ -261,7 +386,9 @@ class LocalLibraryIndex:
                     "bank_type_pending": {str(k): v for k, v in self.bank_type_pending.items()},
                 }
                 _storage.atomic_write_text(self._path(), json.dumps(root, indent=2))
+            self.last_save_error = None
         except Exception as e:
+            self.last_save_error = str(e)
             log.error("index save failed: %s", e)
 
     # -- entry access -----------------------------------------------------------
@@ -395,20 +522,66 @@ class OpLog:
     def __init__(self, root: Optional[pathlib.Path] = None):
         self.root = pathlib.Path(root) if root is not None else local_library_dir()
         self._lock = threading.Lock()
+        self._buffer: List[dict] = []
+        self._defer_lock = threading.RLock()
+        self._defer_depth = 0
+        #: Last append failure, or None — see LocalLibraryIndex.last_save_error.
+        self.last_append_error: Optional[str] = None
 
     def _path(self) -> pathlib.Path:
         return self.root / "oplog.jsonl"
+
+    @contextlib.contextmanager
+    def defer_appends(self):
+        """Buffer appends inside the block and write them as ONE open/append/
+        close on exit, preserving order.
+
+        Same motivation as LocalLibraryIndex.defer_saves: on a network-mounted
+        data directory the per-append open/close round trip dominates a bulk
+        operation. Deliberately narrower than deferring the index save — the
+        log is the recovery source of truth, so blocks should stay short (one
+        Auto-Fill chunk, one batch placement), never a whole session."""
+        with self._defer_lock:
+            self._defer_depth += 1
+        try:
+            yield self
+        finally:
+            with self._defer_lock:
+                self._defer_depth -= 1
+                flush = self._defer_depth == 0
+            if flush:
+                self.flush()
 
     def append(self, op: dict) -> None:
         """Write-ahead append of one operation as a single JSON line. A
         plain buffered write (open/append/close) — no fsync, matching the
         durability level storage.py itself uses for settings.json et al."""
+        with self._defer_lock:
+            if self._defer_depth > 0:
+                self._buffer.append(op)
+                return
+        self.append_many([op])
+
+    def flush(self) -> None:
+        """Write out anything buffered by defer_appends()."""
+        with self._defer_lock:
+            pending, self._buffer = self._buffer, []
+        if pending:
+            self.append_many(pending)
+
+    def append_many(self, ops: Iterable[dict]) -> None:
+        """Append several operations in one open/append/close, in order."""
+        lines = "".join(json.dumps(op) + "\n" for op in ops)
+        if not lines:
+            return
         with self._lock:
             try:
                 self.root.mkdir(parents=True, exist_ok=True)
                 with open(self._path(), "a", encoding="utf-8") as f:
-                    f.write(json.dumps(op) + "\n")
+                    f.write(lines)
+                self.last_append_error = None
             except Exception as e:
+                self.last_append_error = str(e)
                 log.error("oplog append failed: %s", e)
 
     def replay(self) -> Iterator[dict]:
@@ -416,6 +589,7 @@ class OpLog:
         ALWAYS reads the file (mirrors OpLog.ReadAll, not OpLog.ReadForDisplay
         — this port has no display-mirror shortcut to bypass, see class
         docstring)."""
+        self.flush()   # anything buffered by defer_appends belongs in the read
         with self._lock:
             path = self._path()
             if not path.exists():
@@ -438,6 +612,8 @@ class OpLog:
         index.json/the CAS blob store — only the log; after this,
         rebuild_current_from_oplog's disaster-recovery fallback has nothing
         left to replay (mirrors OpLog.ClearAll)."""
+        with self._defer_lock:
+            self._buffer.clear()
         with self._lock:
             try:
                 self._path().unlink(missing_ok=True)

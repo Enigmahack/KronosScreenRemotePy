@@ -2190,7 +2190,9 @@ class MainWindow(QMainWindow):
         if self._receiver:
             self._receiver.dispose()
             self._receiver = None
-        self._ctrl.reset()
+        # stop_persistent, not reset: reset alone is now re-established by the
+        # CtrlClient supervisor within a second (see ctrl_client.reset).
+        self._ctrl.stop_persistent()
         self._sysex_service.stop()
         self._stop_ping()
         # Reset footer MIDI/performance indicators. sysex_service.stop() clears
@@ -2321,6 +2323,11 @@ class MainWindow(QMainWindow):
         self._mode_poll_timer.stop()
         self._poll_in_progress = False
         self._stop_ping()
+        # The stream is gone, so the daemon has dropped our ctrl ownership too
+        # (screenremote.c clears g_ctrl_allowed_ip on client disconnect). Stop
+        # supervising rather than letting the keeper retry into "ctrl rejected"
+        # until the stream comes back; _apply_new_receiver restarts it.
+        self._ctrl.stop_persistent()
         if self._combi_prog_edit_active:
             self._combi_prog_edit_active = False
             self._combi_flash_timer.stop()
@@ -2402,6 +2409,12 @@ class MainWindow(QMainWindow):
         self._mode_poll_timer.start()
         self._update_conn_mode_label()
         self._start_ping()
+        # Establish the CTRL_PERSIST session now and keep it up for as long as
+        # we're connected, instead of leaving it to be created as a side effect
+        # of the first touch/keypress. Every STATE poll then rides it (no
+        # per-tick connect/close), and a drop is re-established by the client's
+        # own supervisor rather than staying down until the next user gesture.
+        self._ctrl.start_persistent(self._host, self._ctrl_port)
         # Push mirror state and screensaver timeout to daemon on every connect
         self._mirror_state = self._settings.vga_mirror_enabled
         self._ctrl_send("MIRROR_ON" if self._mirror_state else "MIRROR_OFF")
@@ -4039,7 +4052,7 @@ class MainWindow(QMainWindow):
             audio.wait(500)
             self._audio_capture = None
 
-        self._ctrl.reset()
+        self._ctrl.stop_persistent()
         storage.save_settings(self._settings)
         if self._frame_w._cal_dirty:
             storage.save_cal(self._frame_w._cal_mesh, self._frame_w._cal_bias_dots)

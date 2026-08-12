@@ -179,8 +179,8 @@ from __future__ import annotations
 import json
 import logging
 import os
-import tempfile
 import threading
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -191,7 +191,7 @@ log = logging.getLogger(__name__)
 from PySide6.QtCore import QByteArray, QMimeData, Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QDrag, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
+    QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
     QGraphicsOpacityEffect, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget,
     QListWidgetItem, QMenu, QMessageBox, QProgressBar, QPushButton, QSpinBox, QSplitter,
     QStackedLayout, QStyle, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
@@ -213,7 +213,9 @@ from librarian_sysex import (
     obj_bank_to_func33, set_combi_timbre_ref, set_setlist_slot_ref,
 )
 from library_pull_pipeline import EDITABLE_BANKS, SLOT_COUNT
-from local_library_store import BlobStore, LocalIndexEntry, LocalLibraryIndex, OpLog
+from local_library_store import (
+    BlobStore, LocalIndexEntry, LocalLibraryIndex, LocalLibraryWriteError, OpLog,
+)
 from merge_cache import MergeCache, MergeEntry, MergeRefSite
 from pcg_file import PcgFile, PcgObjectEntry, WIRE_SIZE_EXI, open_pcg, wire_body_from_pcg_entry
 from session_dependency_clipboard import SessionDependencyClipboard, SessionDependencyEntry
@@ -614,6 +616,97 @@ class _DestinationDialog(QDialog):
         return int(self._bank_combo.currentData()), self._number_spin.value()
 
 
+class _TransferCancelled(Exception):
+    """Raised inside an FTP retrieve callback to abort the transfer when the user
+    cancels. Caught by the worker that started it — never escapes to the UI."""
+
+
+class _BusyDialog(QDialog):
+    """Modal "this is happening, please wait" for a bounded step whose progress
+    cannot be measured (an FTP connect). Exists so a slow or unreachable Kronos
+    shows a window that repaints instead of a frozen application.
+
+    Closed by the worker via done_step(), which is connected to a Signal so the
+    close always happens on the GUI thread."""
+
+    def __init__(self, title: str, message: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setModal(True)
+        self.setStyleSheet(f"QDialog {{ background-color: {T.BG}; color: {T.TEXT}; }}")
+        self.setFixedWidth(360)
+        v = QVBoxLayout(self)
+        self._label = QLabel(message)
+        v.addWidget(self._label)
+        bar = QProgressBar()
+        bar.setRange(0, 0)          # indeterminate
+        bar.setTextVisible(False)
+        v.addWidget(bar)
+
+    def done_step(self, _stage: str = "") -> None:
+        self.accept()
+
+    def reject(self) -> None:    # noqa: N802 - Qt override
+        """Not dismissable: the step it covers is bounded by ftplib's own connect
+        timeout, and closing early would leave the worker writing into a dialog the
+        caller has already stopped waiting on."""
+        return
+
+
+class _TransferProgressDialog(QDialog):
+    """Byte-accurate progress for one FTP transfer, with a working Cancel.
+
+    `expected` is the size from the remote listing; 0 means unknown, in which
+    case the bar goes indeterminate and only the byte counter moves. The worker
+    polls `cancelled` between chunks."""
+
+    def __init__(self, title: str, message: str, expected: int, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setModal(True)
+        self.setStyleSheet(f"QDialog {{ background-color: {T.BG}; color: {T.TEXT}; }}")
+        self.setFixedWidth(420)
+        self.cancelled = False
+        self._expected = max(0, int(expected))
+
+        v = QVBoxLayout(self)
+        v.addWidget(QLabel(message))
+        self._bar = QProgressBar()
+        self._bar.setRange(0, 100 if self._expected else 0)
+        self._bar.setValue(0)
+        v.addWidget(self._bar)
+        self._detail = QLabel("Starting…")
+        self._detail.setStyleSheet(f"color: {T.TEXT_DIM}; font-size: 11px;")
+        v.addWidget(self._detail)
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
+        btns.rejected.connect(self._on_cancel)
+        v.addWidget(btns)
+
+    def _on_cancel(self) -> None:
+        self.cancelled = True
+        self._detail.setText("Cancelling…")
+
+    def set_progress(self, received: int, expected: int) -> None:
+        if expected and expected != self._expected:
+            self._expected = expected
+            self._bar.setRange(0, 100)
+        if self._expected:
+            self._bar.setValue(min(100, int(received * 100 / self._expected)))
+            self._detail.setText(f"{received / 1048576:.1f} MB of "
+                                 f"{self._expected / 1048576:.1f} MB")
+        else:
+            self._detail.setText(f"{received / 1048576:.1f} MB")
+
+    def done_step(self, _stage: str = "") -> None:
+        self.accept()
+
+    def reject(self) -> None:    # noqa: N802 - Qt override
+        """Esc/close is a cancel REQUEST, not an immediate dismissal — the dialog
+        stays up until the worker has actually stopped and emitted its step, so
+        the FTP socket is never torn down from under a live transfer."""
+        self._on_cancel()
+
+
 class _RemoteFilePickerDialog(QDialog):
     """Port of RemoteFilePickerDialog — reuses file_manager._FtpWorker (no new
     FTP client). Directory listing (the operation repeated on every navigation
@@ -633,6 +726,9 @@ class _RemoteFilePickerDialog(QDialog):
         self._ftp = ftp_worker
         self._path = start_path
         self.selected_remote_path: Optional[str] = None
+        #: Size of the chosen file from the remote listing, 0 if the server
+        #: didn't report one — feeds the download progress bar's range.
+        self.selected_size: int = 0
 
         v = QVBoxLayout(self)
         self._path_label = QLabel(self._path)
@@ -729,6 +825,7 @@ class _RemoteFilePickerDialog(QDialog):
         if entry is None or entry.is_directory:
             return   # Open is disabled in this state; defensive no-op
         self.selected_remote_path = entry.full_path
+        self.selected_size = int(getattr(entry, "size", 0) or 0)
         self.accept()
 
 
@@ -817,6 +914,10 @@ class LibrarianShellWindow(QDialog):
     _sync_done = Signal(object, object, object, str)     # PullResult|None, ChangesetPlan|None, SyncResult|None, status
     _merge_pull_done = Signal(int, int, str)              # added, gaps, status
     _progress = Signal(str)
+    # PCG-from-Kronos pull, emitted from the FTP worker thread — Qt marshals both
+    # to the GUI thread, which is the only thread allowed to touch the dialogs.
+    _pcg_pull_progress = Signal(int, int)                 # bytes received, bytes expected (0 = unknown)
+    _pcg_pull_step = Signal(str)                          # a worker stage finished; closes its dialog
 
     def __init__(self, host: str, service: Optional[SysExService],
                  ftp_port: int = 21, ftp_username: str = "", ftp_password: str = "",
@@ -854,7 +955,15 @@ class LibrarianShellWindow(QDialog):
         self._pcg_source_label = ""
         self._pcg_by_addr: Dict[Tuple[int, int, int], PcgObjectEntry] = {}
 
+        # "Does this content hash represent a real (non-init) object?" — pure
+        # function of immutable blob content, so it is memoized for the life of
+        # the window. See _slot_has_content.
+        self._has_content_memo: Dict[Tuple[int, str], bool] = {}
+        # The four possible dirty/dependency dot glyphs, painted once each.
+        self._dot_icon_cache: Dict[Tuple[bool, Optional[bool]], QIcon] = {}
+
         self._busy = False
+        self._pcg_pull_active = False   # an FTP PCG pull is in flight (see _open_pcg_from_kronos)
         self._auto_fill_active = False
         self._auto_fill_scope: Optional[object] = None
         # Set for the duration of one Auto-Fill chunk (see _auto_fill_tick): each placed
@@ -865,7 +974,10 @@ class LibrarianShellWindow(QDialog):
         # ObservableCollections incrementally instead of rebuilding a view from scratch.
         self._suppress_tree_refresh = False
         self._auto_fill_timer = QTimer(self)
-        self._auto_fill_timer.setInterval(30)
+        # Short gap between time-boxed chunks (_AUTO_FILL_TICK_BUDGET_S): long enough
+        # for the event loop to deliver paints and input, short enough that the sweep
+        # isn't mostly spent idling between ticks.
+        self._auto_fill_timer.setInterval(10)
         self._auto_fill_timer.timeout.connect(self._auto_fill_tick)
 
         # Linear undo over every LOCAL (pre-Commit) edit made in this window — port of
@@ -1429,6 +1541,15 @@ class LibrarianShellWindow(QDialog):
                 dot2 = depscan.has_all_dependencies(self._local_resolver, obj_type, body)
         if not dot1 and dot2 is None:
             return None
+        # There are only four distinct glyphs; painting a fresh QPixmap per ROW
+        # meant thousands of pixmap allocations per tree rebuild.
+        return self._dot_icon(dot1, dot2)
+
+    def _dot_icon(self, dot1: bool, dot2: Optional[bool]) -> QIcon:
+        key = (dot1, dot2)
+        icon = self._dot_icon_cache.get(key)
+        if icon is not None:
+            return icon
         pm = QPixmap(16, 10)
         pm.fill(Qt.GlobalColor.transparent)
         p = QPainter(pm)
@@ -1441,7 +1562,9 @@ class LibrarianShellWindow(QDialog):
             p.setPen(Qt.PenStyle.NoPen)
             p.drawEllipse(9, 2, 6, 6)
         p.end()
-        return QIcon(pm)
+        icon = QIcon(pm)
+        self._dot_icon_cache[key] = icon
+        return icon
 
     def _style_local_item(self, item: QTreeWidgetItem, entry: LocalIndexEntry) -> None:
         if entry.pending_delete:
@@ -1693,12 +1816,8 @@ class LibrarianShellWindow(QDialog):
             entry = self._index.get(obj_type, bank, i)
             if entry is None:
                 return i
-            body = self._blobs.get(entry.current_hash)
-            if body is None:
-                continue
-            if not self._is_init_body(obj_type, body):
-                continue
-            return i
+            if not self._slot_has_content(obj_type, entry.current_hash):
+                return i
         return None
 
     def _find_first_free_slot(self, obj_type: int, bank: int) -> int:
@@ -1721,15 +1840,33 @@ class LibrarianShellWindow(QDialog):
     def _is_init_body(self, obj_type: int, body: bytes) -> bool:
         """InitObjects.IsInit routed through object_body.py — name signal for
         Program, name-or-all-defaults for Combi, aggregate for Set List."""
-        from object_body import (
-            program_body_is_init, combi_body_is_init, setlist_body_is_init)
         if obj_type == OBJ_PROGRAM:
-            return program_body_is_init(body)
+            return object_body.program_body_is_init(body)
         if obj_type == OBJ_COMBI:
-            return combi_body_is_init(body)
+            return object_body.combi_body_is_init(body)
         if obj_type == OBJ_SET_LIST:
-            return setlist_body_is_init(body)
+            return object_body.setlist_body_is_init(body)
         return False
+
+    def _slot_has_content(self, obj_type: int, content_hash: str) -> bool:
+        """"This slot holds something real" (LocalLibraryCache.HasContent), memoized
+        on the CONTENT HASH.
+
+        Blob bodies are immutable and content-addressed, so the init/not-init verdict
+        for a given hash can never change — but _first_free_slot_in_bank asks it for
+        every occupied slot it walks, once per placed item, which for a full library
+        was up to 128 body fetches + full init parses per Auto-Fill item."""
+        if not content_hash:
+            return False
+        cached = self._has_content_memo.get((obj_type, content_hash))
+        if cached is not None:
+            return cached
+        body = self._blobs.get(content_hash)
+        # A body we can't read isn't provably empty — treat the slot as occupied
+        # rather than silently offering it as free and overwriting it.
+        result = True if body is None else not self._is_init_body(obj_type, body)
+        self._has_content_memo[(obj_type, content_hash)] = result
+        return result
 
     def _local_resolve_content(self, obj_type: int, bank: int, number: int) -> Optional[bytes]:
         entry = self._index.get(obj_type, bank, number)
@@ -2491,7 +2628,15 @@ class LibrarianShellWindow(QDialog):
                               "object(s) - Force Overwrite placed it anyway, so those "
                               "referrer(s) now resolve to the NEW object instead of the old one.")
 
-        write_hash = self._blobs.put(write_body)
+        try:
+            write_hash = self._blobs.put(write_body)
+        except LocalLibraryWriteError:
+            # Nothing has been mutated yet (the blob write is the first side effect),
+            # so closing the undo scope here leaves the recorder consistent and the
+            # caller sees a clean "this didn't happen".
+            if scope is not None:
+                scope.dispose()
+            raise
         now = _now_iso()
         new_entry = _advance_entry_after_write(existing, write_hash, entry.display_name,
                                                entry.version, now)
@@ -2531,10 +2676,11 @@ class LibrarianShellWindow(QDialog):
         undo scope.
 
         Runs as a chunked QTimer state machine instead of one blocking loop (req 10 /
-        10a): each tick places a few items then returns to the event loop, so the UI
-        stays responsive and the button's indeterminate progress bar (req 10a) actually
-        paints and animates instead of the whole sweep landing as one frozen block -
-        the Qt equivalent of the C# source's Dispatcher.Yield(Background) pump."""
+        10a): each tick places items for a bounded slice of wall-clock time then
+        returns to the event loop, so the UI stays responsive and the button's
+        indeterminate progress bar (req 10a) actually paints and animates instead of
+        the whole sweep landing as one frozen block - the Qt equivalent of the C#
+        source's Dispatcher.Yield(Background) pump."""
         total_staged = len(self._merge.entries)
         if total_staged == 0:
             self._log("Auto-Fill: nothing staged in the Merge Window.")
@@ -2549,6 +2695,15 @@ class LibrarianShellWindow(QDialog):
         self._auto_fill_scope = scope
         self._auto_fill_placed = 0
         self._auto_fill_skipped = 0
+        self._auto_fill_error: Optional[str] = None
+        self._auto_fill_error_is_storage = False
+        self._auto_fill_last_paint = 0.0
+        # Where the last free-slot scan for each type got to. _find_first_free_slot_
+        # any_bank walks banks from the start every time, and every occupied slot it
+        # passes costs a body lookup; over a whole sweep that is quadratic. Slots only
+        # ever get FILLED during a sweep, so resuming from the previous answer is
+        # equivalent and linear. Reset per sweep, never cached across one.
+        self._auto_fill_cursor: Dict[int, Tuple[int, int]] = {}
         self._auto_fill_queue: List[MergeEntry] = []
         for obj_type in _ROOT_ORDER:
             # A snapshot per type - _place_merge_entry_at mutates self._merge as it goes
@@ -2560,46 +2715,127 @@ class LibrarianShellWindow(QDialog):
         self._merge_status_label.setText(
             f"Auto-Filling: 0/{self._auto_fill_total} placed...")
 
+    #: Wall-clock budget for one Auto-Fill tick. Time-boxed rather than a fixed item
+    #: count: an item's real cost swings by orders of magnitude (a dedup hit is pure
+    #: memory, a Combi placement resolves references and writes a blob), so a fixed
+    #: count either starves the event loop or wastes most of the sweep in timer
+    #: overhead. 40 ms keeps the UI above 20 fps while still batching real work.
+    _AUTO_FILL_TICK_BUDGET_S = 0.040
+    #: Don't rebuild both trees more than ~5x/second while filling. Each rebuild walks
+    #: the entire library, so at the old one-per-30ms-tick rate the rebuilds cost far
+    #: more than the placements they were reporting on.
+    _AUTO_FILL_PAINT_INTERVAL_S = 0.20
+
     def _auto_fill_tick(self) -> None:
-        """One chunk of the Auto-Fill sweep - places up to `_AUTO_FILL_CHUNK` items per
-        tick, updates the status/progress, and stops when the queue is empty.
+        """One chunk of the Auto-Fill sweep - places items until this tick's time
+        budget is spent, updates the status/progress, and stops when the queue is
+        empty.
 
         Local/Merge tree rebuilds are suppressed for the duration of the chunk (see
-        `_suppress_tree_refresh`'s docstring at its declaration) and done ONCE at the
-        end of the tick instead of once per placed item - one rebuild per TICK
-        (ceil(total/chunk) for the whole sweep) instead of one per placed item.
-        Verified empirically: a 10-item sweep at chunk=4 does 3 real rebuilds, not 10
-        (see the scratch-rooted test harness this fix was checked against)."""
-        chunk = getattr(self, "_AUTO_FILL_CHUNK", 4)
+        `_suppress_tree_refresh`'s docstring at its declaration) and then done at most
+        every `_AUTO_FILL_PAINT_INTERVAL_S`, plus unconditionally at the end of the
+        sweep.
+
+        Persistence is batched across the whole chunk: index.json and merge_cache.json
+        are each a FULL rewrite plus fsync, and one placement triggers three of them
+        (index save, mark_placed, remove). Per item that is O(n) rewrites of O(n)-sized
+        files - the reason a large Auto-Fill used to appear to hang, especially with
+        the data directory on a network share. The op-log (the write-ahead recovery
+        authority) is batched only within the chunk, so a crash mid-sweep still
+        replays every completed placement."""
+        deadline = time.monotonic() + self._AUTO_FILL_TICK_BUDGET_S
+        handled = 0
         self._suppress_tree_refresh = True
         try:
-            for _ in range(chunk):
-                if not self._auto_fill_queue:
-                    break
-                entry = self._auto_fill_queue.pop(0)
-                if self._merge.try_get(entry.content_hash) is None:
-                    continue   # already resolved as a side effect of an earlier item this sweep
-                dst = self._find_first_free_slot_any_bank(entry.obj_type)
-                if dst is None:
-                    self._log(f"Auto-Fill: no free {_ROOT_LABEL.get(entry.obj_type, str(entry.obj_type))} "
-                              f"slot for '{entry.display_name or entry.content_hash[:8]}'.")
-                    self._auto_fill_skipped += 1
-                    continue
-                self._place_merge_entry_at(entry, dst[0], dst[1])
-                # Outcome, not intent: there's no cancel path in Auto-Fill, but count from
-                # what actually happened rather than assuming the call succeeded.
-                if self._merge.try_get(entry.content_hash) is None:
-                    self._auto_fill_placed += 1
-                else:
-                    self._auto_fill_skipped += 1
-                self._merge_status_label.setText(
-                    f"Auto-Filling: {self._auto_fill_placed}/{self._auto_fill_total} placed...")
+            with self._index.defer_saves(), self._merge.defer_saves(), \
+                    self._oplog.defer_appends():
+                # `handled == 0` first: always take at least one item per tick, so a
+                # single item slower than the whole budget still makes progress
+                # instead of the sweep spinning forever placing nothing.
+                while self._auto_fill_queue and (handled == 0 or time.monotonic() < deadline):
+                    handled += 1
+                    entry = self._auto_fill_queue.pop(0)
+                    if self._merge.try_get(entry.content_hash) is None:
+                        continue   # already resolved as a side effect of an earlier item
+                    dst = self._next_auto_fill_slot(entry.obj_type)
+                    if dst is None:
+                        self._log(f"Auto-Fill: no free {_ROOT_LABEL.get(entry.obj_type, str(entry.obj_type))} "
+                                  f"slot for '{entry.display_name or entry.content_hash[:8]}'.")
+                        self._auto_fill_skipped += 1
+                        continue
+                    self._place_merge_entry_at(entry, dst[0], dst[1])
+                    # Outcome, not intent: there's no cancel path in Auto-Fill, but count
+                    # from what actually happened rather than assuming the call succeeded.
+                    if self._merge.try_get(entry.content_hash) is None:
+                        self._auto_fill_placed += 1
+                    else:
+                        self._auto_fill_skipped += 1
+                    # Only step past the candidate slot if something actually landed in
+                    # it. A dedup-reuse or a Force-Overwrite refusal leaves it free, and
+                    # the next item must still be offered it.
+                    if self._index.get(entry.obj_type, dst[0], dst[1]) is not None:
+                        self._advance_auto_fill_cursor(entry.obj_type)
+                    self._merge_status_label.setText(
+                        f"Auto-Filling: {self._auto_fill_placed}/{self._auto_fill_total} placed...")
+        except LocalLibraryWriteError as e:
+            # The data directory went read-only / unreachable mid-sweep (a network
+            # share the app was launched against from another machine is the case
+            # this actually happens in). Everything placed so far is already
+            # committed; stop cleanly and tell the user, rather than letting the
+            # exception escape a Qt slot and take the application down.
+            self._auto_fill_error = str(e)
+            self._auto_fill_error_is_storage = True
+            self._auto_fill_queue = []
+            log.error("Auto-Fill aborted: %s", e)
+        except Exception as e:                       # noqa: BLE001 - see below
+            # Any other failure gets the same treatment for the same reason: an
+            # unhandled exception raised inside a QTimer slot is not recoverable
+            # from the user's point of view.
+            self._auto_fill_error = f"{type(e).__name__}: {e}"
+            self._auto_fill_error_is_storage = False
+            self._auto_fill_queue = []
+            log.exception("Auto-Fill aborted")
         finally:
             self._suppress_tree_refresh = False
-        self._refresh_local_tree()
-        self._refresh_merge_tree()
-        if not self._auto_fill_queue:
+
+        finished = not self._auto_fill_queue
+        now = time.monotonic()
+        if finished or now - self._auto_fill_last_paint >= self._AUTO_FILL_PAINT_INTERVAL_S:
+            self._auto_fill_last_paint = now
+            self._refresh_local_tree()
+            self._refresh_merge_tree()
+        if finished:
             self._auto_fill_finish()
+
+    def _next_auto_fill_slot(self, obj_type: int) -> Optional[Tuple[int, int]]:
+        """_find_first_free_slot_any_bank, resumed from where this sweep last landed.
+
+        Returns the same answer a scan from the beginning would: a sweep only ever
+        FILLS slots, so nothing before the cursor can have become free again. The
+        cursor is left pointing AT the candidate, not past it — see
+        _advance_auto_fill_cursor for why."""
+        banks = EDITABLE_BANKS.get(obj_type, [])
+        limit = SLOT_COUNT.get(obj_type, 128)
+        start_bank, start_slot = self._auto_fill_cursor.get(obj_type, (0, 0))
+        for bank_pos in range(start_bank, len(banks)):
+            bank = banks[bank_pos]
+            first = start_slot if bank_pos == start_bank else 0
+            for i in range(first, limit):
+                entry = self._index.get(obj_type, bank, i)
+                if entry is not None and self._slot_has_content(obj_type, entry.current_hash):
+                    continue
+                self._auto_fill_cursor[obj_type] = (bank_pos, i)
+                return (bank, i)
+        self._auto_fill_cursor[obj_type] = (len(banks), 0)
+        return None
+
+    def _advance_auto_fill_cursor(self, obj_type: int) -> None:
+        """Step the scan cursor one slot past the candidate _next_auto_fill_slot last
+        handed out. Called only once that slot is confirmed occupied, so a placement
+        that decided not to write (dedup-reuse, orphan-gate refusal) leaves the slot
+        available to the next item exactly as an un-cursored rescan would."""
+        bank_pos, slot = self._auto_fill_cursor.get(obj_type, (0, 0))
+        self._auto_fill_cursor[obj_type] = (bank_pos, slot + 1)
 
     def _auto_fill_finish(self) -> None:
         self._auto_fill_timer.stop()
@@ -2611,13 +2847,33 @@ class LibrarianShellWindow(QDialog):
         self._auto_fill_scope = None
         placed = self._auto_fill_placed
         skipped = self._auto_fill_skipped
-        self._merge_status_label.setText(
-            f"Auto-Fill: placed {placed} item(s)"
-            + (f", {skipped} skipped (see History above)." if skipped else "."))
-        self._log(f"Auto-Fill: placed {placed} item(s)"
-                  + (f", {skipped} skipped (see History above)." if skipped else "."))
+        error = getattr(self, "_auto_fill_error", None)
+        is_storage = getattr(self, "_auto_fill_error_is_storage", False)
+        summary = (f"Auto-Fill: placed {placed} item(s)"
+                   + (f", {skipped} skipped (see History above)." if skipped else "."))
+        if error:
+            summary = f"Auto-Fill STOPPED after {placed} item(s): {error}"
+        self._merge_status_label.setText(summary)
+        self._log(summary)
         if scope is not None:
             scope.dispose()
+        if error:
+            self._report_storage_failure("Auto-Fill", error, is_storage=is_storage)
+
+    def _report_storage_failure(self, what: str, detail: str, is_storage: bool = True) -> None:
+        """One place for "this bulk operation stopped early" so every caller reports
+        it identically. Whatever was already written stays written; this only tells
+        the user the run stopped and why."""
+        if is_storage:
+            body = (f"{what} could not finish because the local library could not be "
+                    f"written.\n\n{detail}\n\n"
+                    f"Data directory: {storage.data_dir()}\n\n"
+                    "Anything already placed has been kept. This usually means the folder "
+                    "is on a network share that is read-only, disconnected, or full.")
+        else:
+            body = (f"{what} stopped after an unexpected error.\n\n{detail}\n\n"
+                    "Anything already placed has been kept; details are in the log.")
+        QMessageBox.warning(self, f"{what} stopped", body)
 
     def _remove_merge_selected(self) -> None:
         payloads = [p for p in self._selected_payloads(self._tree_merge) if p[0] == "merge"]
@@ -2754,8 +3010,7 @@ class LibrarianShellWindow(QDialog):
             entry = self._index.get(obj_type, dest_bank, n)
             if entry is None:
                 return True
-            body = self._blobs.get(entry.current_hash)
-            return body is not None and self._is_init_body(obj_type, body)
+            return not self._slot_has_content(obj_type, entry.current_hash)
 
         placed, pending = resolve_sequential_fill(seq_items, obj_type, dest_bank, start_slot,
                                                    bank_type_of=self._local_bank_type_of,
@@ -2800,12 +3055,18 @@ class LibrarianShellWindow(QDialog):
         if not path.lower().endswith(".pcg"):
             QMessageBox.information(self, "Open PCG", "Only .pcg files can be loaded here.")
             return
+        # A PCG is multi-megabyte; read + scan behind a wait cursor so the window
+        # doesn't just stop repainting with no explanation.
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
-            data = open(path, "rb").read()
+            with open(path, "rb") as f:
+                data = f.read()
+            pcg = open_pcg(data)
         except OSError as e:
             QMessageBox.warning(self, "Open PCG", f"Could not read {path}: {e}")
             return
-        pcg = open_pcg(data)
+        finally:
+            QApplication.restoreOverrideCursor()
         if pcg is None:
             QMessageBox.warning(self, "Open PCG", f"{os.path.basename(path)} is not a recognizable "
                                 "Kronos .pcg file.")
@@ -2820,37 +3081,129 @@ class LibrarianShellWindow(QDialog):
         self._refresh_pcg_tree()
 
     def _open_pcg_from_kronos(self) -> None:
+        """Pull a .pcg off the Kronos over FTP.
+
+        Everything that talks to the network or parses the file runs on a worker
+        thread behind a cancellable progress dialog. Previously the FTP connect, the
+        download, the file read and the PCG parse all ran on the GUI thread, so
+        pulling a multi-megabyte PCG off the instrument's (slow) FTP server froze the
+        whole application — with no progress, no way to cancel, and no repaint — for
+        as long as the transfer took. That freeze is also what caused the Kronos to
+        log "persistent ctrl disconnected": nothing serviced the control socket while
+        the GUI thread was blocked.
+
+        The download goes to memory, not a temp file: the only thing this needs is
+        the bytes, and routing them through tempfile.gettempdir() added a failure mode
+        (unwritable/absent temp directory) for no benefit."""
         if not self._ftp_username:
             QMessageBox.information(self, "Pull PCG", "Set up FTP credentials (File Manager or "
                                     "Settings) before pulling a PCG file from the Kronos.")
             return
+        if self._pcg_pull_active:
+            return
         from file_manager import _FtpWorker
         worker = _FtpWorker(self._host, self._ftp_port, self._ftp_username, self._ftp_password)
+
+        # Connect off the GUI thread — an unreachable host otherwise blocks here for
+        # the full 10 s ftplib timeout with a frozen window.
+        progress = _BusyDialog("Pull PCG", f"Connecting to {self._host}…", self)
+        result: Dict[str, object] = {}
+
+        def connect_worker() -> None:
+            try:
+                worker.connect()
+                result["ok"] = True
+            except Exception as e:                    # noqa: BLE001 - reported to the user
+                result["error"] = e
+            self._pcg_pull_step.emit("connected")
+
+        # Connected before the thread starts: the emit is queued to this (GUI)
+        # thread, so it is delivered once exec() enters the event loop even if the
+        # worker finished first.
+        self._pcg_pull_step.connect(progress.done_step)
+        threading.Thread(target=connect_worker, daemon=True, name="PcgPullConnect").start()
+        progress.exec()
         try:
-            worker.connect()
-        except Exception as e:
-            QMessageBox.warning(self, "Pull PCG", f"FTP connect failed: {e}")
+            self._pcg_pull_step.disconnect(progress.done_step)
+        except (RuntimeError, TypeError):
+            pass
+        if "ok" not in result:
+            err = result.get("error")
+            worker.disconnect()
+            if err is not None:
+                QMessageBox.warning(self, "Pull PCG", f"FTP connect failed: {err}")
             return
+
         try:
             picker = _RemoteFilePickerDialog(worker, "/", self)
             if picker.exec() != QDialog.DialogCode.Accepted or not picker.selected_remote_path:
+                worker.disconnect()
                 return
             remote_path = picker.selected_remote_path
-            local_path = os.path.join(tempfile.gettempdir(), os.path.basename(remote_path))
-            try:
-                worker.download(remote_path, local_path)
-            except Exception as e:
-                QMessageBox.warning(self, "Pull PCG", f"Download failed: {e}")
-                return
-        finally:
+            expected = picker.selected_size or 0
+        except Exception as e:                        # noqa: BLE001 - reported to the user
             worker.disconnect()
-
-        try:
-            data = open(local_path, "rb").read()
-        except OSError as e:
-            QMessageBox.warning(self, "Pull PCG", f"Could not read downloaded file: {e}")
+            QMessageBox.warning(self, "Pull PCG", f"Could not browse the Kronos: {e}")
             return
-        pcg = open_pcg(data)
+
+        self._pcg_pull_active = True
+        self._refresh_enable()
+        self._log(f"Pulling {remote_path} from the Kronos…")
+        dlg = _TransferProgressDialog("Pull PCG", f"Downloading {os.path.basename(remote_path)}…",
+                                      expected, self)
+        state: Dict[str, object] = {}
+
+        def download_worker() -> None:
+            try:
+                chunks: List[bytes] = []
+                received = [0]
+
+                def on_chunk(b: bytes) -> None:
+                    if dlg.cancelled:
+                        raise _TransferCancelled()
+                    chunks.append(b)
+                    received[0] += len(b)
+                    self._pcg_pull_progress.emit(received[0], expected)
+
+                worker.retrieve(remote_path, on_chunk)
+                data = b"".join(chunks)
+                self._pcg_pull_progress.emit(len(data), len(data))
+                # Parse on this thread too — a 20 MB PCG scan is not free, and it is
+                # the caller's whole reason for waiting.
+                state["pcg"] = open_pcg(data)
+            except _TransferCancelled:
+                state["cancelled"] = True
+            except Exception as e:                    # noqa: BLE001 - reported to the user
+                state["error"] = e
+            finally:
+                try:
+                    worker.disconnect()
+                except Exception:                     # noqa: BLE001 - best effort teardown
+                    pass
+                self._pcg_pull_step.emit("done")
+
+        self._pcg_pull_progress.connect(dlg.set_progress)
+        self._pcg_pull_step.connect(dlg.done_step)
+        threading.Thread(target=download_worker, daemon=True, name="PcgPullDownload").start()
+        dlg.exec()
+        for sig, slot in ((self._pcg_pull_progress, dlg.set_progress),
+                          (self._pcg_pull_step, dlg.done_step)):
+            try:
+                sig.disconnect(slot)
+            except (RuntimeError, TypeError):
+                pass
+        self._pcg_pull_active = False
+        self._refresh_enable()
+
+        if state.get("cancelled"):
+            self._log("Pull PCG: cancelled.")
+            return
+        err = state.get("error")
+        if err is not None:
+            self._log(f"Pull PCG failed: {err}")
+            QMessageBox.warning(self, "Pull PCG", f"Download failed: {err}")
+            return
+        pcg = state.get("pcg")
         if pcg is None:
             QMessageBox.warning(self, "Pull PCG", f"{os.path.basename(remote_path)} is not a "
                                 "recognizable Kronos .pcg file.")
@@ -2924,8 +3277,17 @@ class LibrarianShellWindow(QDialog):
             return
         label = locs[0].label() if len(locs) == 1 else f"{len(locs)} item(s)"
         scope = self._undo.begin(f"Pulled {label} into Merge Window")
-        for loc in locs:
-            self._pull_pcg_address_into_merge((loc.obj_type, loc.bank, loc.number))
+        # One merge_cache.json rewrite for the whole selection, not one per address:
+        # pulling a whole bank is 128 pulls, each of which used to rewrite (and fsync)
+        # the entire staging snapshot.
+        self._suppress_tree_refresh = True
+        try:
+            with self._merge.defer_saves():
+                for loc in locs:
+                    self._pull_pcg_address_into_merge((loc.obj_type, loc.bank, loc.number))
+        finally:
+            self._suppress_tree_refresh = False
+        self._refresh_merge_tree()
         if scope is not None:
             scope.dispose()
 
@@ -3033,19 +3395,28 @@ class LibrarianShellWindow(QDialog):
             self._log("Drop onto a specific Local Library slot or bank.")
             return
 
-        if len(entries) == 1:
-            # Single item: "place exactly here" (PaneInteraction.cs's own single-vs-multi
-            # drag distinction — see module docstring).
-            self._place_merge_entry_at(entries[0], dst_bank, dst_number)
-        else:
-            # Multi-select: auto-fill sequentially starting at the drop target.
-            seq_pairs = [self._seq_item_from_merge(e) for e in entries]
-            seq_items = [p[0] for p in seq_pairs]
-            hash_by_label = {it.label: e.content_hash for it, e in zip(seq_items, entries)}
-            unresolved_by_label = {it.label: unresolved for it, unresolved in seq_pairs if unresolved}
-            self._run_sequential_fill(seq_items, obj_type, dst_bank, dst_number,
-                                      hash_by_label, unresolved_by_label,
-                                      force_overwrite=self._chk_force_overwrite.isChecked())
+        try:
+            if len(entries) == 1:
+                # Single item: "place exactly here" (PaneInteraction.cs's own single-vs-multi
+                # drag distinction — see module docstring).
+                self._place_merge_entry_at(entries[0], dst_bank, dst_number)
+            else:
+                # Multi-select: auto-fill sequentially starting at the drop target.
+                seq_pairs = [self._seq_item_from_merge(e) for e in entries]
+                seq_items = [p[0] for p in seq_pairs]
+                hash_by_label = {it.label: e.content_hash for it, e in zip(seq_items, entries)}
+                unresolved_by_label = {it.label: unresolved for it, unresolved in seq_pairs if unresolved}
+                # One deferred batch: the sequential path writes every placement's index
+                # save and merge-cache rewrite individually otherwise.
+                with self._index.defer_saves(), self._merge.defer_saves(), \
+                        self._oplog.defer_appends():
+                    self._run_sequential_fill(seq_items, obj_type, dst_bank, dst_number,
+                                              hash_by_label, unresolved_by_label,
+                                              force_overwrite=self._chk_force_overwrite.isChecked())
+        except LocalLibraryWriteError as e:
+            log.error("drop placement aborted: %s", e)
+            self._log(f"Placement failed: {e}")
+            self._report_storage_failure("Placement", str(e))
 
     def _on_merge_dropped(self, source_pane: str, items: List[tuple],
                          target_item: Optional[QTreeWidgetItem]) -> None:
@@ -3053,9 +3424,15 @@ class LibrarianShellWindow(QDialog):
             self._log("The Merge Window only accepts drops from the PCG pane.")
             return
         scope = self._undo.begin(f"Pulled {len(items)} item(s) into Merge Window")
-        for it in items:
-            if it and it[0] == "pcg":
-                self._pull_pcg_address_into_merge((it[1], it[2], it[3]))
+        self._suppress_tree_refresh = True
+        try:
+            with self._merge.defer_saves():
+                for it in items:
+                    if it and it[0] == "pcg":
+                        self._pull_pcg_address_into_merge((it[1], it[2], it[3]))
+        finally:
+            self._suppress_tree_refresh = False
+        self._refresh_merge_tree()
         if scope is not None:
             scope.dispose()
 
@@ -3159,9 +3536,10 @@ class LibrarianShellWindow(QDialog):
     def _refresh_enable(self) -> None:
         connected = self._service is not None and self._service.can_dump
         auto_filling = getattr(self, "_auto_fill_active", False)
+        pulling_pcg = getattr(self, "_pcg_pull_active", False)
         self._btn_sync.setEnabled(connected and not self._busy and not auto_filling)
         self._btn_commit.setEnabled(connected and not self._busy and not auto_filling)
-        self._btn_pull_kronos.setEnabled(not self._busy and not auto_filling)
+        self._btn_pull_kronos.setEnabled(not self._busy and not auto_filling and not pulling_pcg)
         self._btn_paste.setEnabled(not self._batch_clip.is_empty and not self._busy)
         # Single owner of this button's enabled state (matches CanAutoFill() => !IsBusy
         # && !IsAutoFilling in the C# source) - _auto_fill_to_library/_auto_fill_finish
@@ -3397,7 +3775,16 @@ class LibrarianShellWindow(QDialog):
                     pending_bank_type_change=self._index.get_pending_bank_type_change,
                     write_bank_type_change=self._write_bank_type_change)
             self._index.save()
+        except LocalLibraryWriteError as e:
+            # Distinguished from a generic failure because the fix is completely
+            # different: nothing is wrong with the Kronos or the plan, the local
+            # data directory just can't be written to.
+            log.error("Sync/Commit aborted on a local write: %s", e)
+            self._sync_done.emit(None, None, None,
+                                 f"Sync/Commit stopped — could not write the local library: {e}")
+            return
         except Exception as e:  # pragma: no cover - defensive
+            log.exception("Sync/Commit crashed")
             self._sync_done.emit(None, None, None, f"Sync/Commit crashed: {e}")
             return
         status = "DONE" if not plan.is_refusable else "REFUSED"
