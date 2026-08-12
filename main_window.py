@@ -1469,6 +1469,14 @@ class MainWindow(QMainWindow):
         self._vu_device_id: Optional[str] = None
 
         self._setup_ui()
+
+        # Persistence failures (read-only share, disk full, permissions) are
+        # logged and swallowed by design so a failed cache write can't take down
+        # a sync — but swallowed alone means the app silently stops saving
+        # anything. Surface the first of each kind in the notification area.
+        # storage calls this from whatever thread failed, so hop to the GUI one.
+        storage.on_write_failure = lambda msg: QTimer.singleShot(
+            0, self, lambda m=msg: self._notify(m, is_error=True))
         self._wire_actions()
         self._apply_settings_to_ui()
 

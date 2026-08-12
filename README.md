@@ -104,6 +104,32 @@ python main.py
 
 On **macOS**, if `pip install pyside6` fails with a wheel error, ensure you are inside an activated virtual environment before installing.
 
+### Where your data is kept
+
+Settings, caches and the Local Library live in the per-user application-data
+directory, **not** next to the program — so the app can be run from a network
+share, a read-only image or a USB stick without any of those becoming a
+requirement:
+
+| Platform | Location |
+|---|---|
+| Windows | `%LOCALAPPDATA%\KronosScreenRemote` |
+| macOS | `~/Library/Application Support/KronosScreenRemote` |
+| Linux | `$XDG_CONFIG_HOME/KronosScreenRemote` (else `~/.config/KronosScreenRemote`) |
+
+To put it somewhere else — a shared library on a file server, a portable install
+on the same stick as the program — pass `--data-dir <path>` or set the
+`KRONOS_DATA_DIR` environment variable:
+
+```bash
+python main.py --data-dir /mnt/kronos/library
+```
+
+An existing install that already keeps its data in the program folder carries on
+using it, unchanged, for as long as that folder stays writable. If it stops being
+writable, the app moves to the per-user directory and offers, once, to copy the
+old data across (the originals are never deleted).
+
 ---
 
 ## Project Structure

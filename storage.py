@@ -1,15 +1,19 @@
 """
 JSON persistence — settings, palette overrides, palette locks, calibration data.
 
-Data directory: same folder as the running script on first launch, then
-falls back to ~/.config/KronosScreenRemote/ if the script dir is not writable
-(typical install on Linux/Mac).
+Data directory (see _data_dir): an explicit --data-dir/KRONOS_DATA_DIR override,
+else the per-user application-data directory for the platform, else the script's
+own folder for a legacy install that already has data there and can still write
+it. The program may live anywhere — a network share, a read-only image, a USB
+stick — without that dictating where its state goes.
 """
 from __future__ import annotations
 import logging
 import json
 import os
 import pathlib
+import shutil
+import sys
 import threading
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -50,6 +54,39 @@ def _atomic_write(path: pathlib.Path, data: bytes, mode: Optional[int] = None):
         raise
 
 
+# ── Write-failure reporting ────────────────────────────────────────────────────
+# Every saver in this module logs its failure and carries on, which is the right
+# behaviour (a failed cache write must not take down a sync) but on its own it is
+# invisible: the app quietly stops persisting anything and the user finds out when
+# their work isn't there. These let the UI say so once.
+
+_write_failure_lock = threading.Lock()
+_write_failures_seen: Set[str] = set()
+#: Number of save failures this session, and the most recent message.
+write_failure_count = 0
+last_write_failure: Optional[str] = None
+#: Set by the UI: called (from whatever thread failed) the FIRST time a given
+#: kind of save fails, never repeatedly for the same kind.
+on_write_failure = None
+
+
+def _note_write_failure(what: str, exc: BaseException) -> None:
+    global write_failure_count, last_write_failure
+    msg = f"{what} could not be saved: {exc}"
+    log.error("%s", msg)
+    with _write_failure_lock:
+        write_failure_count += 1
+        last_write_failure = msg
+        first = what not in _write_failures_seen
+        _write_failures_seen.add(what)
+        cb = on_write_failure
+    if first and cb is not None:
+        try:
+            cb(msg)
+        except Exception:                     # noqa: BLE001 - reporting must not throw
+            log.exception("write-failure callback raised")
+
+
 def atomic_write_text(path: pathlib.Path, text: str, encoding: str = "utf-8",
                       mode: Optional[int] = None):
     """Replace `path`'s contents with `text`, or leave the old file untouched."""
@@ -63,60 +100,237 @@ def atomic_write_bytes(path: pathlib.Path, data: bytes, mode: Optional[int] = No
 
 _data_dir_cache: Optional[pathlib.Path] = None
 _data_dir_lock = threading.Lock()
-#: Set when _data_dir() had to fall back off the script directory. The UI reads it
-#: at startup: silently using a DIFFERENT data directory means the user's settings,
-#: caches and whole local library appear to be empty, which needs saying out loud.
+_data_dir_override: Optional[pathlib.Path] = None
+#: Set when _data_dir() could not use the legacy script-directory location. The UI
+#: reads it at startup: silently using a DIFFERENT data directory means the user's
+#: settings, caches and whole local library appear to be empty, which needs saying
+#: out loud — and offering to migrate (see legacy_data_dir / migrate_data_dir).
 data_dir_fallback_reason: Optional[str] = None
 
+#: The names _data_dir() looks for to decide whether a directory is already
+#: serving as somebody's data directory. Only these; a directory that merely
+#: contains the source tree does not qualify.
+_DATA_MARKERS = ("settings.json", "local_library", "name_cache.json", "cal_data.json")
 
-def _really_writable(d: pathlib.Path) -> bool:
-    """os.access(W_OK) is a permission-BIT check, not a can-I-write check.
+# Environment variable form of --data-dir, for launchers/shortcuts that can't
+# easily pass arguments.
+_DATA_DIR_ENV = "KRONOS_DATA_DIR"
 
-    On the network shares this app is routinely run from (a CIFS/SMB mount of the
-    project directory, the app itself launched from another machine) the mode
-    bits advertise write access that the server then refuses, or the share is
-    mounted read-only, or it has gone away entirely. os.access says yes and every
-    subsequent write raises — which is how an unwritable data directory used to
-    surface as a mid-operation crash instead of a fallback. Probe with a real
-    create/write/unlink instead."""
+
+def _write_probe(d: pathlib.Path) -> bool:
+    """Can this directory actually take the writes this module performs?
+
+    os.access(W_OK) is a permission-BIT check, not a can-I-write check, and even
+    a successful create is not enough: EVERY save here is _atomic_write, whose
+    last step is os.replace() over an ALREADY-EXISTING file. On an SMB/CIFS share
+    those are separate permissions — creating a new file can succeed while
+    replacing an existing one fails with "Access is denied" (observed 2026-08-12
+    on a Windows client writing to \\\\host\\share, which is what made the app
+    log 'name cache save failed' on a loop). So the probe performs the whole
+    sequence: create, replace-over-existing, delete."""
     probe = d / f".kronos_write_probe.{os.getpid()}"
+    tmp = d / f".kronos_write_probe.{os.getpid()}.tmp"
     try:
         with open(probe, "wb") as f:
             f.write(b"0")
+        with open(tmp, "wb") as f:
+            f.write(b"1")
+        os.replace(tmp, probe)       # the operation every save actually depends on
         return True
     except OSError:
         return False
     finally:
+        for p in (tmp, probe):
+            try:
+                p.unlink()
+            except OSError:
+                pass
+
+
+# Kept as the historical name used elsewhere in the app.
+_really_writable = _write_probe
+
+
+def _user_data_dir() -> pathlib.Path:
+    """The platform's per-user application-data directory.
+
+    This is the default, and it is deliberately independent of where the program
+    was launched from: the app must run from a network share, a read-only image
+    or a USB stick without any of those becoming a requirement."""
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
+        root = pathlib.Path(base) if base else pathlib.Path.home() / "AppData" / "Local"
+        return root / "KronosScreenRemote"
+    if sys.platform == "darwin":
+        return pathlib.Path.home() / "Library" / "Application Support" / "KronosScreenRemote"
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    root = pathlib.Path(xdg) if xdg else pathlib.Path.home() / ".config"
+    return root / "KronosScreenRemote"
+
+
+def _has_data(d: pathlib.Path) -> bool:
+    try:
+        return any((d / name).exists() for name in _DATA_MARKERS)
+    except OSError:
+        return False
+
+
+def set_data_dir_override(path) -> None:
+    """Point every persisted file at `path` (the --data-dir argument).
+
+    Must be called before anything reads or writes; _data_dir() caches its
+    answer for the process."""
+    global _data_dir_override, _data_dir_cache
+    with _data_dir_lock:
+        _data_dir_override = pathlib.Path(path).expanduser()
+        _data_dir_cache = None
+
+
+def data_dir_notice() -> Optional[str]:
+    """data_dir_fallback_reason, but guaranteed resolved.
+
+    The module-level variable is only populated once _data_dir() has actually
+    run, so reading it directly before any storage access always yields None.
+    Callers that want the answer should ask for it through here."""
+    _data_dir()
+    return data_dir_fallback_reason
+
+
+def legacy_data_dir() -> Optional[pathlib.Path]:
+    """The script-directory location, if it holds data that the currently
+    resolved data directory doesn't. None when there is nothing to migrate —
+    which is the normal case, and which is also what makes the migration offer
+    a ONE-time event: once the active directory has data of its own, this stops
+    reporting anything, so the prompt doesn't come back every launch."""
+    active = _data_dir()
+    script_dir = pathlib.Path(__file__).resolve().parent
+    if script_dir == active or not _has_data(script_dir) or _has_data(active):
+        return None
+    return script_dir
+
+
+def _resolve_data_dir() -> Tuple[pathlib.Path, Optional[str]]:
+    """(directory, reason-to-tell-the-user-or-None). Order:
+
+      1. --data-dir / KRONOS_DATA_DIR — an explicit choice always wins.
+      2. The per-user application-data directory, once it exists or once there
+         is nothing to inherit from the script directory.
+      3. The script directory, but ONLY for a legacy install that already keeps
+         its data there AND can still be written to. That case is preserved so
+         an existing setup (including a deliberately shared library on a file
+         server) keeps working untouched; it is never created fresh.
+
+    A directory that fails the write probe is never returned, whichever rule
+    selected it."""
+    script_dir = pathlib.Path(__file__).resolve().parent
+    user_dir = _user_data_dir()
+
+    chosen = _data_dir_override
+    if chosen is None:
+        env = os.environ.get(_DATA_DIR_ENV, "").strip()
+        if env:
+            chosen = pathlib.Path(env).expanduser()
+    if chosen is not None:
         try:
-            probe.unlink()
+            chosen.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            raise SystemExit(f"data directory {chosen} cannot be created: {e}")
+        if not _write_probe(chosen):
+            raise SystemExit(f"data directory {chosen} is not writable")
+        return chosen, None
+
+    legacy_in_use = _has_data(script_dir) and not _has_data(user_dir)
+    if legacy_in_use:
+        if _write_probe(script_dir):
+            return script_dir, None
+        reason = (f"{script_dir} holds this app's data but can no longer be written to "
+                  f"(read-only or permission-denied share?). Now using {user_dir}.")
+    else:
+        reason = None
+
+    try:
+        user_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        log.error("per-user data dir %s is unusable: %s", user_dir, e)
+    if _write_probe(user_dir):
+        return user_dir, reason
+
+    # Last resort: somewhere writable beats refusing to start. Whatever this
+    # process manages to save is better than losing every setting it changes.
+    # Resolved WITHOUT scratch_dir(), which calls back into _data_dir() and would
+    # deadlock on _data_dir_lock from here.
+    import tempfile
+    for base in (pathlib.Path(tempfile.gettempdir()), pathlib.Path.home()):
+        fallback = base / "KronosScreenRemote"
+        try:
+            fallback.mkdir(parents=True, exist_ok=True)
         except OSError:
-            pass
+            continue
+        if _write_probe(fallback):
+            return fallback, (f"Neither {script_dir} nor {user_dir} is writable — using "
+                              f"{fallback} for this session.")
+    raise SystemExit(
+        "No writable location for application data. Tried "
+        f"{script_dir}, {user_dir}, the system temp directory and {pathlib.Path.home()}. "
+        f"Pass --data-dir <path> (or set {_DATA_DIR_ENV}) to choose one explicitly.")
 
 
 def _data_dir() -> pathlib.Path:
-    """Resolved once per process — the probe costs a file create, and every
-    persisted file in the app routes through here."""
+    """Resolved once per process — the probe costs a few file operations, and
+    every persisted file in the app routes through here."""
     global _data_dir_cache, data_dir_fallback_reason
     if _data_dir_cache is not None:
         return _data_dir_cache
     with _data_dir_lock:
         if _data_dir_cache is not None:
             return _data_dir_cache
-        script_dir = pathlib.Path(__file__).resolve().parent
-        if _really_writable(script_dir):
-            _data_dir_cache = script_dir
-            return _data_dir_cache
-        cfg = pathlib.Path.home() / ".config" / "KronosScreenRemote"
-        try:
-            cfg.mkdir(parents=True, exist_ok=True)
-        except OSError as e:
-            log.error("fallback data dir %s is also unusable: %s", cfg, e)
-        data_dir_fallback_reason = (
-            f"{script_dir} is not writable — settings and the local library are being "
-            f"read from and written to {cfg} instead.")
-        log.warning("%s", data_dir_fallback_reason)
-        _data_dir_cache = cfg
+        resolved, reason = _resolve_data_dir()
+        if reason:
+            data_dir_fallback_reason = reason
+            log.warning("%s", reason)
+        _data_dir_cache = resolved
+        log.info("data directory: %s", resolved)
         return _data_dir_cache
+
+
+#: What migrate_data_dir() copies — this app's persisted state, nothing else.
+#: Every name here is a real target of _path()/local_library_dir()/backup_dir();
+#: keep it in step with them when a new persisted file is added.
+_MIGRATE_NAMES = (
+    "settings.json", "name_cache.json", "cal_data.json", "dumped_banks.json",
+    "setlist_cache.json", "category_names_cache.json", "palette_override.json",
+    "palette_lock.json", "local_library", "librarian_backups",
+)
+
+
+def migrate_data_dir(src: pathlib.Path, progress=None) -> Tuple[int, List[str]]:
+    """Copy an existing data directory's contents into the active one.
+
+    Copies only this app's own files (see _MIGRATE_NAMES) — the script directory
+    doubles as the source tree in a legacy install, and nobody wants .py files
+    copied into their application-data folder. Never deletes from `src`: the
+    original stays exactly as it was, so a migration that turns out to be
+    unwanted costs nothing. Returns (files copied, per-item error strings)."""
+    dst = _data_dir()
+    copied = 0
+    errors: List[str] = []
+    for name in _MIGRATE_NAMES:
+        s = src / name
+        if not s.exists():
+            continue
+        d = dst / name
+        try:
+            if progress is not None:
+                progress(name)
+            if s.is_dir():
+                shutil.copytree(s, d, dirs_exist_ok=True)
+                copied += sum(1 for _ in s.rglob("*") if _.is_file())
+            else:
+                shutil.copy2(s, d)
+                copied += 1
+        except OSError as e:
+            errors.append(f"{name}: {e}")
+    return copied, errors
 
 
 def scratch_dir() -> pathlib.Path:
@@ -318,7 +532,7 @@ def save_settings(s: AppSettings):
         # stream handshake requires it), so keep it unreadable to other users.
         atomic_write_text(_path("settings.json"), json.dumps(root, indent=2), mode=0o600)
     except Exception as e:
-        log.error("settings save failed: %s", e)
+        _note_write_failure("Settings", e)
 
 
 def export_settings(s: AppSettings, path: str):
@@ -440,7 +654,7 @@ def save_cal(mesh: CalMesh, dots: List[CalBiasDot]):
         }
         atomic_write_text(_path("cal_data.json"), json.dumps(root, indent=2))
     except Exception as e:
-        log.error("calibration save failed: %s", e)
+        _note_write_failure("Calibration data", e)
 
 
 # ── Program/Combi name cache ────────────────────────────────────────────────
@@ -488,7 +702,7 @@ def save_names(cache_key: str, names: List[CachedName]):
             ]
             atomic_write_text(p, json.dumps(root, indent=2))
     except Exception as e:
-        log.error("name cache save failed: %s", e)
+        _note_write_failure("Program/Combi name cache", e)
 
 
 # ── Dumped-bank ledger ───────────────────────────────────────────────────────
@@ -529,7 +743,7 @@ def save_dumped_banks(cache_key: str, banks: Set[Tuple[int, int]]):
             root[cache_key] = sorted(f"{t}:{b:02x}" for t, b in banks)
             atomic_write_text(p, json.dumps(root, indent=2))
     except Exception as e:
-        log.error("dumped-bank ledger save failed: %s", e)
+        _note_write_failure("Dumped-bank ledger", e)
 
 
 # ── Category names cache (GlobalBody.ReadCategoryNames) ────────────────────
@@ -577,7 +791,7 @@ def save_category_names(cache_key: str, names: dict):
             root[cache_key] = names
             atomic_write_text(p, json.dumps(root, indent=2))
     except Exception as e:
-        log.error("category-name cache save failed: %s", e)
+        _note_write_failure("Category-name cache", e)
 
 
 # ── Set List cache ───────────────────────────────────────────────────────────
@@ -634,4 +848,4 @@ def save_setlists(cache_key: str, setlists: Dict[int, SetListData]):
             }
             atomic_write_text(p, json.dumps(root, indent=2))
     except Exception as e:
-        log.error("set-list cache save failed: %s", e)
+        _note_write_failure("Set-list cache", e)
