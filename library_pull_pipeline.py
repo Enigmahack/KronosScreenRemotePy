@@ -134,6 +134,11 @@ class PullResult:
     banks_checked: int
     objects_fetched: int
     conflicts: int
+    #: True when `cancel` asked the sweep to stop before it had visited every
+    #: bank. Whatever WAS pulled is fully applied and its bank baselines are
+    #: advanced — a cancelled pull is a short pull, never a corrupt one — but the
+    #: caller must not report it as a completed sync.
+    cancelled: bool = False
 
 
 def all_banks() -> List[BankRef]:
@@ -180,6 +185,7 @@ def _extract_display_name(body: bytes) -> str:
 def pull(index: LocalLibraryIndex, blobs: BlobStore,
          get_live_digest: GetLiveDigest, get_bank_objects: GetBankObjects,
          full: bool = False, progress: Optional[Callable[[str], None]] = None,
+         cancel: Optional[Callable[[], bool]] = None,
          ) -> PullResult:
     """Digest every registry bank, diff via plan_pull (lazy by default, or
     force everything when full=True), pull each changed bank's objects, and
@@ -190,11 +196,25 @@ def pull(index: LocalLibraryIndex, blobs: BlobStore,
     bank-wide conflict check). Advances bank_digest_baseline for every bank
     actually pulled -- does NOT call index.save(); that's the caller's job
     (mirrors LocalLibraryCache.Save being an explicit, separate call in the
-    C# pipeline too)."""
+    C# pipeline too).
+
+    `cancel`, when given, is polled between banks; returning True stops the
+    sweep at the next bank boundary and sets PullResult.cancelled. A full sync
+    is minutes of instrument round-trips, so the caller (the Librarian window)
+    needs a way to abandon one when its window closes -- without that, the
+    sweep kept talking to the instrument, and its progress callback kept firing
+    into a deleted window. Bank granularity, not object granularity: a
+    half-applied bank whose digest baseline had already advanced would look
+    fully pulled on the next sync."""
+    cancelled = False
     persisted = dict(index.bank_digest_baseline)
     fresh: Dict[str, str] = {}
     no_digest: List[str] = []
     for b in all_banks():
+        if cancel is not None and cancel():
+            # Nothing has been written yet; report an empty, cancelled pull
+            # rather than a plan built from a partial digest scan.
+            return PullResult(0, 0, 0, cancelled=True)
         d = get_live_digest(b.bank_key)
         if d:
             fresh[b.bank_key] = d
@@ -220,7 +240,12 @@ def pull(index: LocalLibraryIndex, blobs: BlobStore,
 
     fetched = 0
     conflicts = 0
+    banks_done = 0
     for bank_ref in plan.banks_to_fetch:
+        if cancel is not None and cancel():
+            cancelled = True
+            break
+        banks_done += 1
         if progress is not None:
             display = _OBJ_TYPE_DISPLAY.get(bank_ref.obj_type, "")
             bank_label = _bank_display_label(bank_ref.obj_type, bank_ref.bank)
@@ -259,7 +284,7 @@ def pull(index: LocalLibraryIndex, blobs: BlobStore,
         if fresh_hex is not None:
             index.set_bank_digest_baseline(bank_ref.obj_type, bank_ref.bank, fresh_hex)
 
-    return PullResult(len(plan.banks_to_fetch), fetched, conflicts)
+    return PullResult(banks_done, fetched, conflicts, cancelled=cancelled)
 
 
 # ── Self-test (python library_pull_pipeline.py) ─────────────────────────────

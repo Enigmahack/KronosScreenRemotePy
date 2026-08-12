@@ -853,13 +853,19 @@ class _PaneTreeWidget(QTreeWidget):
         self.setDropIndicatorShown(accepts_drop)
 
     def leaf_payloads(self) -> List[tuple]:
-        """Every currently-selected item's UserRole payload (skips bank/root nodes, which
-        carry either no payload or a distinct "_bank"-tagged one, not this pane's own leaf
-        tag)."""
+        """Every currently-selected LEAF's UserRole payload.
+
+        Header rows carry distinct tags ("local_bank"/"pcg_bank"/"local_root"),
+        never this pane's own leaf tag, so matching on the pane name skips them —
+        which is what every drop handler downstream already assumed. Previously
+        this returned whatever payload a row had and relied on those handlers to
+        filter; the header tags are now load-bearing (the Local pane's type roots
+        gained one so their expansion state survives a rebuild), so the filter
+        belongs here."""
         out: List[tuple] = []
         for item in self.selectedItems():
             data = item.data(0, Qt.ItemDataRole.UserRole)
-            if data is not None:
+            if data is not None and tuple(data)[0] == self._pane:
                 out.append(tuple(data))
         return out
 
@@ -963,6 +969,11 @@ class LibrarianShellWindow(QDialog):
         self._dot_icon_cache: Dict[Tuple[bool, Optional[bool]], QIcon] = {}
 
         self._busy = False
+        # Worker-thread lifetime — see the "Worker-thread lifetime" section near
+        # _start_sync for why a window that can be deleted mid-sync needs these.
+        self._closed = False
+        self._sync_cancel = threading.Event()
+        self._sync_thread_running = False
         self._pcg_pull_active = False   # an FTP PCG pull is in flight (see _open_pcg_from_kronos)
         self._auto_fill_active = False
         self._auto_fill_scope: Optional[object] = None
@@ -1526,24 +1537,56 @@ class LibrarianShellWindow(QDialog):
 
     # ── Tree population (Qt glue over the pure _group_* helpers) ────────────
 
-    def _local_leaf_icon(self, obj_type: int, entry: LocalIndexEntry) -> Optional[QIcon]:
-        """Port of the LocalNodeTemplate's two-dot scheme (req 6): dot 1 (red) = edited
-        locally / conflicted; dot 2 (green=OK / red=missing) = dependency completeness for
-        a dirty Combi/Set List. Painted as a small DecorationRole pixmap so both dots can
-        carry their own color (a plain QTreeWidgetItem has one foreground per row)."""
-        dot1 = False
+    def _local_leaf_flags(self, obj_type: int, entry: LocalIndexEntry
+                          ) -> Tuple[bool, Optional[bool]]:
+        """Port of the LocalNodeTemplate's two-dot scheme (req 6) as raw flags:
+        dot 1 (red) = edited locally / conflicted; dot 2 (green=OK / red=missing)
+        = dependency completeness for a dirty Combi/Set List.
+
+        Returned as flags rather than a painted icon so the bank and object-type
+        header rows can roll the same signal up (see _rollup_dot2) instead of
+        each level re-deriving it."""
+        dot1 = bool(entry.is_dirty or entry.conflicted)
         dot2: Optional[bool] = None   # None = no dot; True = green; False = red
-        if entry.is_dirty or entry.conflicted:
-            dot1 = True
         if entry.is_dirty and obj_type in (OBJ_COMBI, OBJ_SET_LIST):
             body = self._blobs.get(entry.current_hash)
             if body is not None:
                 dot2 = depscan.has_all_dependencies(self._local_resolver, obj_type, body)
-        if not dot1 and dot2 is None:
-            return None
-        # There are only four distinct glyphs; painting a fresh QPixmap per ROW
-        # meant thousands of pixmap allocations per tree rebuild.
-        return self._dot_icon(dot1, dot2)
+        return dot1, dot2
+
+    @staticmethod
+    def _rollup_dot2(acc: Optional[bool], value: Optional[bool]) -> Optional[bool]:
+        """Combine child dependency-completeness dots for a header row.
+
+        "No dirty Combi/Set List under here" stays None (no dot at all); one
+        child with a MISSING dependency makes the whole header red, because that
+        is the thing the user has to go and find. Green only when every dirty
+        child that has an opinion is satisfied."""
+        if value is None:
+            return acc
+        if acc is None:
+            return value
+        return acc and value
+
+    def _apply_header_change_marker(self, item: QTreeWidgetItem, base_label: str,
+                                    changed: int, dot1: bool,
+                                    dot2: Optional[bool]) -> None:
+        """Put the same two-dot glyph, plus a changed-item count, on a bank or
+        object-type header row.
+
+        Local Library trees are hundreds of rows deep across a dozen collapsed
+        banks, so a change that only ever marked its own leaf was invisible until
+        the user expanded the right bank looking for it. The header carries the
+        rolled-up state so the branch containing an edit is obvious while closed."""
+        if changed <= 0 and dot2 is None:
+            item.setText(0, base_label)
+            return
+        item.setText(0, f"{base_label}  ({changed} changed)" if changed > 0 else base_label)
+        if dot1 or dot2 is not None:
+            item.setIcon(0, self._dot_icon(dot1, dot2))
+            item.setToolTip(0, f"{changed} changed item(s) in here"
+                            + ("" if dot2 is not False else
+                               " — some have missing dependencies"))
 
     def _dot_icon(self, dot1: bool, dot2: Optional[bool]) -> QIcon:
         key = (dot1, dot2)
@@ -1573,18 +1616,50 @@ class LibrarianShellWindow(QDialog):
         elif entry.conflicted:
             item.setBackground(0, QBrush(QColor("#C08A20")))   # ConflictHighlightBrush (amber)
         # Read-only rows are styled at their own construction site (grey foreground).
+    def _expanded_local_keys(self) -> set:
+        """Payload keys of every currently-expanded Local pane header row.
+
+        Only the two header levels (object-type roots and their bank children) —
+        leaves are never expandable, and descending into them would walk the
+        whole library on every refresh for nothing."""
+        keys = set()
+        tree = self._tree_local
+        for i in range(tree.topLevelItemCount()):
+            root = tree.topLevelItem(i)
+            if not root.isExpanded():
+                continue
+            data = root.data(0, Qt.ItemDataRole.UserRole)
+            if data is not None:
+                keys.add(tuple(data))
+            for j in range(root.childCount()):
+                bank = root.child(j)
+                if not bank.isExpanded():
+                    continue
+                bdata = bank.data(0, Qt.ItemDataRole.UserRole)
+                if bdata is not None:
+                    keys.add(tuple(bdata))
+        return keys
+
     def _refresh_local_tree(self) -> None:
         if self._suppress_tree_refresh:
             return
         tree = self._tree_local
-        expanded = {tree.topLevelItem(i).text(0) for i in range(tree.topLevelItemCount())
-                    if tree.topLevelItem(i).isExpanded()}
+        # Expansion state is keyed on each row's stable payload, not its TEXT:
+        # header labels now carry a "(n changed)" suffix that moves as edits are
+        # made, and keying on the label would collapse the tree out from under
+        # the user every time a count changed. Banks are remembered too, so the
+        # branch someone opened to look at a change is still open after it.
+        expanded = self._expanded_local_keys()
         tree.clear()
         self._deps_list.clear()
         groups = _group_local(self._index.entries)
         for obj_type in _ROOT_ORDER:
             root = QTreeWidgetItem([_ROOT_LABEL[obj_type]])
+            root.setData(0, Qt.ItemDataRole.UserRole, ("local_root", obj_type))
             tree.addTopLevelItem(root)
+            root_changed = 0
+            root_dot1 = False
+            root_dot2: Optional[bool] = None
             by_bank = groups.get(obj_type, {})
             # Read-only factory (GM/g) Program banks are browsable rows fed by the shared
             # name sweep, never writable — port of ObjectTypeRegistry.ReadOnlyBanks + the
@@ -1607,7 +1682,10 @@ class LibrarianShellWindow(QDialog):
                     root.addChild(ro_parent)
             for bank in sorted(by_bank):
                 items = by_bank[bank]
+                bank_label = ""
                 if obj_type == OBJ_SET_LIST:
+                    # Set Lists are a flat pseudo-bank: their leaves hang straight
+                    # off the type header, which therefore rolls them up directly.
                     parent = root
                 else:
                     bank_label = _bank_label(obj_type, bank)
@@ -1621,16 +1699,33 @@ class LibrarianShellWindow(QDialog):
                     # _find_first_free_slot (see _handle_merge_to_local_drop).
                     parent.setData(0, Qt.ItemDataRole.UserRole, ("local_bank", obj_type, bank))
                     root.addChild(parent)
+                bank_changed = 0
+                bank_dot1 = False
+                bank_dot2: Optional[bool] = None
                 for number, key, entry in items:
                     label = f"{entry.display_name or '(unnamed)'}  {number:03d}"
                     leaf = QTreeWidgetItem([label])
                     leaf.setData(0, Qt.ItemDataRole.UserRole, ("local", obj_type, bank, number))
-                    icon = self._local_leaf_icon(obj_type, entry)
-                    if icon is not None:
-                        leaf.setIcon(0, icon)
+                    dot1, dot2 = self._local_leaf_flags(obj_type, entry)
+                    if dot1 or dot2 is not None:
+                        leaf.setIcon(0, self._dot_icon(dot1, dot2))
                     self._style_local_item(leaf, entry)
                     parent.addChild(leaf)
-            if root.text(0) in expanded:
+                    if dot1:
+                        bank_changed += 1
+                        bank_dot1 = True
+                    bank_dot2 = self._rollup_dot2(bank_dot2, dot2)
+                if parent is not root:
+                    self._apply_header_change_marker(parent, bank_label, bank_changed,
+                                                     bank_dot1, bank_dot2)
+                    if ("local_bank", obj_type, bank) in expanded:
+                        parent.setExpanded(True)
+                root_changed += bank_changed
+                root_dot1 = root_dot1 or bank_dot1
+                root_dot2 = self._rollup_dot2(root_dot2, bank_dot2)
+            self._apply_header_change_marker(root, _ROOT_LABEL[obj_type], root_changed,
+                                             root_dot1, root_dot2)
+            if ("local_root", obj_type) in expanded:
                 root.setExpanded(True)
         # Empty-state hint: the tree shows only once the library actually holds
         # something — an empty library shows the Sync hint in its place instead, so
@@ -3115,7 +3210,7 @@ class LibrarianShellWindow(QDialog):
                 result["ok"] = True
             except Exception as e:                    # noqa: BLE001 - reported to the user
                 result["error"] = e
-            self._pcg_pull_step.emit("connected")
+            self._safe_emit(self._pcg_pull_step, "connected")
 
         # Connected before the thread starts: the emit is queued to this (GUI)
         # thread, so it is delivered once exec() enters the event loop even if the
@@ -3163,11 +3258,11 @@ class LibrarianShellWindow(QDialog):
                         raise _TransferCancelled()
                     chunks.append(b)
                     received[0] += len(b)
-                    self._pcg_pull_progress.emit(received[0], expected)
+                    self._safe_emit(self._pcg_pull_progress, received[0], expected)
 
                 worker.retrieve(remote_path, on_chunk)
                 data = b"".join(chunks)
-                self._pcg_pull_progress.emit(len(data), len(data))
+                self._safe_emit(self._pcg_pull_progress, len(data), len(data))
                 # Parse on this thread too — a 20 MB PCG scan is not free, and it is
                 # the caller's whole reason for waiting.
                 state["pcg"] = open_pcg(data)
@@ -3180,7 +3275,7 @@ class LibrarianShellWindow(QDialog):
                     worker.disconnect()
                 except Exception:                     # noqa: BLE001 - best effort teardown
                     pass
-                self._pcg_pull_step.emit("done")
+                self._safe_emit(self._pcg_pull_step, "done")
 
         self._pcg_pull_progress.connect(dlg.set_progress)
         self._pcg_pull_step.connect(dlg.done_step)
@@ -3719,6 +3814,73 @@ class LibrarianShellWindow(QDialog):
         docstring), not this adapter."""
         return self._service.change_program_bank_type(bank, to_exi) == 0
 
+    # ── Worker-thread lifetime ───────────────────────────────────────────────
+    # A Sync/Commit is minutes of instrument round-trips on a background thread,
+    # and this window is created WA_DeleteOnClose (see main_window._open_librarian
+    # _shell) — so closing it destroys the C++ object out from under a running
+    # worker. Two separate consequences, both handled here:
+    #   * the worker's `self._progress.emit(...)` raised "RuntimeError: Signal
+    #     source has been deleted" and killed the thread mid-sync, and
+    #   * more seriously, until it died the worker carried on WRITING OBJECTS TO
+    #     THE INSTRUMENT for a window the user had already closed.
+    # _sync_cancel stops the pipeline at its next bank/entry boundary; the
+    # _emit_* helpers make any report that still arrives harmless.
+
+    def _sync_cancelled(self) -> bool:
+        """changeset_sync/library_pull_pipeline `cancel` callable."""
+        return self._sync_cancel.is_set()
+
+    def _emit_progress(self, message: str) -> None:
+        self._safe_emit(self._progress, message)
+
+    def _emit_sync_done(self, pull_result, plan, result, status: str) -> None:
+        self._safe_emit(self._sync_done, pull_result, plan, result, status)
+
+    def _safe_emit(self, signal, *args) -> None:
+        """Emit only while this window still exists.
+
+        `_closed` is a plain Python attribute deliberately: once Qt has deleted
+        the underlying C++ object the PySide wrapper is still a live Python
+        object (the worker's closure holds a reference), so ordinary attributes
+        keep working while every Qt operation raises. The RuntimeError catch
+        covers the remaining race — the window can be destroyed between the
+        check and the emit."""
+        if self._closed:
+            return
+        try:
+            signal.emit(*args)
+        except RuntimeError:
+            self._closed = True
+
+    def closeEvent(self, event) -> None:   # noqa: N802 - Qt override
+        """Cancel any in-flight Sync/Commit before letting the window go.
+
+        Confirms first: a Sync is a hardware operation the user may not realise
+        is still running, and silently abandoning it half-written is worse than
+        asking. Answering "no" keeps the window open and the sync running. The
+        worker is NOT joined — it can be sitting in a multi-second SysEx timeout,
+        and blocking the GUI thread on that is the freeze this whole round of
+        work is about; it unwinds on its own at the next cancel check, and the
+        _emit_* guards make its remaining reports no-ops."""
+        if self._sync_thread_running and not self._sync_cancelled():
+            answer = QMessageBox.question(
+                self, "Close Librarian",
+                "A Sync/Commit is still running.\n\n"
+                "Close anyway? It will stop at the next safe point. Objects "
+                "already written to the Kronos stay written; the rest keep their "
+                "pending changes for the next Sync.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No)
+            if answer != QMessageBox.StandardButton.Yes:
+                event.ignore()
+                return
+            self._sync_cancel.set()
+            log.info("Librarian closed with a sync in flight — cancelling")
+        self._closed = True
+        self._sync_cancel.set()      # also stops the Auto-Fill-free background paths
+        self._auto_fill_timer.stop()
+        super().closeEvent(event)
+
     def _start_sync(self) -> None:
         if self._busy or not self._require_connected():
             return
@@ -3727,6 +3889,8 @@ class LibrarianShellWindow(QDialog):
         self._set_busy(True)
         self._status_label.setText("Syncing...")
         full_sync = self._chk_force_full.isChecked()
+        self._sync_cancel.clear()
+        self._sync_thread_running = True
         threading.Thread(target=self._sync_worker, args=(full_sync,), daemon=True,
                          name="LibShellSync").start()
 
@@ -3737,6 +3901,8 @@ class LibrarianShellWindow(QDialog):
             return
         self._set_busy(True)
         self._status_label.setText("Committing...")
+        self._sync_cancel.clear()
+        self._sync_thread_running = True
         threading.Thread(target=self._sync_worker, args=(False,), daemon=True,
                          name="LibShellCommit").start()
 
@@ -3747,11 +3913,12 @@ class LibrarianShellWindow(QDialog):
                     self._index, self._blobs, self._clipboard,
                     get_live_digest=self._get_live_digest, get_bank_objects=self._get_bank_objects,
                     resolver=self._local_resolver, write_to_hardware=self._write_to_hardware,
-                    progress=lambda m: self._progress.emit(m),
+                    progress=self._emit_progress,
                     full=full_sync,
                     get_live_bank_type=self._get_live_bank_type,
                     pending_bank_type_change=self._index.get_pending_bank_type_change,
-                    write_bank_type_change=self._write_bank_type_change)
+                    write_bank_type_change=self._write_bank_type_change,
+                    cancel=self._sync_cancelled)
                 # EDITABLE_BANKS (what sync_library pulls bodies for) excludes the GM/g
                 # read-only Program banks — their names come from SysExService's own
                 # cache instead (fed by passive dump-traffic capture, or this explicit
@@ -3761,10 +3928,12 @@ class LibrarianShellWindow(QDialog):
                 # redundant "Sync All") had no C# equivalent and were removed as such —
                 # but the GM/g name sweep itself is still needed, just triggered from
                 # the one Sync action that remains.
-                if self._service is not None and self._service.can_dump:
+                if (self._service is not None and self._service.can_dump
+                        and not self._sync_cancelled()):
                     self._service.sync_names(
-                        progress=lambda done, total, names: self._progress.emit(
-                            f"Bulk-dumping Program names {done}/{total}..."))
+                        progress=lambda done, total, names: self._emit_progress(
+                            f"Bulk-dumping Program names {done}/{total}..."),
+                        cancel_event=self._sync_cancel)
             else:
                 pull_result = None
                 plan, result = commit_changes(
@@ -3773,22 +3942,32 @@ class LibrarianShellWindow(QDialog):
                     write_to_hardware=self._write_to_hardware,
                     get_live_bank_type=self._get_live_bank_type,
                     pending_bank_type_change=self._index.get_pending_bank_type_change,
-                    write_bank_type_change=self._write_bank_type_change)
+                    write_bank_type_change=self._write_bank_type_change,
+                    cancel=self._sync_cancelled)
             self._index.save()
         except LocalLibraryWriteError as e:
             # Distinguished from a generic failure because the fix is completely
             # different: nothing is wrong with the Kronos or the plan, the local
             # data directory just can't be written to.
             log.error("Sync/Commit aborted on a local write: %s", e)
-            self._sync_done.emit(None, None, None,
+            self._emit_sync_done(None, None, None,
                                  f"Sync/Commit stopped — could not write the local library: {e}")
             return
         except Exception as e:  # pragma: no cover - defensive
             log.exception("Sync/Commit crashed")
-            self._sync_done.emit(None, None, None, f"Sync/Commit crashed: {e}")
+            self._emit_sync_done(None, None, None, f"Sync/Commit crashed: {e}")
             return
-        status = "DONE" if not plan.is_refusable else "REFUSED"
-        self._sync_done.emit(pull_result, plan, result, status)
+        finally:
+            # The window may have been closed (and its C++ object destroyed)
+            # while this ran; the thread itself must still finish tidily.
+            self._sync_thread_running = False
+        if result is not None and result.cancelled:
+            status = "CANCELLED"
+        elif plan.is_refusable:
+            status = "REFUSED"
+        else:
+            status = "DONE"
+        self._emit_sync_done(pull_result, plan, result, status)
 
     def _on_sync_done(self, pull_result, plan: Optional[ChangesetPlan], result: Optional[SyncResult],
                        status: str) -> None:
@@ -3800,13 +3979,19 @@ class LibrarianShellWindow(QDialog):
         # A successful Sync/Commit wrote local state to hardware — the undo stack can't
         # roll a hardware write back, so it's cleared (mirrors LibrarianShellViewModel
         # clearing the stack after a push).
-        if result is not None and result.written + result.erased > 0 and not result.failed:
+        if (result is not None and result.written + result.erased > 0
+                and not result.failed and not result.cancelled):
             self._undo.clear()
             self._on_undo_stack_changed()
         if pull_result is not None:
             self._log(f"Pull: {pull_result.banks_checked} bank(s) checked, "
                      f"{pull_result.objects_fetched} object(s) fetched, "
-                     f"{pull_result.conflicts} new conflict(s).")
+                     f"{pull_result.conflicts} new conflict(s)."
+                     + (" (cancelled early)" if pull_result.cancelled else ""))
+        if result is not None and result.cancelled:
+            self._log("Sync/Commit was cancelled. Anything already written to the "
+                      "Kronos is written; everything else still has its pending "
+                      "changes and will go out on the next Sync.")
         for w in plan.warnings:
             self._log("  ! " + w)
         if result is not None:

@@ -184,6 +184,11 @@ class SyncResult:
     deleted: int = 0      # local-only deletes removed (never existed on hardware)
     failed: int = 0       # entries where write_to_hardware returned False
     reformatted: int = 0  # whole-bank func-0x7C type changes successfully applied
+    #: True when `cancel` stopped the push early. Entries already written are
+    #: recorded as written (they really are on the instrument); the rest were
+    #: never attempted, so they stay dirty and a later Commit picks them up.
+    #: Distinct from `failed`, which means the instrument REJECTED a write.
+    cancelled: bool = False
 
 
 RecordSuccess = Callable[[ChangesetEntry], None]
@@ -379,7 +384,8 @@ def build_changeset(index: LocalLibraryIndex, blobs: BlobStore,
 def execute_changeset(plan: ChangesetPlan, index: LocalLibraryIndex,
                        write_to_hardware: WriteToHardware,
                        write_bank_type_change: Optional[WriteBankTypeChange] = None,
-                       record_success: Optional[RecordSuccess] = None) -> SyncResult:
+                       record_success: Optional[RecordSuccess] = None,
+                       cancel: Optional[Callable[[], bool]] = None) -> SyncResult:
     """Port of SyncPipeline.PushAsync's execution half (RecordPushSuccesses).
     A refusable plan writes nothing (mirrors PushAsync's own
     `if (plan.IsRefusable) return` before ever touching hardware). Each entry
@@ -393,9 +399,21 @@ def execute_changeset(plan: ChangesetPlan, index: LocalLibraryIndex,
     still be about to be rewritten by this same plan), and a single False
     from write_bank_type_change ABORTS THE ENTIRE CALL — no plan.entries are
     written at all, matching ApplyMoveAsync's own all-or-nothing gate at that
-    step (unlike a rejected object write, which only skips that one entry)."""
+    step (unlike a rejected object write, which only skips that one entry).
+
+    `cancel`, when given, is polled BEFORE each hardware write; returning True
+    stops the push there. Checked before rather than after so a cancelled push
+    never issues one more write than the user asked for — the Librarian window
+    closing mid-Commit must stop sending objects to the instrument, not merely
+    stop reporting about them. Entries already written stay written and have
+    their baselines advanced; the remainder are left dirty for the next Commit.
+    A reformat sequence, once begun, still runs to completion: 0x7C erases a
+    whole bank, so abandoning it half-done would leave banks erased that this
+    plan was about to refill."""
     if plan.is_refusable:
         return SyncResult()
+    if cancel is not None and cancel():
+        return SyncResult(cancelled=True)
 
     reformatted = 0
     if plan.bank_type_changes:
@@ -412,7 +430,11 @@ def execute_changeset(plan: ChangesetPlan, index: LocalLibraryIndex,
     written = 0
     erased = 0
     failed = 0
+    cancelled = False
     for entry in plan.entries:
+        if cancel is not None and cancel():
+            cancelled = True
+            break
         ok = write_to_hardware(entry.obj_type, entry.bank, entry.number, entry.body)
         if not ok:
             failed += 1
@@ -432,13 +454,17 @@ def execute_changeset(plan: ChangesetPlan, index: LocalLibraryIndex,
                     idx_entry.pending_delete = False
 
     deleted = 0
-    for k in plan.local_only_deletes:
-        obj_type, bank, number = _parse_key(k)
-        index.delete(obj_type, bank, number)
-        deleted += 1
+    if not cancelled:
+        # Local-only deletes touch no hardware, but they are still part of "this
+        # plan was applied". Skipping them on cancel keeps the plan replayable in
+        # full by the next Commit instead of half-consumed.
+        for k in plan.local_only_deletes:
+            obj_type, bank, number = _parse_key(k)
+            index.delete(obj_type, bank, number)
+            deleted += 1
 
     return SyncResult(written=written, erased=erased, deleted=deleted, failed=failed,
-                       reformatted=reformatted)
+                       reformatted=reformatted, cancelled=cancelled)
 
 
 # ── Entry points ─────────────────────────────────────────────────────────────
@@ -452,14 +478,15 @@ def commit_changes(index: LocalLibraryIndex, blobs: BlobStore,
                     get_live_bank_type: Optional[GetLiveBankType] = None,
                     pending_bank_type_change: Optional[PendingBankTypeChange] = None,
                     write_bank_type_change: Optional[WriteBankTypeChange] = None,
+                    cancel: Optional[Callable[[], bool]] = None,
                     ) -> Tuple[ChangesetPlan, SyncResult]:
     """Push-only — port of SyncPipeline.CommitChangesAsync. Deliberately
     skips pulling; pushes straight against whatever bank-digest baseline is
-    already on record."""
+    already on record. `cancel` is forwarded to execute_changeset (see there)."""
     plan = build_changeset(index, blobs, clipboard, get_live_digest, resolver,
                             get_live_bank_type, pending_bank_type_change)
     result = execute_changeset(plan, index, write_to_hardware, write_bank_type_change,
-                                record_success)
+                                record_success, cancel=cancel)
     return plan, result
 
 
@@ -472,16 +499,24 @@ def sync_library(index: LocalLibraryIndex, blobs: BlobStore,
                   get_live_bank_type: Optional[GetLiveBankType] = None,
                   pending_bank_type_change: Optional[PendingBankTypeChange] = None,
                   write_bank_type_change: Optional[WriteBankTypeChange] = None,
+                  cancel: Optional[Callable[[], bool]] = None,
                   ) -> Tuple[PullResult, ChangesetPlan, SyncResult]:
     """Pull, then push — port of SyncPipeline.SyncLibraryAsync. See module
     docstring's pull-vs-commit invariant note for why the ordering is pull
-    THEN push, not the reverse."""
+    THEN push, not the reverse.
+
+    A cancelled pull skips the push entirely: the push half decides what to
+    write from the baselines the pull half just established, so pushing against
+    a half-refreshed picture of the instrument is exactly the state this
+    pipeline's ordering exists to avoid."""
     pull_result = pull_pipeline.pull(index, blobs, get_live_digest, get_bank_objects,
-                                     full=full, progress=progress)
+                                     full=full, progress=progress, cancel=cancel)
+    if pull_result.cancelled:
+        return pull_result, ChangesetPlan(), SyncResult(cancelled=True)
     plan, result = commit_changes(index, blobs, clipboard, get_live_digest, resolver,
                                   write_to_hardware, record_success,
                                   get_live_bank_type, pending_bank_type_change,
-                                  write_bank_type_change)
+                                  write_bank_type_change, cancel=cancel)
     return pull_result, plan, result
 
 
