@@ -24,13 +24,12 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont, QIcon
 from PySide6.QtWidgets import QApplication, QInputDialog, QMessageBox
 
-import storage
-import theme as T
-from app_settings import AppSettings
-from main_window import MainWindow
+import Models.storage as storage
+import Utils.theme as T
+from Models.app_settings import AppSettings
+from Views.main_window import MainWindow
 # Trigger lazy Qt key-name build after Qt is initialised
-import models
-
+import Models.models as models
 log = logging.getLogger(__name__)
 
 
