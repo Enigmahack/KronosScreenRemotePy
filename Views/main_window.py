@@ -27,6 +27,8 @@ import threading
 import time
 from typing import Dict, List, Optional, Set, Tuple
 
+import numpy as np
+
 from PySide6.QtCore import (
     QEvent, QPoint, QPointF, QRect, QRectF, Qt, QTimer, Signal, Slot,
 )
@@ -312,7 +314,13 @@ class FrameWidget(QWidget):
         self._lut: list[int] = [0] * 256               # packed 0xRRGGBB — UNADJUSTED (detection/editor)
         self._cached_ct: list[int] = []                # base (unadjusted) QImage color table
         self._display_ct: list[int] = []               # tone/saturation-adjusted table (display only)
-        self._ct_dirty = True                          # rebuild color table on next frame
+        self._ct_dirty = True                          # rebuild color table/lut16 on next frame
+        # RGB565LE (Nautilus) path: no palette, so pixels are tone-adjusted via a
+        # precomputed 65536-entry word->0xFFRRGGBB LUT instead of an indexed color
+        # table (mirrors C# MainWindow.Streaming.cs's RebuildLut Rgb565Le branch).
+        self._stream_fmt = 0        # 0 = INDEX8 (palette), 1 = RGB565LE
+        self._lut16: Optional[np.ndarray] = None
+        self._raw_frame_bytes: Optional[bytes] = None  # last RGB565 frame, for live adjust re-apply
         # Image adjustments applied to the *displayed* frame. The detection LUT
         # (_lut) stays unadjusted so boot black-detection isn't skewed by them.
         self._img_bri   = 0
@@ -414,18 +422,62 @@ class FrameWidget(QWidget):
             for c in self._cached_ct
         ]
 
+    def _rebuild_lut16(self):
+        """Precompute RGB565LE word → packed 0xFFRRGGBB for the Nautilus path.
+        Nautilus reports no palette (docs/api.md §4.5), so there is nothing to
+        override — just decode + tone-adjust, replicating high bits when
+        expanding 5/6-bit channels to 8-bit (mirrors C# RebuildLut's Rgb565Le
+        branch and MainWindow.Streaming.cs's decode note)."""
+        curve = np.frombuffer(
+            image_adjust.build_tone_curve(self._img_bri, self._img_con, self._img_gam),
+            dtype=np.uint8)
+        sat = image_adjust.saturation_factor(self._img_sat)
+        v  = np.arange(65536, dtype=np.uint32)
+        r5 = (v >> 11) & 0x1F
+        g6 = (v >> 5) & 0x3F
+        b5 = v & 0x1F
+        r = ((r5 << 3) | (r5 >> 2)).astype(np.uint8)
+        g = ((g6 << 2) | (g6 >> 4)).astype(np.uint8)
+        b = ((b5 << 3) | (b5 >> 2)).astype(np.uint8)
+        rr, gg, bb = curve[r], curve[g], curve[b]
+        if sat != 1.0:
+            rf = rr.astype(np.float32); gf = gg.astype(np.float32); bf = bb.astype(np.float32)
+            luma = 0.299 * rf + 0.587 * gf + 0.114 * bf
+            rr = np.clip(luma + (rf - luma) * sat + 0.5, 0, 255).astype(np.uint32)
+            gg = np.clip(luma + (gf - luma) * sat + 0.5, 0, 255).astype(np.uint32)
+            bb = np.clip(luma + (bf - luma) * sat + 0.5, 0, 255).astype(np.uint32)
+        else:
+            rr = rr.astype(np.uint32); gg = gg.astype(np.uint32); bb = bb.astype(np.uint32)
+        self._lut16 = np.uint32(0xFF000000) | (rr << 16) | (gg << 8) | bb
+
+    def _apply_rgb565(self, raw: bytes):
+        """Build the pixmap for a raw RGB565LE frame using the current lut16."""
+        arr16 = np.frombuffer(raw, dtype="<u2", count=self._fw * self._fh)
+        rgb32 = self._lut16[arr16]
+        img = QImage(rgb32.tobytes(), self._fw, self._fh, self._fw * 4, QImage.Format_RGB32)
+        self._frame_image  = img
+        self._frame_pixmap = self._sharpen_and_pixmap(img)
+
+    def _sharpen_and_pixmap(self, rgb_img: QImage) -> QPixmap:
+        """Optional unsharp-mask (spatial, once per frame) on an RGB32 image."""
+        if self._img_sharp > 0:
+            rgb_img = image_adjust.sharpen_rgb32(
+                rgb_img, self._img_sharp / 100.0 * image_adjust.MAX_SHARPEN)
+        return QPixmap.fromImage(rgb_img)
+
     def _make_pixmap(self, indexed_img: QImage) -> QPixmap:
         """Indexed8 → RGB32, then optional unsharp-mask (spatial, once per frame)."""
-        rgb = indexed_img.convertToFormat(QImage.Format_RGB32)
-        if self._img_sharp > 0:
-            rgb = image_adjust.sharpen_rgb32(
-                rgb, self._img_sharp / 100.0 * image_adjust.MAX_SHARPEN)
-        return QPixmap.fromImage(rgb)
+        return self._sharpen_and_pixmap(indexed_img.convertToFormat(QImage.Format_RGB32))
 
-    def set_frame_size(self, width: int, height: int):
-        """Adopt the dimensions the stream handshake negotiated. Anything
-        non-positive keeps the current size — QImage would read out of bounds
-        on a zero-size buffer, and a bad handshake shouldn't reshape the UI."""
+    def set_frame_size(self, width: int, height: int, stream_fmt: int = 0):
+        """Adopt the dimensions/pixel format the stream handshake negotiated.
+        Non-positive dimensions keep the current size — QImage would read out
+        of bounds on a zero-size buffer, and a bad handshake shouldn't reshape
+        the UI."""
+        self._stream_fmt = stream_fmt
+        self._ct_dirty = True
+        self._lut16 = None
+        self._raw_frame_bytes = None
         if width <= 0 or height <= 0:
             return
         if (width, height) == (self._fw, self._fh):
@@ -436,27 +488,36 @@ class FrameWidget(QWidget):
 
     def on_frame(self, raw: bytes, palette: list[PaletteEntry],
                  overrides: Dict[int, PaletteEntry], locked: Set[int]):
-        """Called from main thread with a new 8bpp frame and current palette."""
+        """Called from main thread with a new frame: 8bpp indexed (Kronos) or
+        raw RGB565LE pixels (Nautilus; no palette)."""
+        bpp = 2 if self._stream_fmt == 1 else 1
         # QImage does not copy or bounds-check `raw`: a buffer shorter than
-        # _fw*_fh is an out-of-bounds read that segfaults the process the
+        # _fw*_fh*bpp is an out-of-bounds read that segfaults the process the
         # moment Qt paints the last row. Drop the frame instead.
-        if len(raw) < self._fw * self._fh:
+        if len(raw) < self._fw * self._fh * bpp:
             return
         self._overrides = overrides
         self._locked    = locked
-        if self._ct_dirty or not self._cached_ct:
-            self._rebuild_color_tables(palette, overrides)
-            self._ct_dirty = False
-        img = QImage(raw, self._fw, self._fh, self._fw, QImage.Format_Indexed8)
-        img.setColorTable(self._display_ct)
-        self._frame_image  = img
-        self._frame_pixmap = self._make_pixmap(img)
+        if self._stream_fmt == 1:
+            self._raw_frame_bytes = raw
+            if self._ct_dirty or self._lut16 is None:
+                self._rebuild_lut16()
+                self._ct_dirty = False
+            self._apply_rgb565(raw)
+        else:
+            if self._ct_dirty or not self._cached_ct:
+                self._rebuild_color_tables(palette, overrides)
+                self._ct_dirty = False
+            img = QImage(raw, self._fw, self._fh, self._fw, QImage.Format_Indexed8)
+            img.setColorTable(self._display_ct)
+            self._frame_image  = img
+            self._frame_pixmap = self._make_pixmap(img)
         self.update()
 
     def set_palette(self, palette: list[PaletteEntry],
                     overrides: Dict[int, PaletteEntry]):
         """Rebuild LUT after palette or override change without new frame."""
-        if not self._frame_image:
+        if self._stream_fmt == 1 or not self._frame_image:
             return
         self._rebuild_color_tables(palette, overrides)
         self._ct_dirty  = False
@@ -469,11 +530,17 @@ class FrameWidget(QWidget):
         """Update image-adjust params and re-render the current frame (live)."""
         self._img_bri, self._img_con, self._img_gam = brightness, contrast, gamma
         self._img_sat, self._img_sharp = saturation, sharpen
-        self._rebuild_display_ct()
-        if self._frame_image and self._display_ct:
-            self._frame_image.setColorTable(self._display_ct)
-            self._frame_pixmap = self._make_pixmap(self._frame_image)
-            self.update()
+        if self._stream_fmt == 1:
+            self._rebuild_lut16()
+            if self._raw_frame_bytes is not None:
+                self._apply_rgb565(self._raw_frame_bytes)
+                self.update()
+        else:
+            self._rebuild_display_ct()
+            if self._frame_image and self._display_ct:
+                self._frame_image.setColorTable(self._display_ct)
+                self._frame_pixmap = self._make_pixmap(self._frame_image)
+                self.update()
 
     # ── Paint ──────────────────────────────────────────────────────────────────
 
@@ -2249,11 +2316,22 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         # Per-frame black checks. Both thresholds are answered from a single
         # scan of the frame — the black fraction doesn't depend on which
         # threshold it's compared against.
+        #
+        # INDEX8 only: every pixel-based detector below assumes one palette-index
+        # byte per pixel at stride _fw and a Kronos-shaped reference image. On
+        # Nautilus (RGB565LE, 2 bytes/pixel, different geometry) they would read
+        # meaningless data — never run them there (mirrors C# MainWindow.
+        # Streaming.cs's `_bpp == 8 only` gate). The daemon's STATE poll is
+        # format-agnostic and remains authoritative for both device families.
         frame_w_px = self._frame_w._fw
-        black_frac = frame_black_fraction(raw, self._frame_w._lut)
-        mostly_black = black_frac > 0.90
-        likely_boot = black_frac > self._settings.boot_screen_threshold / 100.0
-        self._frame_w._frame_is_likely_boot_screen = likely_boot
+        is_index8 = self._frame_w._stream_fmt == 0
+        if is_index8:
+            black_frac = frame_black_fraction(raw, self._frame_w._lut)
+            mostly_black = black_frac > 0.90
+            likely_boot = black_frac > self._settings.boot_screen_threshold / 100.0
+            self._frame_w._frame_is_likely_boot_screen = likely_boot
+        else:
+            mostly_black = True   # suppresses the pixel-detector block below
 
         # Pixel detection is only a FALLBACK (req 13): the daemon's STATE poll is the
         # authoritative mode/boot source. While the daemon is answering (or still
@@ -2261,7 +2339,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         # when the daemon STATE path has never produced a reading (daemon process
         # missing / network to ctrl port failing).
         daemon_authoritative = self._daemon_state_ok
-        if not mostly_black:
+        if is_index8 and not mostly_black:
             # Help overlay is still pixel-detected (the daemon exposes no help signal).
             if self._mode_detector.has_any():
                 help_now = self._mode_detector.is_help_active(raw, frame_w_px, self._frame_w._lut)
@@ -2311,7 +2389,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
 
         # Boot load-phase detection - advance phases strictly forward (fallback only;
         # the daemon's own progress bar is composited server-side into the stream).
-        if self._boot_phase and not daemon_authoritative:
+        if is_index8 and self._boot_phase and not daemon_authoritative:
             detected = self._boot_detector.identify(raw, frame_w_px, self._frame_w._lut)
             if (detected == BootPhase.FINISHING
                     and self._boot_load_phase < BootPhase.FINISHING):
@@ -2404,7 +2482,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         self._receiver = rx
         self._palette  = list(rx.palette)
         self._frame_w._palette = self._palette
-        self._frame_w.set_frame_size(rx.width, rx.height)
+        self._frame_w.set_frame_size(rx.width, rx.height, rx.stream_fmt)
         rx.frame_received.connect(self._on_frame)
         rx.disconnected.connect(self._on_disconnected)
         rx.start()

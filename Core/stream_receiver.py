@@ -16,6 +16,7 @@ import select
 import socket
 import struct
 import time
+import zlib
 from typing import List, Optional
 
 from PySide6.QtCore import QThread, Signal
@@ -29,13 +30,8 @@ _MAGIC      = b"KSCR"
 _MODE_PULL  = 0x01
 _MODE_CHANGE = 0x02
 
-# Largest packet we will allocate for. `length` is an unbounded uint32 straight
-# off the wire, so a desynced stream can otherwise ask us to allocate up to 4 GiB
-# before we have any chance to reject it. Two full frames is far above any legal
-# packet (a full frame is width*height; dirty rects are strictly smaller).
-_MAX_PACKET = 2 * 1024 * 1024
-
-# Sanity bounds on the handshake's declared frame size, for the same reason.
+# Sanity bounds on the handshake's declared frame size, so a corrupt/desynced
+# stream can't make us allocate on its say-so before we've validated anything.
 _MAX_DIMENSION = 8192
 
 
@@ -169,24 +165,39 @@ class StreamReceiver(QThread):
     # ── QThread entry point ────────────────────────────────────────────────────
 
     def run(self):
+        """v3 frame envelope (docs/api.md §4.5): every frame is one self-describing
+        rect — payload_len(4) [len], then enc(1) x0(2) y0(2) w(2) h(2) data(...).
+        There is no separate "full frame" wire format in v3; a full frame is just
+        the rect (0,0,width,height) like any other. Rects accumulate into a
+        persistent canvas (master_frame) and the whole canvas is emitted after
+        each one, mirroring StreamReceiver.cs's V3FrameDecoder.ApplyRect.
+        """
         self._stop = False
         log.debug("run() started, mode=%s, format=%s, bpp=%d", self._mode,
                   "RGB565" if self.stream_fmt == 1 else "INDEX8", self.bytes_per_pixel)
         interval    = (1.0 / self._fps) if self._mode == _MODE_PULL and self._fps > 0 else 0.0
         hdr_buf     = bytearray(4)
-        sub_hdr     = bytearray(4)
         frame_size  = self.width * self.height * self.bytes_per_pixel
-        master_frame = bytearray(frame_size)  # persistent reconstructed frame
-        rle_scratch  = bytearray(frame_size)  # receive scratch for RLE payload (daemon ensures < frame_size)
+        master_frame = bytearray(frame_size)   # persistent reconstructed canvas
+        # Generous bound on a rect payload — a raw uncompressed full frame plus
+        # PackBits' worst-case ~1/128 expansion, with headroom (mirrors
+        # StreamReceiver.cs's MaxRectPayload).
+        max_payload  = 9 + frame_size + 16 * 1024
+        payload_buf  = bytearray(max_payload)
+        decode_buf   = bytearray(frame_size)   # scratch for packbits/zlib-decoded rect data
+        first_pull_request = True
 
         try:
             while not self._stop:
                 if self._mode == _MODE_PULL:
+                    # 0xFF = full frame (first request only), 0xFE = delta since the
+                    # last frame this client received (every later poll).
                     try:
-                        self._sock.sendall(b"\xff")
+                        self._sock.sendall(b"\xff" if first_pull_request else b"\xfe")
                     except OSError as e:
                         log.info("stream ended: pull sendall failed: %s", e)
                         break
+                    first_pull_request = False
                     if not _poll(self._sock, 5.0):
                         log.info("stream ended: no frame within 5s of a pull request")
                         break
@@ -199,52 +210,78 @@ class StreamReceiver(QThread):
                     break
                 length = struct.unpack_from("<I", hdr_buf)[0]
 
-                if length == frame_size:
-                    # Full frame — receive into master_frame, emit immutable copy.
-                    if not _recv_into(self._sock, master_frame, frame_size):
-                        log.info("stream ended: full frame recv failed mid-transfer")
-                        break
-                    self.frame_received.emit(bytes(master_frame))
-                elif 4 < length < frame_size:
-                    # Dirty rect with PackBits RLE — decode into master_frame, emit copy.
-                    if not _recv_into(self._sock, sub_hdr, 4):
-                        log.info("stream ended: sub-header recv failed")
-                        break
-                    first_row = sub_hdr[0] | (sub_hdr[1] << 8)
-                    row_count = sub_hdr[2] | (sub_hdr[3] << 8)
-                    rle_bytes = length - 4
-                    raw_bytes = row_count * self.width * self.bytes_per_pixel
-                    if raw_bytes > frame_size or first_row + row_count > self.height:
-                        log.warning("stream ended: dirty rect out of bounds "
-                                    "(raw=%d frame=%d row0=%d rows=%d h=%d bpp=%d)",
-                                    raw_bytes, frame_size, first_row, row_count, self.height, self.bytes_per_pixel)
-                        break
-                    rle_view = memoryview(rle_scratch)[:rle_bytes]
-                    if not _recv_into(self._sock, rle_view, rle_bytes):
-                        log.info("stream ended: rle payload recv failed")
-                        break
-                    off = first_row * self.width * self.bytes_per_pixel
-                    got = _packbits_expand(rle_view, rle_bytes, master_frame, off, raw_bytes)
-                    if got != raw_bytes:
-                        log.warning("stream ended: packbits expand produced %d bytes, expected %d",
-                                    got, raw_bytes)
-                        break
-                    self.frame_received.emit(bytes(master_frame))
-                elif length <= _MAX_PACKET:
-                    # Unknown packet — drain and skip.
-                    log.debug("unknown packet length=%d — draining", length)
-                    data = _recv_all(self._sock, length)
-                    if data is None:
-                        log.info("stream ended: unknown packet drain failed")
-                        break
-                    self.frame_received.emit(data)
-                else:
-                    # Beyond any legal packet — the stream has desynced, and
-                    # draining would mean allocating up to 4 GiB on the
-                    # sender's say-so. Drop the connection instead.
-                    log.warning("stream ended: packet length %d exceeds the %d-byte limit",
-                                length, _MAX_PACKET)
+                if length < 9 or length > max_payload:
+                    log.warning("stream ended: invalid v3 frame length %d (max %d)",
+                                length, max_payload)
                     break
+
+                payload = memoryview(payload_buf)[:length]
+                if not _recv_into(self._sock, payload, length):
+                    log.info("stream ended: rect payload recv failed")
+                    break
+
+                enc = payload[0]
+                x0  = payload[1] | (payload[2] << 8)
+                y0  = payload[3] | (payload[4] << 8)
+                w   = payload[5] | (payload[6] << 8)
+                h   = payload[7] | (payload[8] << 8)
+
+                if w == 0 or h == 0:
+                    # Explicit "nothing changed" reply (0xFE poll only) — canvas
+                    # untouched, nothing new to emit.
+                    if self._mode == _MODE_PULL and interval > 0:
+                        time.sleep(interval)
+                    continue
+
+                if x0 + w > self.width or y0 + h > self.height:
+                    log.warning("stream ended: v3 rect out of bounds "
+                                "(x0=%d y0=%d w=%d h=%d frame=%dx%d)",
+                                x0, y0, w, h, self.width, self.height)
+                    break
+
+                data     = payload[9:]
+                data_len = length - 9
+                decoded_len = w * h * self.bytes_per_pixel
+
+                if enc == 0:  # raw
+                    if data_len != decoded_len:
+                        log.warning("stream ended: raw rect length mismatch "
+                                    "(got %d, want %d)", data_len, decoded_len)
+                        break
+                    decoded = data
+                elif enc == 1:  # PackBits
+                    dview = memoryview(decode_buf)[:decoded_len]
+                    got = _packbits_expand(data, data_len, decode_buf, 0, decoded_len)
+                    if got != decoded_len:
+                        log.warning("stream ended: packbits expand produced %d bytes, "
+                                    "expected %d", got, decoded_len)
+                        break
+                    decoded = dview
+                elif enc == 2:  # zlib / RFC 1950 deflate
+                    try:
+                        out = zlib.decompress(bytes(data))
+                    except zlib.error as e:
+                        log.warning("stream ended: zlib inflate failed: %s", e)
+                        break
+                    if len(out) != decoded_len:
+                        log.warning("stream ended: zlib rect length mismatch "
+                                    "(got %d, want %d)", len(out), decoded_len)
+                        break
+                    decoded = out
+                else:
+                    log.warning("stream ended: unknown rect encoding %d", enc)
+                    break
+
+                # Composite row-by-row: the rect's own width may be narrower than
+                # the canvas, so a single contiguous copy would misalign rows.
+                src_pitch = w * self.bytes_per_pixel
+                dst_pitch = self.width * self.bytes_per_pixel
+                for row in range(h):
+                    s = row * src_pitch
+                    d = (y0 + row) * dst_pitch + x0 * self.bytes_per_pixel
+                    master_frame[d:d + src_pitch] = decoded[s:s + src_pitch]
+
+                self.frame_received.emit(bytes(master_frame))
 
                 if self._mode == _MODE_PULL and interval > 0:
                     time.sleep(interval)
