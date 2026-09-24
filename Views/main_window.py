@@ -1507,6 +1507,11 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         self._zoom_on      = False
         self._zoom_level   = settings.zoom_default_level
         self._mirror_state = False
+        # Set True on connect when the daemon's stream reports RGB565LE (Nautilus).
+        # Gates commands with no confirmed Nautilus wire behavior — see
+        # _ctrl_send_bank and MIRROR_ON's docs/api.md note (mirror is VGA-only,
+        # Nautilus has no display behind the panel to mirror to).
+        self._is_nautilus  = False
         self._perf_window  = None   # PerformanceWindow singleton (lazy)
         self._file_manager_win = None
         self._sysex_tool_win = None
@@ -1957,6 +1962,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
 
         # ── Bank select (MENU_BankSelect) ───────────────────────────────────
         bank_menu = mb.addMenu("Ban&k Select")
+        self._bank_menu = bank_menu
         self._build_bank_menu(bank_menu)
 
         # ── Help ────────────────────────────────────────────────────────────
@@ -1977,15 +1983,15 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         internal_menu = menu.addMenu("&Internal (A-G)")
         for letter in letters:
             a = internal_menu.addAction(letter)
-            a.triggered.connect(lambda checked, l=letter: self._ctrl_send(f"BUTTON BANK_I{l}"))
+            a.triggered.connect(lambda checked, l=letter: self._ctrl_send_bank(f"BUTTON BANK_I{l}"))
         user_menu = menu.addMenu("&User (A-G)")
         for letter in letters:
             a = user_menu.addAction(letter)
-            a.triggered.connect(lambda checked, l=letter: self._ctrl_send(f"BUTTON BANK_U{l}"))
+            a.triggered.connect(lambda checked, l=letter: self._ctrl_send_bank(f"BUTTON BANK_U{l}"))
         uuser_menu = menu.addMenu("Us&er (AA–GG)")
         for letter in letters:
             a = uuser_menu.addAction(f"{letter}{letter}")
-            a.triggered.connect(lambda checked, l=letter: self._ctrl_send(f"CHORD BANK_U{l} BANK_I{l}"))
+            a.triggered.connect(lambda checked, l=letter: self._ctrl_send_bank(f"CHORD BANK_U{l} BANK_I{l}"))
 
     # ── Action wiring ──────────────────────────────────────────────────────────
 
@@ -2484,6 +2490,10 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         self._palette  = list(rx.palette)
         self._frame_w._palette = self._palette
         self._frame_w.set_frame_size(rx.width, rx.height, rx.stream_fmt)
+        # RGB565LE only ships on Nautilus (docs/api.md §4.5) — cheapest available
+        # family signal, no extra daemon round trip needed for the gating below.
+        self._is_nautilus = (rx.stream_fmt == 1)
+        self._bank_menu.menuAction().setEnabled(not self._is_nautilus)
         rx.frame_received.connect(self._on_frame)
         rx.disconnected.connect(self._on_disconnected)
         rx.start()
@@ -2506,9 +2516,13 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         # per-tick connect/close), and a drop is re-established by the client's
         # own supervisor rather than staying down until the next user gesture.
         self._ctrl.start_persistent(self._host, self._ctrl_port)
-        # Push mirror state and screensaver timeout to daemon on every connect
+        # Push mirror state and screensaver timeout to daemon on every connect.
+        # MIRROR_ON/OFF is Kronos-only (docs/api.md: Nautilus has no VGA output
+        # behind the panel to mirror to — MIRROR_ON there just replies
+        # ERR MIRROR_UNSUPPORTED); matches C#'s OnSessionConnected family check.
         self._mirror_state = self._settings.vga_mirror_enabled
-        self._ctrl_send("MIRROR_ON" if self._mirror_state else "MIRROR_OFF")
+        if not self._is_nautilus:
+            self._ctrl_send("MIRROR_ON" if self._mirror_state else "MIRROR_OFF")
         self._ctrl_send(f"SS_TIMEOUT {self._settings.screensaver_timeout}")
         # MIDI bridge (SysEx tool / Set List viewer / name caching) — port 9875
         if self._settings.midi_monitor_enabled:
@@ -3461,6 +3475,8 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
     # ── Mirror ─────────────────────────────────────────────────────────────────
 
     def _toggle_mirror(self):
+        if self._is_nautilus:   # MIRROR_ON/OFF is Kronos-only, see _apply_new_receiver
+            return
         self._mirror_state = not self._mirror_state
         self._ctrl_send("MIRROR_ON" if self._mirror_state else "MIRROR_OFF")
 
@@ -3521,7 +3537,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         if self._settings.debug_logging != debug_before:
             _setup_logging(self._settings.debug_logging)
         if self._receiver:
-            if self._settings.vga_mirror_enabled != mirror_before:
+            if not self._is_nautilus and self._settings.vga_mirror_enabled != mirror_before:
                 self._mirror_state = self._settings.vga_mirror_enabled
                 self._ctrl_send("MIRROR_ON" if self._mirror_state else "MIRROR_OFF")
             if self._settings.screensaver_timeout != ss_before:
@@ -3616,10 +3632,22 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         dlg = CommandPalette(entries, self)
         dlg.show()
 
+    def _ctrl_send_bank(self, cmd: str):
+        """Bank Select sends Kronos front-panel scan codes with no confirmed
+        Nautilus equivalent (only ~3 of 28 tokens known) — disabled rather
+        than guessed, matching C#'s BuildCommandRegistry bank-command wrapper
+        (Views/MainWindow.xaml.cs's bank-entries loop) and its rationale
+        (docs/api.md's BUTTON section: name->code mappings mean different
+        things per device family)."""
+        if self._is_nautilus:
+            logging.debug("[cmd] '%s' disabled on Nautilus - no confirmed wire token yet", cmd)
+            return
+        self._ctrl_send(cmd)
+
     def _run_action(self, action: str):
         bank_cmd = _bank_action_cmd(action)
         if bank_cmd:
-            self._ctrl_send(bank_cmd)
+            self._ctrl_send_bank(bank_cmd)
             return
         cmds: dict = {
             f"Mode {_MODE_NAMES[i]}": (
