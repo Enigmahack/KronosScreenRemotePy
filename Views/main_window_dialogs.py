@@ -201,7 +201,7 @@ def add_testing_menu_items(main_window):
     """Add testing/debugging menu items to Tools menu."""
     if not hasattr(main_window, '_tools_menu_separator_added'):
         # Add separator and testing submenu if not already done
-        tools_menu = main_window.menuBar().menus()[3]  # Tools is the 4th menu
+        tools_menu = main_window._tools_menu
 
         tools_menu.addSeparator()
 

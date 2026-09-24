@@ -1856,7 +1856,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             self._act_sz[scale] = a
 
         # ── Tools (MENU_Tools) ──────────────────────────────────────────────
-        tools_menu = mb.addMenu("&Tools")
+        self._tools_menu = tools_menu = mb.addMenu("&Tools")
         self._act_palette = tools_menu.addAction("&Palette Editor")
         self._act_palette.setCheckable(True)
         self._act_palette.setVisible(False)  # hidden at runtime — matches C# MainWindow.xaml.cs:615
