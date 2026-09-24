@@ -124,10 +124,14 @@ class VolumeEffect(AudioEffect):
 
 
 class SimpleEqualizerEffect(AudioEffect):
-    """Simple 3-band equalizer (low, mid, high)."""
+    """Real 3-band parametric equalizer using IIR filters."""
 
-    def __init__(self):
+    def __init__(self, sample_rate: int = 44100):
         super().__init__("Equalizer")
+        self.sample_rate = sample_rate
+        self._eq = None
+        self._init_eq()
+
         self.add_parameter(EffectParameter(
             name="low",
             min_value=-12.0,
@@ -147,50 +151,46 @@ class SimpleEqualizerEffect(AudioEffect):
             default_value=0.0
         ))
 
+    def _init_eq(self):
+        """Initialize the EQ engine."""
+        try:
+            from Core.audio_dsp import ThreeBandEQ
+            self._eq = ThreeBandEQ(self.sample_rate)
+        except ImportError:
+            self._eq = None
+            log.warning("audio_dsp module not available, EQ will be disabled")
+
     def process(self, audio_data: bytes, sample_rate: int,
                 channels: int) -> bytes:
-        """Apply EQ to audio."""
-        if not self.enabled:
-            return audio_data
-
-        # Note: Full implementation would use IIR filters
-        # This is a placeholder for the architecture
-        low_gain = self._db_to_linear(self.get_parameter("low") or 0.0)
-        mid_gain = self._db_to_linear(self.get_parameter("mid") or 0.0)
-        high_gain = self._db_to_linear(self.get_parameter("high") or 0.0)
-
-        # Average the gains for now (proper implementation would use filters)
-        avg_gain = (low_gain + mid_gain + high_gain) / 3.0
-
-        if avg_gain == 1.0:
+        """Apply real IIR EQ to audio."""
+        if not self.enabled or not self._eq:
             return audio_data
 
         try:
-            output = bytearray()
-            for i in range(0, len(audio_data) - 1, 2):
-                sample = struct.unpack('<h', audio_data[i:i+2])[0]
-                sample = int(sample * avg_gain)
-                sample = max(-32768, min(32767, sample))
-                output.extend(struct.pack('<h', sample))
+            low_db = self.get_parameter("low") or 0.0
+            mid_db = self.get_parameter("mid") or 0.0
+            high_db = self.get_parameter("high") or 0.0
 
-            return bytes(output)
+            # Update EQ settings
+            self._eq.set_gains(low_db, mid_db, high_db)
+
+            # Process audio
+            return self._eq.process(audio_data)
 
         except Exception as e:
             log.error(f"Error processing EQ: {e}")
             return audio_data
 
-    @staticmethod
-    def _db_to_linear(db: float) -> float:
-        """Convert decibels to linear gain."""
-        import math
-        return math.pow(10.0, db / 20.0)
-
 
 class CompressorEffect(AudioEffect):
-    """Dynamic range compressor."""
+    """Real dynamic range compressor with envelope following."""
 
-    def __init__(self):
+    def __init__(self, sample_rate: int = 44100):
         super().__init__("Compressor")
+        self.sample_rate = sample_rate
+        self._compressor = None
+        self._init_compressor()
+
         self.add_parameter(EffectParameter(
             name="ratio",
             min_value=1.0,
@@ -204,15 +204,35 @@ class CompressorEffect(AudioEffect):
             default_value=-20.0
         ))
 
+    def _init_compressor(self):
+        """Initialize the compressor engine."""
+        try:
+            from Core.audio_dsp import SimpleCompressor
+            self._compressor = SimpleCompressor(self.sample_rate)
+        except ImportError:
+            self._compressor = None
+            log.warning("audio_dsp module not available, compressor will be disabled")
+
     def process(self, audio_data: bytes, sample_rate: int,
                 channels: int) -> bytes:
-        """Apply compression to audio."""
-        if not self.enabled:
+        """Apply real compression to audio."""
+        if not self.enabled or not self._compressor:
             return audio_data
 
-        # Compression implementation would go here
-        # For now, this is a placeholder
-        return audio_data
+        try:
+            ratio = self.get_parameter("ratio") or 4.0
+            threshold = self.get_parameter("threshold") or -20.0
+
+            # Update compressor settings
+            self._compressor.ratio = ratio
+            self._compressor.threshold = threshold
+
+            # Process audio
+            return self._compressor.process(audio_data)
+
+        except Exception as e:
+            log.error(f"Error processing compression: {e}")
+            return audio_data
 
 
 class AudioEffectChain:
@@ -272,6 +292,60 @@ class AudioEffectChain:
         return None
 
 
+class NoiseGateEffect(AudioEffect):
+    """Noise gate for removing low-level noise."""
+
+    def __init__(self, sample_rate: int = 44100):
+        super().__init__("Noise Gate")
+        self.sample_rate = sample_rate
+        self._gate = None
+        self._init_gate()
+
+        self.add_parameter(EffectParameter(
+            name="threshold",
+            min_value=-80.0,
+            max_value=0.0,
+            default_value=-40.0
+        ))
+        self.add_parameter(EffectParameter(
+            name="hold",
+            min_value=1.0,
+            max_value=100.0,
+            default_value=10.0
+        ))
+
+    def _init_gate(self):
+        """Initialize the noise gate engine."""
+        try:
+            from Core.audio_dsp import NoiseGate
+            self._gate = NoiseGate(self.sample_rate)
+        except ImportError:
+            self._gate = None
+            log.warning("audio_dsp module not available, noise gate will be disabled")
+
+    def process(self, audio_data: bytes, sample_rate: int,
+                channels: int) -> bytes:
+        """Apply noise gate to audio."""
+        if not self.enabled or not self._gate:
+            return audio_data
+
+        try:
+            threshold = self.get_parameter("threshold") or -40.0
+            hold_ms = self.get_parameter("hold") or 10.0
+
+            # Update gate settings
+            self._gate.threshold = threshold
+            self._gate.hold_ms = hold_ms
+            self._gate.hold_samples = int(self.sample_rate * hold_ms / 1000.0)
+
+            # Process audio
+            return self._gate.process(audio_data)
+
+        except Exception as e:
+            log.error(f"Error processing noise gate: {e}")
+            return audio_data
+
+
 # Global effect chain
 _audio_effect_chain: Optional[AudioEffectChain] = None
 
@@ -285,4 +359,5 @@ def get_audio_effects() -> AudioEffectChain:
         _audio_effect_chain.add_effect(VolumeEffect())
         _audio_effect_chain.add_effect(SimpleEqualizerEffect())
         _audio_effect_chain.add_effect(CompressorEffect())
+        _audio_effect_chain.add_effect(NoiseGateEffect())
     return _audio_effect_chain
