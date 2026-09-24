@@ -21,6 +21,7 @@ class MainWindowDialogMixin:
     """Mixin to add dialog functionality to MainWindow."""
 
     def __init__(self):
+        super().__init__()
         self._input_tester = None
         self._button_injector = None
         self._file_picker = None

@@ -1356,7 +1356,6 @@ class _FtpLoginDialog(QDialog):
 
 class MainWindow(MainWindowDialogMixin, QMainWindow):
     def __init__(self, settings: AppSettings):
-        MainWindowDialogMixin.__init__(self)
         super().__init__()
         self._settings    = settings
         self._conn_state  = "disconnected"
