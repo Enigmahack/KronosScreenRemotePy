@@ -166,6 +166,27 @@ _NUMPAD_MAP: dict[int, str] = {
     Qt.Key_Enter:  "ENTER",
 }
 
+# Linux evdev keycodes for a real numpad, used only on Nautilus (see
+# _send_numpad_key). Qt has no distinct Key_NumPad0..9 enum values — numpad
+# digits alias the same Qt.Key_0..9 as the top row, told apart only by
+# Qt.KeypadModifier on the event — so this maps the SAME Qt.Key values
+# _NUMPAD_MAP does, just to different codes. Ported from C#'s Core/KeyMap.cs
+# Key.NumPad0..9/Subtract/Decimal entries (KEY_KP0..KEY_KP9/KEY_KPMINUS/
+# KEY_KPDOT): "on Kronos these are UNREACHABLE here... only matter for
+# Nautilus, where [front-panel] interception is skipped so real numpad
+# keystrokes forward here instead, as an actual USB keyboard would."
+# Key_Enter has no C# equivalent to verify against (WPF collapses numpad
+# Enter into plain Key.Return); mapped to the same code as Return (28) as a
+# safe fallback rather than KEY_KPENTER (96), which nothing here confirms.
+_NUMPAD_LINUX_MAP: dict[int, int] = {
+    Qt.Key_0: 82, Qt.Key_1: 79, Qt.Key_2: 80, Qt.Key_3: 81,
+    Qt.Key_4: 75, Qt.Key_5: 76, Qt.Key_6: 77, Qt.Key_7: 71,
+    Qt.Key_8: 72, Qt.Key_9: 73,
+    Qt.Key_Minus: 74,    # KEY_KPMINUS
+    Qt.Key_Period: 83,   # KEY_KPDOT
+    Qt.Key_Enter: 28,    # KEY_ENTER (see docstring — no confirmed KEY_KPENTER path)
+}
+
 # Mode index 0 = none; 1–7 = Setlist…Disk
 _MODE_NAMES = ("", "Setlist", "Combi", "Program", "Sequence", "Sampling", "Global", "Disk")
 _MODE_CMDS  = ("", "SETLIST", "COMBI",  "PROGRAM", "SEQUENCE", "SAMPLING", "GLOBAL", "DISK")
@@ -2815,6 +2836,26 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         if self._host:
             self._ctrl.send(self._host, self._ctrl_port, cmd)
 
+    def _send_numpad_key(self, name: str, qt_key: int, pressed: bool):
+        """Numpad digit/operator dispatch — see _NUMPAD_LINUX_MAP's docstring.
+        On Kronos, the front panel always intercepts these first regardless
+        of what this client does, so BUTTON NUMn + control-surface animation
+        is correct. On Nautilus that interception doesn't happen, so a real
+        numpad keystroke must forward as a literal KEY press instead — routing
+        it through BUTTON NUMn there sends a Kronos-only front-panel scan code
+        with no confirmed Nautilus meaning (same risk class as the Bank Select
+        gating fixed in c81eeab)."""
+        if self._is_nautilus:
+            code = _NUMPAD_LINUX_MAP.get(qt_key)
+            if code is not None:
+                self._ctrl_send(f"KEY {code} {1 if pressed else 0}")
+            return
+        if pressed:
+            self._ctrl_send(f"BUTTON {name}")
+            self._ctrl_surface.press_button(name)
+        else:
+            self._ctrl_surface.release_button(name)
+
     @Slot(int, int)
     def _on_touch_down(self, nx: int, ny: int):
         self._ctrl_send(f"TOUCH_DOWN {nx} {ny}")
@@ -2958,11 +2999,11 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             threading.Thread(target=self._play_macro, args=(macro,), daemon=True).start()
             return
 
-        # Numpad always routes to control surface regardless of capture mode
+        # Numpad: front-panel BUTTON on Kronos, real KEY forward on Nautilus —
+        # see _send_numpad_key.
         name = _numpad_btn(key, mods)
         if name:
-            self._ctrl_send(f"BUTTON {name}")
-            self._ctrl_surface.press_button(name)
+            self._send_numpad_key(name, key, pressed=True)
             return
 
         # Enter → BUTTON ENTER (main-keyboard Enter, not numpad)
@@ -3035,10 +3076,10 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             if self._kbd_send_en:
                 self._forward_key(event, pressed=False)
             return
-        # Non-capture: release numpad button animation
+        # Non-capture: release numpad button animation (Kronos) / KEY-up (Nautilus)
         name = _numpad_btn(event.key(), event.modifiers())
         if name:
-            self._ctrl_surface.release_button(name)
+            self._send_numpad_key(name, event.key(), pressed=False)
 
     # ── Tap tempo flash ──────────────────────────────────────────────────────
     # One tap = one front-panel TAP TEMPO press; the Kronos does its own averaging
@@ -3084,14 +3125,11 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         if not pressed and key == self._kbd_repeat_key:
             self._stop_kbd_repeat()
 
-        # Numpad digits → BUTTON NUM0..9 + control surface animation
+        # Numpad: front-panel BUTTON on Kronos, real KEY forward on Nautilus —
+        # see _send_numpad_key.
         name = _numpad_btn(key, mods)
         if name:
-            if pressed:
-                self._ctrl_send(f"BUTTON {name}")
-                self._ctrl_surface.press_button(name)
-            else:
-                self._ctrl_surface.release_button(name)
+            self._send_numpad_key(name, key, pressed)
             return
 
         # Shift modifier keys — no raw map check for bare modifiers
