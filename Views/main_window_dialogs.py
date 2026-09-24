@@ -163,6 +163,22 @@ class MainWindowDialogMixin:
         """Action handler for recording menu item."""
         self.show_recording_dialog()
 
+    def show_sample_editor(self) -> bool:
+        """Show sample editor window.
+
+        Returns:
+            True if editor was opened
+        """
+        from Views.sample_editor_window import SampleEditorWindow
+
+        editor = SampleEditorWindow(self)
+        editor.show()
+        return True
+
+    def on_show_sample_editor(self):
+        """Action handler for sample editor menu item."""
+        self.show_sample_editor()
+
 
 def add_testing_menu_items(main_window):
     """Add testing/debugging menu items to Tools menu."""
@@ -201,6 +217,13 @@ def add_testing_menu_items(main_window):
         act_recording = testing_menu.addAction("&Audio Recording…")
         act_recording.triggered.connect(main_window.on_show_recording)
         main_window._act_recording = act_recording
+
+        testing_menu.addSeparator()
+
+        # Sample editor
+        act_sample_editor = testing_menu.addAction("&Sample Editor…")
+        act_sample_editor.triggered.connect(main_window.on_show_sample_editor)
+        main_window._act_sample_editor = act_sample_editor
 
         # Device info
         act_device_info = testing_menu.addAction("&Device Information…")
