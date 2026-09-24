@@ -74,10 +74,10 @@ A Python application for remotely viewing and controlling a **Korg Kronos** synt
 | Package | Purpose |
 |---|---|
 | [PySide6](https://pypi.org/project/PySide6/) | Qt 6 GUI framework (widgets, threading, signals) |
-| [numpy](https://pypi.org/project/numpy/) | Audio buffer processing for the VU meter |
-| [sounddevice](https://pypi.org/project/sounddevice/) | WASAPI audio capture for the VU meter |
+| [numpy](https://pypi.org/project/numpy/) | Required. Video pipeline (tone/sharpen curves, RGB565 decode for Nautilus) and VU meter buffer processing |
+| [sounddevice](https://pypi.org/project/sounddevice/) | Optional — WASAPI audio capture for the VU meter |
 
-> **numpy** and **sounddevice** are only required for the audio VU meter feature. The application launches and operates without them; the VU meter will simply be unavailable.
+> **sounddevice** is the only optional dependency. The application launches and operates without it; the VU meter will simply be unavailable. **numpy** is required — the app will not start without it.
 
 ### Installation
 
@@ -134,58 +134,55 @@ old data across (the originals are never deleted).
 
 ## Project Structure
 
+The codebase is organized into packages by role; see `PROJECT_STRUCTURE.md`
+for the full breakdown. Summary:
+
 ```
 KronosScreenRemotePy/
   main.py                          Application entry point
-  main_window.py                   Primary window — frame rendering, input, menus
-  control_surface.py               Virtual button panel / data wheel widget
-  stream_receiver.py               TCP stream client — handshake, frame decoding
-  ctrl_client.py                   Persistent TCP control-command sender
-  midi_bridge.py                   Bidirectional client for the daemon's MIDI bridge port
-  file_manager.py                  Dual-pane FTP file manager window
-  settings_window.py               Settings dialog (9 tabs)
-  app_settings.py                  AppSettings dataclass and keybind definitions
-  storage.py                       JSON persistence for settings, calibration, palette
-  overlay_renderer.py              Paint helpers for zoom, calibration, palette editor
-  image_adjust.py                  Tone/sharpen curve math for the video pipeline
-  mode_detector.py                 Frame-based Kronos mode/help detection
-  boot_phase_detector.py           Reference-image boot phase detection
-  models.py                        Shared data models (Keybind, PaletteEntry, CalMesh)
-  key_map.py                       Qt key → Linux keycode mapping tables
-  char_map.py                      Typed-character → KEY-command-sequence table
-  command_palette.py               Live filter-as-you-type command launcher (Ctrl+K)
-  vu_meter.py                      WASAPI audio capture and VU meter widget
-  perf_window.py                   Performance / keyboard info window
-  help_window.py                   Help overlay content
-  about_dialog.py                  About dialog
-  theme.py                         Centralized dark-theme design tokens
 
-  kronos_sysex.py                  Bank-ID / name-bank decode helpers
-  sysex_service.py                 SysEx decode + passive name/mode/bank tracking
-  sysex_dump_collector.py          Bulk SysEx Object Dump collection over the MIDI bridge
-  sysex_tool_window.py             SysEx monitor/tool window
-  setlist_data.py                  Set List object decode
+  Core/         Device communication: ctrl_client.py (persistent TCP control
+                sender), stream_receiver.py (handshake + v3 frame decoding),
+                midi_bridge.py (MIDI bridge client), sysex_service.py
+                (SysEx decode + passive name/mode/bank tracking),
+                kronos_sysex.py
 
-  librarian_sysex.py               Combi timbre / Set List slot reference accessors
-  librarian_model.py               Single-item plan_move/apply_move + multi-item
-                                    plan_batch_move (merged cross-referrer patching)
-  librarian_shell_window.py        Local Library shell: 3-pane Local/Merge/PCG view,
-                                    Sync/Commit, properties + unresolved-deps dialogs
-  librarian_undo.py                Linear Ctrl+Z undo over LOCAL (pre-Commit) state
-  global_body.py                   Global-object category/sub-category NAME decode for
-                                    the Properties dialog's named dropdowns
-  object_body.py                   INIT/placeholder detection (name + all-defaults)
-                                    powering dependency skips, free-slot scans, erase
+  Models/       app_settings.py (AppSettings + keybinds), storage.py (JSON
+                persistence), models.py (Keybind, PaletteEntry, CalMesh),
+                cal_text.py (CAL_GET/CAL_SET serialization)
 
-  pcg_file.py                      .pcg file chunk scanner + PCG<->wire format converter
-  local_library_store.py           Content-addressed blob store + index + append-only oplog
-  dependency_scanner.py            Walks Combi/Set-List refs against an injected resolver
-  library_pull_pipeline.py         Bank-digest-diffed pull: device/PCG -> local library
-  merge_cache.py                   Content-addressed staging/dedup + recursive ref pull
-  session_dependency_clipboard.py  Tracks unresolved session placements (sync/commit gate)
-  blank_template_store.py          Real captured blank-body erase-as-delete mechanism
-  changeset_sync.py                Sync Library / Commit Changes: build + execute changesets
+  Views/        main_window.py (primary window: rendering, input, menus),
+                librarian_shell_window.py (Local Library shell), settings_
+                window.py (9 tabs), sysex_tool_window.py, perf_window.py,
+                help_window.py, about_dialog.py, testing_dialogs.py
+                (Input Tester / Button Injector), main_window_dialogs.py
+
+  Data/         Local Library subsystem: local_library_store.py (blob store
+                + index + oplog), changeset_sync.py (Sync/Commit), pcg_file.py,
+                merge_cache.py, dependency_scanner.py, library_pull_pipeline.py,
+                librarian_model.py, librarian_undo.py, blank_template_store.py,
+                session_dependency_clipboard.py
+
+  Objects/      object_body.py, global_body.py, erase_body.py — object-body
+                parsing/decoding shared by the Librarian
+
+  Rendering/    overlay_renderer.py (zoom/calibration/palette-editor paint
+                helpers), control_surface.py (virtual button panel),
+                vu_meter.py (optional audio capture + VU widget)
+
+  Commands/     command_palette.py (Ctrl+K launcher), batch_clipboard.py,
+                session_dependency_clipboard.py
+
+  Tools/        file_manager.py, mode_detector.py, boot_phase_detector.py,
+                setlist_data.py, sysex_dump_collector.py, dependency_scanner.py
+
+  Utils/        theme.py, image_adjust.py, key_map.py, char_map.py
 ```
+
+`Views/audio_*`/`Core/audio_*`/`Views/sample_editor_window.py` and related
+are a separate, still-in-progress port of the C# app's Librarian/Sample
+Editor sample-management feature — not yet wired to real audio hardware
+workflows.
 
 ### Local Library
 
