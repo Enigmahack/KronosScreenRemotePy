@@ -264,9 +264,14 @@ class SampleEditorWindow(QMainWindow):
 
         # File menu
         file_menu = menubar.addMenu("&File")
-        file_menu.addAction("&Open", self._on_open)
-        file_menu.addAction("&Save", self._on_save)
-        file_menu.addAction("Save &As", self._on_save_as)
+        file_menu.addAction("&New Project", self._on_new_project)
+        file_menu.addAction("&Open Sample", self._on_open)
+        file_menu.addAction("Open &Project", self._on_open_project)
+        file_menu.addSeparator()
+        file_menu.addAction("&Save Project", self._on_save_project)
+        file_menu.addAction("Save Project &As", self._on_save_project_as)
+        file_menu.addSeparator()
+        file_menu.addAction("E&xport Mix", self._on_export_mix)
         file_menu.addSeparator()
         file_menu.addAction("&Close", self.close)
 
@@ -518,6 +523,79 @@ class SampleEditorWindow(QMainWindow):
     def _on_region_selected(self, start_sec: float, end_sec: float):
         """Handle region selection from cue panel."""
         self.waveform.set_selection(start_sec, end_sec)
+
+    def _on_new_project(self):
+        """Create a new project."""
+        self.project = AudioProject("Untitled", self.sample_rate, self.channels)
+        self.track_list._refresh_tracks()
+        self.cue_panel.set_track(None)
+        self.current_file = None
+        self.setWindowTitle("Sample Editor - [New Project]")
+        self.statusBar().showMessage("New project created")
+
+    def _on_open_project(self):
+        """Open a project file."""
+        filepath, _ = QFileDialog.getOpenFileName(
+            self, "Open Project", "", "Project Files (*.kronos);;All Files (*)"
+        )
+        if filepath:
+            project = AudioProject.load_project(Path(filepath))
+            if project:
+                self.project = project
+                self.sample_rate = project.sample_rate
+                self.channels = project.channels
+                self.track_list._refresh_tracks()
+                self.current_file = Path(filepath)
+                self.setWindowTitle(f"Sample Editor - {self.current_file.name}")
+                self.statusBar().showMessage(f"Opened: {self.current_file.name}")
+            else:
+                QMessageBox.critical(self, "Error", "Failed to open project")
+
+    def _on_save_project(self):
+        """Save current project."""
+        if not self.current_file:
+            self._on_save_project_as()
+        else:
+            if self.project.save_project(self.current_file):
+                self.statusBar().showMessage(f"Project saved: {self.current_file.name}")
+            else:
+                QMessageBox.critical(self, "Error", "Failed to save project")
+
+    def _on_save_project_as(self):
+        """Save project with new filename."""
+        filepath, _ = QFileDialog.getSaveFileName(
+            self, "Save Project As", "", "Project Files (*.kronos);;All Files (*)"
+        )
+        if filepath:
+            self.current_file = Path(filepath)
+            if self.project.save_project(self.current_file):
+                self.setWindowTitle(f"Sample Editor - {self.current_file.name}")
+                self.statusBar().showMessage(f"Project saved: {self.current_file.name}")
+            else:
+                QMessageBox.critical(self, "Error", "Failed to save project")
+
+    def _on_export_mix(self):
+        """Export mixed audio to file."""
+        filepath, _ = QFileDialog.getSaveFileName(
+            self, "Export Mix", "", "WAV Files (*.wav);;All Files (*)"
+        )
+        if filepath:
+            try:
+                import wave
+                audio_data = self.project.render()
+                if not audio_data:
+                    QMessageBox.warning(self, "Warning", "No audio to export")
+                    return
+
+                with wave.open(filepath, 'wb') as wav_file:
+                    wav_file.setnchannels(2)
+                    wav_file.setsampwidth(2)
+                    wav_file.setframerate(self.sample_rate)
+                    wav_file.writeframes(audio_data)
+
+                self.statusBar().showMessage(f"Exported: {Path(filepath).name}")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Export failed: {e}")
 
     def load_file(self, file_path: str):
         """Load audio file into first track.

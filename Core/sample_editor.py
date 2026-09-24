@@ -7,10 +7,12 @@ Implements:
 - Copy/paste operations
 """
 from __future__ import annotations
-from typing import Optional, Tuple, List
-from dataclasses import dataclass
+from typing import Optional, Tuple, List, Dict, Any
+from dataclasses import dataclass, asdict
+from pathlib import Path
 import struct
 import math
+import json
 import logging
 
 log = logging.getLogger(__name__)
@@ -619,3 +621,132 @@ class AudioProject:
                 output.extend(struct.pack('<h', sample))
 
         return bytes(output)
+
+    def save_project(self, filepath: Path) -> bool:
+        """Save project to JSON file.
+
+        Args:
+            filepath: Path to save project to
+
+        Returns:
+            True if saved successfully, False otherwise
+        """
+        try:
+            project_data = {
+                "name": self.name,
+                "sample_rate": self.sample_rate,
+                "channels": self.channels,
+                "master_volume": self.master_volume,
+                "tracks": []
+            }
+
+            # Serialize each track
+            for track in self.tracks:
+                track_data = {
+                    "name": track.name,
+                    "sample_rate": track.sample_rate,
+                    "channels": track.channels,
+                    "enabled": track.enabled,
+                    "solo": track.solo,
+                    "mute": track.mute,
+                    "volume": track.volume,
+                    "pan": track.pan,
+                    "audio_file": None,  # Would store path or base64
+                    "cues": [],
+                    "regions": []
+                }
+
+                # Serialize cues
+                for cue in track.cues:
+                    track_data["cues"].append({
+                        "name": cue.name,
+                        "position_sec": cue.position_sec,
+                        "color": cue.color
+                    })
+
+                # Serialize regions
+                for region in track.regions:
+                    track_data["regions"].append({
+                        "name": region.name,
+                        "start_sec": region.start_sec,
+                        "end_sec": region.end_sec,
+                        "color": region.color
+                    })
+
+                project_data["tracks"].append(track_data)
+
+            # Write to file
+            with open(filepath, 'w') as f:
+                json.dump(project_data, f, indent=2)
+
+            log.info(f"Project saved: {filepath}")
+            return True
+
+        except Exception as e:
+            log.error(f"Error saving project: {e}")
+            return False
+
+    @staticmethod
+    def load_project(filepath: Path) -> Optional['AudioProject']:
+        """Load project from JSON file.
+
+        Args:
+            filepath: Path to load project from
+
+        Returns:
+            AudioProject if loaded successfully, None otherwise
+        """
+        try:
+            with open(filepath, 'r') as f:
+                project_data = json.load(f)
+
+            # Create project
+            project = AudioProject(
+                name=project_data.get("name", "Untitled"),
+                sample_rate=project_data.get("sample_rate", 44100),
+                channels=project_data.get("channels", 2)
+            )
+            project.master_volume = project_data.get("master_volume", 1.0)
+
+            # Restore tracks
+            for track_data in project_data.get("tracks", []):
+                track = AudioTrack(
+                    name=track_data["name"],
+                    audio_data=b'',  # Audio data not stored in JSON
+                    sample_rate=track_data.get("sample_rate", 44100),
+                    channels=track_data.get("channels", 2)
+                )
+
+                track.enabled = track_data.get("enabled", True)
+                track.solo = track_data.get("solo", False)
+                track.mute = track_data.get("mute", False)
+                track.volume = track_data.get("volume", 1.0)
+                track.pan = track_data.get("pan", 0.5)
+
+                # Restore cues
+                for cue_data in track_data.get("cues", []):
+                    cue = AudioCue(
+                        name=cue_data["name"],
+                        position_sec=cue_data["position_sec"],
+                        color=cue_data.get("color", "#FF9999")
+                    )
+                    track.cues.append(cue)
+
+                # Restore regions
+                for region_data in track_data.get("regions", []):
+                    region = AudioRegion(
+                        name=region_data["name"],
+                        start_sec=region_data["start_sec"],
+                        end_sec=region_data["end_sec"],
+                        color=region_data.get("color", "#99CCFF")
+                    )
+                    track.regions.append(region)
+
+                project.add_track(track)
+
+            log.info(f"Project loaded: {filepath}")
+            return project
+
+        except Exception as e:
+            log.error(f"Error loading project: {e}")
+            return None
