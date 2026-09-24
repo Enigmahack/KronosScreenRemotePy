@@ -17,6 +17,13 @@ import numpy as np
 
 log = logging.getLogger(__name__)
 
+# Repo-root Resources/Refs/ — two parents up from Tools/mode_detector.py, not
+# one. The one-parent version silently resolved to a nonexistent Tools/
+# Resources/Refs/, so every detector below loaded zero reference images and
+# every fallback detection (mode, boot phase via BootPhaseDetector, and the
+# unconditional Help overlay check, which is gated on ModeDetector.has_any())
+# was a total silent no-op — never crashed, never logged above DEBUG.
+_DEFAULT_REFS_DIR = pathlib.Path(__file__).parent.parent / "Resources" / "Refs"
 
 COLOR_TOLERANCE = 30    # ±30 per channel
 MODE_THRESHOLD  = 0.85  # 85 % of masked pixels must match
@@ -35,7 +42,7 @@ class _PixelRef:
 class ModeDetector:
     def __init__(self, refs_dir: Optional[pathlib.Path] = None):
         if refs_dir is None:
-            refs_dir = pathlib.Path(__file__).parent / "Resources" / "Refs"
+            refs_dir = _DEFAULT_REFS_DIR
         self._refs_dir = refs_dir
         self._mode_refs: list[Optional[list[_PixelRef]]] = [None] * 8  # indices 1–7
         self._help_ref:  Optional[list[_PixelRef]] = None
@@ -158,7 +165,7 @@ class CombiProgramEditDetector:
     """
     def __init__(self, refs_dir: Optional[pathlib.Path] = None):
         if refs_dir is None:
-            refs_dir = pathlib.Path(__file__).parent / "Resources" / "Refs"
+            refs_dir = _DEFAULT_REFS_DIR
         self._refs_dir = refs_dir
         self._refs: Optional[list[_PixelRef]] = None
         self._loaded = False

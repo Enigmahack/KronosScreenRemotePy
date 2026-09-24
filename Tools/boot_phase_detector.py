@@ -5,7 +5,8 @@ pixel region at (302, 530) in the raw 800x600 8bpp frame.
 Phases advance strictly forward:
   PreloadKSC (1) → BankData (2) → Finishing (3)
 
-Reference PNGs are 800x600 screenshots in Resources/BootPhase/; only the
+Reference PNGs are 800x600 screenshots in Resources/Refs/ (alongside
+ModeDetector's own reference images, not a separate directory); only the
 scan region is compared.  Scoring mirrors ModeDetector: >=98% of scan pixels
 must match within ±30 per channel.
 """
@@ -18,6 +19,12 @@ from enum import IntEnum
 from typing import List, Optional
 
 log = logging.getLogger(__name__)
+
+# Repo-root Resources/Refs/ — two parents up from Tools/boot_phase_detector.py.
+# The previous default (Tools/Resources/BootPhase/, one parent + a directory
+# name that was never real) resolved to a nonexistent path, so every load
+# silently found zero reference images and this detector never fired.
+_DEFAULT_REFS_DIR = pathlib.Path(__file__).parent.parent / "Resources" / "Refs"
 
 
 class Phase(IntEnum):
@@ -45,7 +52,7 @@ class _PixelRef:
 class BootPhaseDetector:
     def __init__(self, refs_dir: Optional[pathlib.Path] = None):
         if refs_dir is None:
-            refs_dir = pathlib.Path(__file__).parent / "Resources" / "BootPhase"
+            refs_dir = _DEFAULT_REFS_DIR
         self._refs_dir = refs_dir
         self._preload_ref: Optional[List[_PixelRef]] = None
         self._bankdata_ref: Optional[List[_PixelRef]] = None
@@ -68,9 +75,12 @@ class BootPhaseDetector:
             self._loaded = True
 
     def _load_all(self):
-        self._preload_ref = self._try_load("phase_preload.png")
-        self._bankdata_ref = self._try_load("phase_bankdata.png")
-        self._finishing_ref = self._try_load("phase_finishing.png")
+        # Filenames match the actual committed screenshots in Resources/Refs/
+        # exactly (ls-verified) - the old names (phase_preload.png etc.)
+        # never existed on disk at all, in either the wrong or the right dir.
+        self._preload_ref = self._try_load("Loading PRELOAD.KSC.png")
+        self._bankdata_ref = self._try_load("Loading bank data.png")
+        self._finishing_ref = self._try_load("Finishing up.png")
         count = sum(1 for r in (self._preload_ref, self._bankdata_ref, self._finishing_ref)
                     if r is not None)
         log.debug("%d/3 phase refs loaded from %s", count, self._refs_dir)
