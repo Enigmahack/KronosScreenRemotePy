@@ -1195,7 +1195,7 @@ class _ShutdownOverlay(QWidget):
 
 
 def _log_file_path() -> pathlib.Path:
-    return storage.data_dir() / "kronos_screen_remote.log"
+    return Models.storage.data_dir() / "kronos_screen_remote.log"
 
 
 def _setup_logging(debug: bool):
