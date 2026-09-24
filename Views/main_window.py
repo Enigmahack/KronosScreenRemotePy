@@ -41,10 +41,10 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-import Utils.char_map
+import Utils.char_map as char_map
 import Core.ctrl_client as CtrlClient
-import Utils.image_adjust
-import Utils.key_map
+import Utils.image_adjust as image_adjust
+import Utils.key_map as key_map
 import Models.storage
 import Utils.theme as T
 from Models.app_settings import AppSettings, get_rebindable
