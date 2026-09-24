@@ -1195,7 +1195,7 @@ class _ShutdownOverlay(QWidget):
 
 
 def _log_file_path() -> pathlib.Path:
-    return Models.Models.storage.data_dir() / "kronos_screen_remote.log"
+    return Models.storage.data_dir() / "kronos_screen_remote.log"
 
 
 def _setup_logging(debug: bool):
@@ -1370,7 +1370,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
 
         self._receiver: Optional[StreamReceiver] = None
         self._palette:  list[PaletteEntry] = []
-        self._overrides = Models.Models.storage.load_overrides()
+        self._overrides = Models.storage.load_overrides()
         self._locked    = Models.storage.load_locks()
         self._raw_frame: Optional[bytes] = None
 
