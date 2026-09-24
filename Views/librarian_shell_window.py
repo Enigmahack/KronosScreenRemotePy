@@ -1017,7 +1017,7 @@ class LibrarianShellWindow(QDialog):
         # reached, or a reply too short to decode, leaves whatever labels are
         # already in place).
         from Objects.global_body import CategoryNames
-        cached = storage.load_category_names(host) if host else None
+        cached = Models.storage.load_category_names(host) if host else None
         self._category_names = (CategoryNames.from_dict(cached)
                                 if cached is not None else None) or CategoryNames.numeric()
         if host and service is not None and service.can_dump:
@@ -2962,7 +2962,7 @@ class LibrarianShellWindow(QDialog):
         if is_storage:
             body = (f"{what} could not finish because the local library could not be "
                     f"written.\n\n{detail}\n\n"
-                    f"Data directory: {storage.data_dir()}\n\n"
+                    f"Data directory: {Models.storage.data_dir()}\n\n"
                     "Anything already placed has been kept. This usually means the folder "
                     "is on a network share that is read-only, disconnected, or full.")
         else:
@@ -3714,7 +3714,7 @@ class LibrarianShellWindow(QDialog):
             if names is None:
                 return
             self._category_names = names
-            storage.save_category_names(host, names.to_dict())
+            Models.storage.save_category_names(host, names.to_dict())
         except Exception as e:  # pragma: no cover - defensive
             log.warning("category-name warm-up failed: %s", e)
 
@@ -3764,7 +3764,7 @@ class LibrarianShellWindow(QDialog):
         if pre_image is not None:
             try:
                 stamp = _now_iso().replace(":", "").replace("-", "").replace(".", "")
-                backup_path = str(storage.backup_dir() / f"{stamp}_sync_{loc.label()}.syx"
+                backup_path = str(Models.storage.backup_dir() / f"{stamp}_sync_{loc.label()}.syx"
                                   .replace(" ", "_").replace(":", ""))
                 self._service.backup_objects(
                     [WriteOp(obj_type, bank, number, pre_image.version, pre_image.body)],

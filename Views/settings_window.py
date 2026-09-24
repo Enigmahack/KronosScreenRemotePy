@@ -754,7 +754,7 @@ class SettingsWindow(QDialog):
             QMessageBox.Cancel,
         )
         if r == QMessageBox.Ok:
-            storage.reset_all()
+            Models.storage.reset_all()
             self._settings.__init__()  # reset in-place
             self._load()
             QMessageBox.information(self, "Reset", "Settings have been reset to defaults.")
@@ -1069,7 +1069,7 @@ class SettingsWindow(QDialog):
             self._commit_macro_editor()
             # Copy live settings into AppSettings before exporting
             self._save_to_settings_no_close()
-            storage.export_settings(self._settings, path)
+            Models.storage.export_settings(self._settings, path)
             QMessageBox.information(self, "Export", f"Settings exported to:\n{path}")
 
     def _on_import(self):
@@ -1083,7 +1083,7 @@ class SettingsWindow(QDialog):
             QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel)
         if r != QMessageBox.Yes:
             return
-        new_s = storage.import_settings(path)
+        new_s = Models.storage.import_settings(path)
         # Replace fields in the shared settings object
         for field_name in self._settings.__dataclass_fields__:
             setattr(self._settings, field_name, getattr(new_s, field_name))

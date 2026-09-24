@@ -155,9 +155,9 @@ class SysExService(QObject):
 
         with self._names_lock:
             self._stream_names = {
-                (n.type, n.bank, n.number): n.name for n in storage.load_names(host)
+                (n.type, n.bank, n.number): n.name for n in Models.storage.load_names(host)
             }
-            self._dumped_banks = storage.load_dumped_banks(host)
+            self._dumped_banks = Models.storage.load_dumped_banks(host)
 
         self._bridge = MidiBridgeClient(host, port)
         self._bridge.add_raw_listener(self._on_raw_message)
@@ -308,7 +308,7 @@ class SysExService(QObject):
                     was_dumped = (t, dig_bank) in self._dumped_banks
                     self._dumped_banks.discard((t, dig_bank))
                 if was_dumped:
-                    storage.save_dumped_banks(self._cache_key, self._snapshot_dumped())
+                    Models.storage.save_dumped_banks(self._cache_key, self._snapshot_dumped())
                 self._persist_names()
             return
 
@@ -384,7 +384,7 @@ class SysExService(QObject):
             snapshot = [
                 ksx.CachedName(t, b, n, name) for (t, b, n), name in self._stream_names.items()
             ]
-        storage.save_names(self._cache_key, snapshot)
+        Models.storage.save_names(self._cache_key, snapshot)
 
     def _schedule_persist(self, delay_s: float = 2.0):
         if self._persist_timer is not None:
@@ -467,7 +467,7 @@ class SysExService(QObject):
         finally:
             self._dump_gate.end(gate_epoch)
             if ledger_dirty:
-                storage.save_dumped_banks(self._cache_key, self._snapshot_dumped())
+                Models.storage.save_dumped_banks(self._cache_key, self._snapshot_dumped())
             self._persist_names()
         return self.current_name_count()
 
