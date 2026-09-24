@@ -5,16 +5,11 @@ from typing import Optional
 from PySide6.QtWidgets import QDialog
 
 from Views.dialogs import (
-    ConnectionFailedDialog,
-    LoginDialog,
     ObjectInfoDialog,
-    FtpPropertiesDialog,
     InputTesterWindow,
     ButtonInjectorWindow,
-    RemoteFilePickerDialog,
     MessageBox,
 )
-from Core.session_manager import get_session_manager
 
 
 class MainWindowDialogMixin:
@@ -24,35 +19,12 @@ class MainWindowDialogMixin:
         super().__init__()
         self._input_tester = None
         self._button_injector = None
-        self._file_picker = None
-        self._session_mgr = get_session_manager()
-
-    def show_connection_error(self, host: str, port: int, error: str) -> bool:
-        """Show connection error dialog. Returns True if should retry."""
-        dlg = ConnectionFailedDialog(host, port, error, self)
-        if dlg.exec() == QDialog.Accepted:
-            return dlg.should_retry()
-        return False
-
-    def show_login_dialog(self, saved_host: str = "") -> Optional[tuple[str, str, str, int]]:
-        """Show login dialog. Returns (host, username, password, port) or None if canceled."""
-        dlg = LoginDialog(saved_host, parent=self)
-        if dlg.exec() == QDialog.Accepted:
-            return dlg.get_credentials()
-        return None
 
     def show_object_info(self, obj_type: str, bank: int, number: int,
                         name: str, properties: dict):
         """Show object information dialog."""
         dlg = ObjectInfoDialog(obj_type, bank, number, name, properties, self)
         dlg.exec()
-
-    def show_ftp_properties(self) -> Optional[tuple[str, int, str]]:
-        """Show FTP properties dialog. Returns (host, port, username) or None."""
-        dlg = FtpPropertiesDialog(parent=self)
-        if dlg.exec() == QDialog.Accepted:
-            return dlg.get_config()
-        return None
 
     def show_input_tester(self):
         """Show input testing window (non-modal)."""
@@ -70,13 +42,6 @@ class MainWindowDialogMixin:
         self._button_injector.raise_()
         self._button_injector.activateWindow()
 
-    def show_remote_file_picker(self) -> Optional[list[str]]:
-        """Show remote file picker. Returns list of selected files or None."""
-        dlg = RemoteFilePickerDialog(self)
-        if dlg.exec() == QDialog.Accepted:
-            return dlg.get_selected()
-        return None
-
     # Menu action handlers for testing/debugging
 
     def on_show_input_tester(self):
@@ -87,40 +52,67 @@ class MainWindowDialogMixin:
         """Action handler for button injector menu item."""
         self.show_button_injector()
 
-    def on_ftp_properties(self):
-        """Action handler for FTP properties menu item."""
-        result = self.show_ftp_properties()
-        if result:
-            host, port, user = result
-            MessageBox.info(self, "FTP Configuration",
-                          f"Host: {host}\nPort: {port}\nUser: {user}")
-
     def on_show_device_info(self):
-        """Show current device information."""
-        session = self._session_mgr.get_session()
-        if not session.connected:
+        """Show current device information — real, live connection state plus
+        a fresh MODEL query (docs/api.md §7 MODEL) rather than a cached/fake
+        session object. Runs the query off the UI thread (matches Views/
+        perf_window.py's SYSINFO-poll pattern) since it blocks on the network."""
+        if not self._host or not self._receiver:
             MessageBox.warning(self, "Not Connected",
                               "No Kronos is currently connected.")
             return
 
         properties = {
-            "Host": session.host,
-            "Port": session.port,
-            "Family": session.device_family,
-            "Model": session.device_model,
-            "Firmware": session.firmware_version,
-            "Screen": f"{session.screen_width}x{session.screen_height}",
-            "Stream FPS": str(session.stream_fps),
-            "Mode": "Pull" if session.pull_mode else "Change",
-            "Uptime": session.uptime_str(),
+            "Host": self._host,
+            "Stream Port": str(self._stream_port),
+            "Control Port": str(self._ctrl_port),
+            "Stream Format": "RGB565LE (Nautilus)" if self._receiver.stream_fmt == 1
+                              else "INDEX8 (Kronos)",
+            "Screen": f"{self._receiver.width}x{self._receiver.height}",
+            "Measured FPS": f"{self._measured_fps:.1f}",
+            "Stream Mode": "Pull" if self._pull_mode else "Change",
         }
+        self._fetch_model_for_device_info(properties)
+
+    def _fetch_model_for_device_info(self, properties: dict):
+        import threading
+        import Core.ctrl_client as CC
+        from PySide6.QtCore import QTimer
+        host, port = self._host, self._ctrl_port
+
+        def fetch():
+            resp = CC.get().query(host, port, "MODEL", timeout_ms=1500)
+            try:
+                QTimer.singleShot(0, self, lambda: self._show_device_info(properties, resp))
+            except RuntimeError:
+                pass  # window closed before the query finished
+
+        threading.Thread(target=fetch, daemon=True, name="ModelQuery").start()
+
+    def _show_device_info(self, properties: dict, model_resp: Optional[str]):
+        kv = {}
+        if model_resp:
+            for part in model_resp.split():
+                if "=" in part:
+                    k, _, v = part.partition("=")
+                    kv[k] = v
+        family = kv.get("FAMILY", "unknown")
+        model  = kv.get("MODEL", "")
+        if kv:
+            properties.update({
+                "Family": family,
+                "Model": model,
+                "Framebuffer BPP": kv.get("FB_BPP", ""),
+                "CPUs / Cores / Threads":
+                    f"{kv.get('CPUS','?')} / {kv.get('CORES','?')} / {kv.get('THREADS','?')}",
+            })
+        else:
+            properties["Model Query"] = "No response from daemon (older than 3.0.2?)"
 
         self.show_object_info(
-            "Device Info",
-            0,
-            0,
-            f"{session.device_family} - {session.device_model}",
-            properties
+            "Device Info", 0, 0,
+            f"{family} {model}".strip() or self._host,
+            properties,
         )
 
     def show_audio_config(self) -> bool:
@@ -219,11 +211,6 @@ def add_testing_menu_items(main_window):
         main_window._act_button_injector = act_button_injector
 
         testing_menu.addSeparator()
-
-        # FTP properties
-        act_ftp_props = testing_menu.addAction("&FTP Configuration…")
-        act_ftp_props.triggered.connect(main_window.on_ftp_properties)
-        main_window._act_ftp_properties = act_ftp_props
 
         # Audio configuration
         act_audio_config = testing_menu.addAction("&Audio Configuration…")

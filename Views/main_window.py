@@ -1876,8 +1876,6 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         self._recent_menu = conn_menu.addMenu("&Recent Connections")
         self._rebuild_recent_menu()
         self._act_copy_ip = conn_menu.addAction("Copy &IP Address")
-        conn_menu.addSeparator()
-        self._act_file_mgr   = conn_menu.addAction("File &Manager…")
 
         # ── View (MENU_View) ────────────────────────────────────────────────
         view_menu = mb.addMenu("&View")
@@ -1939,6 +1937,9 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         tools_menu.addSeparator()
         self._act_sysex_tool = tools_menu.addAction("Open &SysEx Tool…")
         self._act_librarian_shell = tools_menu.addAction("&Librarian…")
+        # C# MainWindow.xaml: MNU_FileManager lives in MENU_Tools, after Librarian/
+        # Sample Editor — not in Connection.
+        self._act_file_mgr   = tools_menu.addAction("File &Manager…")
         tools_menu.addSeparator()
         self._act_keyboard_info = tools_menu.addAction("&Keyboard Info…")
         self._act_test_mode   = tools_menu.addAction("Enter Kronos &Test Mode")
@@ -3603,6 +3604,9 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             CommandEntry("LayoutFocused", "Layout Preset: Focused", "",
                         lambda: self._apply_layout("Focused")),
             CommandEntry("KeyboardInfo", "Keyboard Info…", "", self._open_keyboard_info),
+            # C# BuildCommandRegistry's ── Tools section has this one too (Views/
+            # MainWindow.xaml.cs:2145) — was missing from this list entirely.
+            CommandEntry("Librarian", "Librarian…", "", self._open_librarian_shell),
             CommandEntry("SaveScreenshot", "Save Screenshot…", "", self._save_screenshot),
             CommandEntry("ToggleKeyboardSend", "Toggle Keyboard Send", "",
                         lambda: self._act_disable_kbd.setChecked(
