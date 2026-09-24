@@ -61,6 +61,8 @@ class StreamReceiver(QThread):
         self.width   = 800
         self.height  = 600
         self.palette: List[PaletteEntry] = []
+        self.stream_fmt = 0  # 0 = INDEX8, 1 = RGB565
+        self.bytes_per_pixel = 1  # Updated after handshake
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
@@ -129,6 +131,8 @@ class StreamReceiver(QThread):
                 raise ConnectionError(
                     f"Daemon reported an unusable frame size ({width}x{height})")
             self.width, self.height = width, height
+            self.stream_fmt = stream_fmt
+            self.bytes_per_pixel = 1 if stream_fmt == 0 else 2
 
             # Read palette if INDEX8 format
             pal: list[PaletteEntry] = []
@@ -141,7 +145,7 @@ class StreamReceiver(QThread):
                     pal.append(PaletteEntry(pal_payload[o], pal_payload[o + 1], pal_payload[o + 2]))
             else:
                 # RGB565 format (Nautilus) - no palette needed
-                log.debug("RGB565 format detected - no palette needed")
+                log.debug("RGB565 format detected - no palette needed (2 bytes/pixel)")
             self.palette = pal
 
             log.info("handshake complete: %dx%d", self.width, self.height)
@@ -166,11 +170,12 @@ class StreamReceiver(QThread):
 
     def run(self):
         self._stop = False
-        log.debug("run() started, mode=%s", self._mode)
+        log.debug("run() started, mode=%s, format=%s, bpp=%d", self._mode,
+                  "RGB565" if self.stream_fmt == 1 else "INDEX8", self.bytes_per_pixel)
         interval    = (1.0 / self._fps) if self._mode == _MODE_PULL and self._fps > 0 else 0.0
         hdr_buf     = bytearray(4)
         sub_hdr     = bytearray(4)
-        frame_size  = self.width * self.height
+        frame_size  = self.width * self.height * self.bytes_per_pixel
         master_frame = bytearray(frame_size)  # persistent reconstructed frame
         rle_scratch  = bytearray(frame_size)  # receive scratch for RLE payload (daemon ensures < frame_size)
 
@@ -208,17 +213,17 @@ class StreamReceiver(QThread):
                     first_row = sub_hdr[0] | (sub_hdr[1] << 8)
                     row_count = sub_hdr[2] | (sub_hdr[3] << 8)
                     rle_bytes = length - 4
-                    raw_bytes = row_count * self.width
+                    raw_bytes = row_count * self.width * self.bytes_per_pixel
                     if raw_bytes > frame_size or first_row + row_count > self.height:
                         log.warning("stream ended: dirty rect out of bounds "
-                                    "(raw=%d frame=%d row0=%d rows=%d h=%d)",
-                                    raw_bytes, frame_size, first_row, row_count, self.height)
+                                    "(raw=%d frame=%d row0=%d rows=%d h=%d bpp=%d)",
+                                    raw_bytes, frame_size, first_row, row_count, self.height, self.bytes_per_pixel)
                         break
                     rle_view = memoryview(rle_scratch)[:rle_bytes]
                     if not _recv_into(self._sock, rle_view, rle_bytes):
                         log.info("stream ended: rle payload recv failed")
                         break
-                    off = first_row * self.width
+                    off = first_row * self.width * self.bytes_per_pixel
                     got = _packbits_expand(rle_view, rle_bytes, master_frame, off, raw_bytes)
                     if got != raw_bytes:
                         log.warning("stream ended: packbits expand produced %d bytes, expected %d",
