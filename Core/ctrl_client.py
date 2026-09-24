@@ -222,14 +222,24 @@ class CtrlClient:
         """
         Send a command on a short-lived connection and return the trimmed response.
         Does NOT use CTRL_PERSIST — the server handles it as a one-shot command.
+
+        Loops until a newline (single-line replies) rather than trusting one recv
+        to return the whole thing — CAL_GET's response can be up to ~4096 bytes
+        (docs/api.md CAL_GET/CAL_SET), well past what a single small recv is
+        guaranteed to deliver in one shot.
         """
         try:
             with socket.create_connection((host, port), timeout=timeout_ms / 1000) as s:
                 s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                 s.sendall((cmd + "\n").encode("ascii"))
                 s.settimeout(timeout_ms / 1000)
-                data = s.recv(256)
-                return data.decode("ascii", errors="replace").strip() if data else None
+                buf = b""
+                while b"\n" not in buf and len(buf) < 8192:
+                    chunk = s.recv(4096)
+                    if not chunk:
+                        break
+                    buf += chunk
+                return buf.decode("ascii", errors="replace").strip() if buf else None
         except Exception:
             return None
 

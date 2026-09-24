@@ -48,6 +48,7 @@ import Core.ctrl_client as CtrlClient
 import Utils.image_adjust as image_adjust
 import Utils.key_map as key_map
 import Models.storage
+import Models.cal_text as cal_text
 import Utils.theme as T
 from Models.app_settings import AppSettings, get_rebindable
 from Tools.boot_phase_detector import BootPhaseDetector, Phase as BootPhase
@@ -2516,6 +2517,9 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         # per-tick connect/close), and a drop is re-established by the client's
         # own supervisor rather than staying down until the next user gesture.
         self._ctrl.start_persistent(self._host, self._ctrl_port)
+        # Calibration lives on the unit, not the PC (docs/api.md CAL_GET/CAL_SET)
+        # — re-fetch it on every connect (matches C#'s ApplyUnitCalibration).
+        self._fetch_unit_calibration()
         # Push mirror state and screensaver timeout to daemon on every connect.
         # MIRROR_ON/OFF is Kronos-only (docs/api.md: Nautilus has no VGA output
         # behind the panel to mirror to — MIRROR_ON there just replies
@@ -3336,6 +3340,69 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         new_w = int(design_w * scale) + rail_w
         self.resize(new_w, h)
 
+    # ── Calibration sync (CAL_GET/CAL_SET — docs/api.md) ────────────────────────
+    # The mesh lives on the unit (/korg/rw/HD/ScreenRemote/calibration.txt), so it
+    # follows the instrument rather than this PC — mirrors C#'s
+    # MainWindow.Calibration.cs (ApplyUnitCalibration/SaveCalibrationAsync). The
+    # local cal_data.json (Models.storage.load_cal/save_cal) is kept only as a
+    # pre-connect/offline fallback display, never authoritative once connected.
+
+    def _fetch_unit_calibration(self):
+        import threading
+        host, port = self._host, self._ctrl_port
+
+        def fetch():
+            resp = self._ctrl.query(host, port, "CAL_GET", timeout_ms=1500)
+            try:
+                QTimer.singleShot(0, self, lambda: self._apply_unit_calibration(resp))
+            except RuntimeError:
+                pass  # window closed before the query finished
+
+        threading.Thread(target=fetch, daemon=True, name="CalGet").start()
+
+    def _apply_unit_calibration(self, resp: Optional[str]):
+        if self._frame_w._cal_mode:
+            self._act_cal.setChecked(False)
+        if self._frame_w._cal_dirty:
+            logging.info("[cal] unsaved calibration changes discarded (new connection)")
+
+        if resp is None:
+            logging.info("[cal] CAL_GET unavailable (daemon needs 3.1.2+, or query failed) "
+                         "— using local fallback")
+            return
+        text = resp[4:] if resp.startswith("CAL ") else ""
+        if not text or text == "NONE":
+            logging.info("[cal] unit has no stored calibration")
+            self._frame_w._cal_mesh = CalMesh()
+            self._frame_w._cal_bias_dots = []
+        else:
+            parsed = cal_text.parse(text)
+            if parsed is None:
+                logging.warning("[cal] unit's stored calibration is unreadable, ignored: %s", text)
+            else:
+                self._frame_w._cal_mesh, self._frame_w._cal_bias_dots = parsed
+                logging.info("[cal] calibration loaded from unit, %d bias dot(s)",
+                            len(self._frame_w._cal_bias_dots))
+        self._frame_w._cal_dirty = False
+        self._frame_w._cal_history = []
+        self._frame_w._cal_hist_pos = -1
+        self._frame_w.update()
+
+    def _save_calibration(self):
+        """Persist locally (offline fallback) and push to the unit via CAL_SET.
+        Must run while the stream connection is still up — CAL_SET requires
+        ownership (docs/api.md), which drops the instant the stream client
+        disconnects, so callers on the shutdown path must call this BEFORE
+        tearing down the receiver."""
+        Models.storage.save_cal(self._frame_w._cal_mesh, self._frame_w._cal_bias_dots)
+        if self._receiver and self._host:
+            text = cal_text.serialize(self._frame_w._cal_mesh, self._frame_w._cal_bias_dots)
+            if len(text) <= cal_text.MAX_LENGTH:
+                self._ctrl_send(f"CAL_SET {text}")
+            else:
+                logging.warning("[cal] serialized calibration exceeds %d bytes — not sent to unit",
+                                cal_text.MAX_LENGTH)
+
     # ── Tools ──────────────────────────────────────────────────────────────────
 
     def _on_palette_toggled(self, checked: bool):
@@ -3351,8 +3418,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             self._frame_w._cal_dragging = None
             self._frame_w._cal_hover    = None
             if self._frame_w._cal_dirty:
-                Models.storage.save_cal(self._frame_w._cal_mesh,
-                                 self._frame_w._cal_bias_dots)
+                self._save_calibration()
                 self._frame_w._cal_dirty = False
         self._frame_w.update()
 
@@ -3369,8 +3435,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             self._frame_w.cal_redo()
             return
         if key == Qt.Key_S and not mods:
-            Models.storage.save_cal(self._frame_w._cal_mesh,
-                             self._frame_w._cal_bias_dots)
+            self._save_calibration()
             self._frame_w._cal_dirty = False
             self._frame_w.update()
             return
@@ -4126,8 +4191,10 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
                 event.ignore()
                 return
             if r == QMessageBox.Save:
-                Models.storage.save_cal(self._frame_w._cal_mesh,
-                                 self._frame_w._cal_bias_dots)
+                # Must run before _do_shutdown's receiver.stop() - CAL_SET is
+                # ownership-gated and the stream connection is still the owner
+                # here (see _save_calibration's docstring).
+                self._save_calibration()
                 self._frame_w._cal_dirty = False
             else:
                 self._frame_w._cal_dirty = False
@@ -4177,7 +4244,12 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         self._ctrl.stop_persistent()
         Models.storage.save_settings(self._settings)
         if self._frame_w._cal_dirty:
-            Models.storage.save_cal(self._frame_w._cal_mesh, self._frame_w._cal_bias_dots)
+            # Belt-and-suspenders only: closeEvent's Save branch already handles
+            # the normal path. The receiver is already stopped here, so
+            # _save_calibration degrades to the local-only fallback (its
+            # `self._receiver` guard skips CAL_SET) rather than sending on a
+            # connection that's no longer the ctrl port's owner.
+            self._save_calibration()
         self.close()
 
     def eventFilter(self, watched, event):
