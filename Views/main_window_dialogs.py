@@ -122,6 +122,22 @@ class MainWindowDialogMixin:
             properties
         )
 
+    def show_audio_config(self) -> bool:
+        """Show audio configuration dialog.
+
+        Returns:
+            True if audio config was confirmed, False if canceled
+        """
+        from Views.audio_controls import AudioDeviceDialog
+        dlg = AudioDeviceDialog(self)
+        if dlg.exec() == QDialog.Accepted:
+            return True
+        return False
+
+    def on_show_audio_config(self):
+        """Action handler for audio configuration menu item."""
+        self.show_audio_config()
+
 
 def add_testing_menu_items(main_window):
     """Add testing/debugging menu items to Tools menu."""
@@ -150,6 +166,11 @@ def add_testing_menu_items(main_window):
         act_ftp_props = testing_menu.addAction("&FTP Configuration…")
         act_ftp_props.triggered.connect(main_window.on_ftp_properties)
         main_window._act_ftp_properties = act_ftp_props
+
+        # Audio configuration
+        act_audio_config = testing_menu.addAction("&Audio Configuration…")
+        act_audio_config.triggered.connect(main_window.on_show_audio_config)
+        main_window._act_audio_config = act_audio_config
 
         # Device info
         act_device_info = testing_menu.addAction("&Device Information…")
