@@ -252,6 +252,113 @@ class AudioControlPanel(QWidget):
         )
 
 
+class RecordingControlPanel(QWidget):
+    """Recording control panel with input device and file selection."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._setup_ui()
+
+    def _setup_ui(self):
+        """Setup recording control panel."""
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+
+        # Input device selector
+        input_group = QGroupBox("Input Device")
+        input_layout = QVBoxLayout(input_group)
+
+        input_layout.addWidget(QLabel("Select input device:"))
+        self.input_device = QComboBox()
+
+        from Core.audio_engine import get_audio_devices
+        audio_mgr = get_audio_devices()
+
+        for device in audio_mgr.get_input_devices():
+            self.input_device.addItem(device.name, device.device_id)
+
+        input_layout.addWidget(self.input_device)
+        layout.addWidget(input_group)
+
+        # Output file
+        file_group = QGroupBox("Output File")
+        file_layout = QHBoxLayout(file_group)
+
+        self.file_path = QLineEdit()
+        self.file_path.setPlaceholderText("Select output file...")
+        self.file_path.setReadOnly(True)
+        file_layout.addWidget(self.file_path)
+
+        self.browse_btn = QPushButton("Browse…")
+        self.browse_btn.setMaximumWidth(80)
+        file_layout.addWidget(self.browse_btn)
+
+        layout.addWidget(file_group)
+
+        # Recording controls
+        control_group = QGroupBox("Controls")
+        control_layout = QHBoxLayout(control_group)
+
+        self.rec_btn = QPushButton("● Record")
+        self.rec_btn.setStyleSheet("background-color: #ff4444; color: white;")
+        self.pause_btn = QPushButton("⏸ Pause")
+        self.pause_btn.setEnabled(False)
+        self.stop_btn = QPushButton("⏹ Stop")
+        self.stop_btn.setEnabled(False)
+
+        control_layout.addWidget(self.rec_btn)
+        control_layout.addWidget(self.pause_btn)
+        control_layout.addWidget(self.stop_btn)
+        control_layout.addStretch()
+
+        layout.addWidget(control_group)
+
+        # Statistics display
+        stats_group = QGroupBox("Recording Stats")
+        stats_layout = QVBoxLayout(stats_group)
+
+        self.duration_label = QLabel("Duration: 00:00:00")
+        self.peak_label = QLabel("Peak Level: 0 dB")
+        self.bytes_label = QLabel("Bytes: 0")
+
+        stats_layout.addWidget(self.duration_label)
+        stats_layout.addWidget(self.peak_label)
+        stats_layout.addWidget(self.bytes_label)
+
+        layout.addWidget(stats_group)
+        layout.addStretch()
+
+    def get_output_path(self):
+        """Get the selected output file path."""
+        return self.file_path.text()
+
+    def set_output_path(self, path: str):
+        """Set the output file path."""
+        self.file_path.setText(path)
+
+    def get_input_device_id(self):
+        """Get the selected input device ID."""
+        return self.input_device.currentData()
+
+    def update_stats(self, duration_sec: float, peak: float, bytes_recorded: int):
+        """Update displayed statistics."""
+        # Format duration
+        minutes, seconds = divmod(int(duration_sec), 60)
+        hours, minutes = divmod(minutes, 60)
+        self.duration_label.setText(f"Duration: {hours:02d}:{minutes:02d}:{seconds:02d}")
+
+        # Peak level in dB
+        if peak > 0:
+            peak_db = 20 * __import__('math').log10(peak)
+        else:
+            peak_db = -80
+        self.peak_label.setText(f"Peak Level: {peak_db:.1f} dB")
+
+        # Bytes
+        mb = bytes_recorded / (1024 * 1024)
+        self.bytes_label.setText(f"Bytes: {mb:.2f} MB")
+
+
 class AudioDeviceDialog(QDialog):
     """Dialog for selecting audio device and configuring audio settings."""
 

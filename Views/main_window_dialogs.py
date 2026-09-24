@@ -138,6 +138,31 @@ class MainWindowDialogMixin:
         """Action handler for audio configuration menu item."""
         self.show_audio_config()
 
+    def show_recording_dialog(self) -> bool:
+        """Show audio recording dialog.
+
+        Returns:
+            True if recording dialog was shown
+        """
+        from Views.audio_controls import RecordingControlPanel
+        from PySide6.QtWidgets import QDialog
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Audio Recording")
+        dialog.setMinimumWidth(500)
+        dialog.setMinimumHeight(400)
+
+        layout = QVBoxLayout(dialog)
+        recording_panel = RecordingControlPanel(dialog)
+        layout.addWidget(recording_panel)
+
+        dialog.exec()
+        return True
+
+    def on_show_recording(self):
+        """Action handler for recording menu item."""
+        self.show_recording_dialog()
+
 
 def add_testing_menu_items(main_window):
     """Add testing/debugging menu items to Tools menu."""
@@ -171,6 +196,11 @@ def add_testing_menu_items(main_window):
         act_audio_config = testing_menu.addAction("&Audio Configuration…")
         act_audio_config.triggered.connect(main_window.on_show_audio_config)
         main_window._act_audio_config = act_audio_config
+
+        # Audio recording
+        act_recording = testing_menu.addAction("&Audio Recording…")
+        act_recording.triggered.connect(main_window.on_show_recording)
+        main_window._act_recording = act_recording
 
         # Device info
         act_device_info = testing_menu.addAction("&Device Information…")
