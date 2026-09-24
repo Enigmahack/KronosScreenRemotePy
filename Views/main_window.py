@@ -1195,7 +1195,7 @@ class _ShutdownOverlay(QWidget):
 
 
 def _log_file_path() -> pathlib.Path:
-    return Models.storage.data_dir() / "kronos_screen_remote.log"
+    return Models.Models.storage.data_dir() / "kronos_screen_remote.log"
 
 
 def _setup_logging(debug: bool):
@@ -1370,8 +1370,8 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
 
         self._receiver: Optional[StreamReceiver] = None
         self._palette:  list[PaletteEntry] = []
-        self._overrides = storage.load_overrides()
-        self._locked    = storage.load_locks()
+        self._overrides = Models.Models.storage.load_overrides()
+        self._locked    = Models.storage.load_locks()
         self._raw_frame: Optional[bytes] = None
 
         self._mode_detector  = ModeDetector()
@@ -1477,7 +1477,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         # a sync — but swallowed alone means the app silently stops saving
         # anything. Surface the first of each kind in the notification area.
         # storage calls this from whatever thread failed, so hop to the GUI one.
-        storage.on_write_failure = lambda msg: QTimer.singleShot(
+        Models.storage.on_write_failure = lambda msg: QTimer.singleShot(
             0, self, lambda m=msg: self._notify(m, is_error=True))
         self._wire_actions()
         self._apply_settings_to_ui()
@@ -1486,7 +1486,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         QApplication.instance().installEventFilter(self)
 
         # Load cal
-        self._frame_w._cal_mesh, self._frame_w._cal_bias_dots = storage.load_cal()
+        self._frame_w._cal_mesh, self._frame_w._cal_bias_dots = Models.storage.load_cal()
         if not self._frame_w._cal_mesh.is_identity():
             logging.debug("cal mesh loaded, %d bias dot(s)", len(self._frame_w._cal_bias_dots))
 
@@ -2107,7 +2107,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
     def _set_scale_quality(self, mode: str):
         """User picked a scaling quality from the menu."""
         self._settings.scaling_quality = mode
-        storage.save_settings(self._settings)
+        Models.storage.save_settings(self._settings)
         {"Sharp": self._act_scale_sharp, "Smooth": self._act_scale_smooth,
          "HighQuality": self._act_scale_hq}[mode].setChecked(True)  # exclusive group unchecks others
         self._frame_w._scale_mode = mode
@@ -2123,7 +2123,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
                 return
             host = text.strip()
             self._settings.kronos_host = host
-            storage.save_settings(self._settings)
+            Models.storage.save_settings(self._settings)
         self._host = host
         self._connect_async()
 
@@ -2143,7 +2143,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         self._settings.ftp_username = dlg.username
         self._settings.ftp_password = dlg.password
         if dlg.save_password:
-            storage.save_settings(self._settings)
+            Models.storage.save_settings(self._settings)
         return True
 
     def _connect_async(self):
@@ -2174,7 +2174,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             self._settings.ftp_username = ""
             self._settings.ftp_password = ""
             self._connecting = False
-            QTimer.singleShot(0, self, lambda: storage.save_settings(self._settings))
+            QTimer.singleShot(0, self, lambda: Models.storage.save_settings(self._settings))
             QTimer.singleShot(0, self, lambda: self._set_conn_state(
                 "disconnected", "Authentication failed — re-enter credentials in Settings"))
             return
@@ -2381,7 +2381,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             self._settings.ftp_username = ""
             self._settings.ftp_password = ""
             self._connecting = False
-            QTimer.singleShot(0, self, lambda: storage.save_settings(self._settings))
+            QTimer.singleShot(0, self, lambda: Models.storage.save_settings(self._settings))
             QTimer.singleShot(0, self, lambda: self._set_conn_state(
                 "disconnected", "Auth failed — re-enter credentials in Settings then reconnect"))
             return
@@ -3092,7 +3092,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         self._act_hide_data.blockSignals(True)
         self._act_hide_data.setChecked(checked)
         self._act_hide_data.blockSignals(False)
-        storage.save_settings(self._settings)
+        Models.storage.save_settings(self._settings)
         self._resize_to_fit()
 
     def _toggle_hide_value_input(self, checked: bool):
@@ -3103,7 +3103,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         self._act_hide_value.blockSignals(True)
         self._act_hide_value.setChecked(checked)
         self._act_hide_value.blockSignals(False)
-        storage.save_settings(self._settings)
+        Models.storage.save_settings(self._settings)
         self._resize_to_fit()
 
     def _apply_layout(self, preset: str):
@@ -3139,7 +3139,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             self._show_left_panel(value_exp)
             self._value_rail.set_expanded(value_exp)
             self._data_rail.set_expanded(data_exp)
-        storage.save_settings(self._settings)
+        Models.storage.save_settings(self._settings)
         self._resize_to_fit()
 
     def _toggle_focused_data_expand(self):
@@ -3149,7 +3149,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         self._settings.focused_data_expanded = exp
         self._ctrl_surface.setVisible(exp)
         self._data_rail.set_expanded(exp)
-        storage.save_settings(self._settings)
+        Models.storage.save_settings(self._settings)
         self._resize_to_fit()
 
     def _toggle_focused_value_expand(self):
@@ -3159,14 +3159,14 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         self._settings.focused_value_expanded = exp
         self._show_left_panel(exp)
         self._value_rail.set_expanded(exp)
-        storage.save_settings(self._settings)
+        Models.storage.save_settings(self._settings)
         self._resize_to_fit()
 
     def _on_always_on_top_toggled(self, checked: bool):
         self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, checked)
         self.show()
         self._settings.always_on_top = checked
-        storage.save_settings(self._settings)
+        Models.storage.save_settings(self._settings)
 
     def _copy_ip_address(self):
         ip = self._host or self._settings.kronos_host
@@ -3181,7 +3181,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             hosts.remove(host)
         hosts.insert(0, host)
         self._settings.recent_hosts = hosts[:10]
-        storage.save_settings(self._settings)
+        Models.storage.save_settings(self._settings)
         self._rebuild_recent_menu()
 
     def _rebuild_recent_menu(self):
@@ -3200,12 +3200,12 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
     def _connect_to_recent(self, host: str):
         self._settings.kronos_host = host
         self._host = host
-        storage.save_settings(self._settings)
+        Models.storage.save_settings(self._settings)
         self._connect_async()
 
     def _clear_recent_hosts(self):
         self._settings.recent_hosts.clear()
-        storage.save_settings(self._settings)
+        Models.storage.save_settings(self._settings)
         self._rebuild_recent_menu()
 
     def _set_window_size(self, scale: float):
@@ -3259,7 +3259,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             self._frame_w._cal_dragging = None
             self._frame_w._cal_hover    = None
             if self._frame_w._cal_dirty:
-                storage.save_cal(self._frame_w._cal_mesh,
+                Models.storage.save_cal(self._frame_w._cal_mesh,
                                  self._frame_w._cal_bias_dots)
                 self._frame_w._cal_dirty = False
         self._frame_w.update()
@@ -3277,7 +3277,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             self._frame_w.cal_redo()
             return
         if key == Qt.Key_S and not mods:
-            storage.save_cal(self._frame_w._cal_mesh,
+            Models.storage.save_cal(self._frame_w._cal_mesh,
                              self._frame_w._cal_bias_dots)
             self._frame_w._cal_dirty = False
             self._frame_w.update()
@@ -3421,7 +3421,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         whether from the Settings dialog's OK button or an Import Settings…
         round-trip — persists to disk and pushes each changed value out to the
         live connection/UI it affects."""
-        storage.save_settings(self._settings)
+        Models.storage.save_settings(self._settings)
         self._host        = self._settings.kronos_host
         self._ctrl_port   = self._settings.ctrl_port
         self._stream_port = self._settings.stream_port
@@ -3462,7 +3462,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         hide_data_before  = self._settings.hide_data_input
         hide_value_before = self._settings.hide_value_input
         try:
-            imported = storage.import_settings(path)
+            imported = Models.storage.import_settings(path)
         except Exception as e:
             QMessageBox.warning(self, "Import Settings", f"Failed to import settings:\n{e}")
             return
@@ -3481,7 +3481,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         if not path:
             return
         try:
-            storage.export_settings(self._settings, path)
+            Models.storage.export_settings(self._settings, path)
         except Exception as e:
             QMessageBox.warning(self, "Export Settings", f"Failed to export settings:\n{e}")
             return
@@ -3761,7 +3761,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         if ok:
             self._fps = val
             self._settings.max_fps = val
-            storage.save_settings(self._settings)
+            Models.storage.save_settings(self._settings)
             if self._receiver:
                 self._ctrl_send(f"FPS {val}")
 
@@ -4017,7 +4017,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
                 event.ignore()
                 return
             if r == QMessageBox.Save:
-                storage.save_cal(self._frame_w._cal_mesh,
+                Models.storage.save_cal(self._frame_w._cal_mesh,
                                  self._frame_w._cal_bias_dots)
                 self._frame_w._cal_dirty = False
             else:
@@ -4066,9 +4066,9 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             self._audio_capture = None
 
         self._ctrl.stop_persistent()
-        storage.save_settings(self._settings)
+        Models.storage.save_settings(self._settings)
         if self._frame_w._cal_dirty:
-            storage.save_cal(self._frame_w._cal_mesh, self._frame_w._cal_bias_dots)
+            Models.storage.save_cal(self._frame_w._cal_mesh, self._frame_w._cal_bias_dots)
         self.close()
 
     def eventFilter(self, watched, event):
