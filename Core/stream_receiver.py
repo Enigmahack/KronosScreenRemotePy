@@ -5,9 +5,8 @@ handshake, and delivers 8bpp palette-indexed frames to the GUI thread via Qt sig
 Pull mode: client sends 0xFF per frame; server responds with frame.
 Change mode: server sends frames whenever the display changes.
 
-Authentication: If no FTP username is provided, defaults to "kronos" with the
-device's PublicID as password (PublicID authentication mode per the daemon).
-If FTP credentials are configured in Kronos UI, those are used instead.
+Authentication: FTP username and password must be provided. These are configured
+in the Kronos/Nautilus UI and must match exactly for authentication to succeed.
 """
 from __future__ import annotations
 import logging
@@ -86,10 +85,10 @@ class StreamReceiver(QThread):
             log.debug("connecting to %s:%s mode=%s fps=%s",
                       self._host, self._port, self._mode, self._fps)
             s.connect((self._host, self._port))
-            # API requires username length 1-64 bytes. If no username provided, use
-            # "kronos" (daemon's default for PublicID authentication mode).
-            username = self._username or "kronos"
-            u_bytes = username.encode('ascii', errors='replace')[:64]
+            # API requires username length 1-64 bytes. Empty credentials are not allowed.
+            if not self._username:
+                raise ConnectionError("Username is required for authentication")
+            u_bytes = self._username.encode('ascii', errors='replace')[:64]
             p_bytes = self._password.encode('ascii', errors='replace')[:128]
             hello = (_MAGIC
                      + bytes([0x02, self._mode, self._fps,
