@@ -1,6 +1,8 @@
 """
-StreamReceiver — connects to the Kronos stream port (7373), performs the KSCR
-handshake, and delivers 8bpp palette-indexed frames to the GUI thread via Qt signals.
+StreamReceiver — connects to the Kronos/Nautilus stream port (7373), performs
+the KSCR v3 handshake, and delivers frames to the GUI thread via Qt signals.
+
+Protocol v3 supports both Kronos (8bpp indexed color) and Nautilus (RGB565).
 
 Pull mode: client sends 0xFF per frame; server responds with frame.
 Change mode: server sends frames whenever the display changes.
@@ -91,7 +93,7 @@ class StreamReceiver(QThread):
             u_bytes = self._username.encode('ascii', errors='replace')[:64]
             p_bytes = self._password.encode('ascii', errors='replace')[:128]
             hello = (_MAGIC
-                     + bytes([0x02, self._mode, self._fps,
+                     + bytes([0x03, self._mode, self._fps,
                                len(u_bytes), len(p_bytes)])
                      + u_bytes + p_bytes)
             # Never log `hello` itself — it carries the FTP username and
@@ -112,12 +114,15 @@ class StreamReceiver(QThread):
             if status != 0x00:
                 raise ConnectionError(f"Handshake rejected by daemon (status 0x{status:02X})")
 
-            # Remaining payload: w(2) + h(2) + palette(256*3)
-            payload = _recv_all(s, 2 + 2 + 256 * 3)
+            # V3 response: w(2) + h(2) + fmt(1) + bpp(1) + enc(1) + flags(1) = 8 bytes
+            # If INDEX8 format, followed by palette(256*3)
+            # (V2 response was: w(2) + h(2) + palette(256*3), always included)
+            payload = _recv_all(s, 8)
             if payload is None:
                 raise ConnectionError("Handshake payload truncated")
             width  = payload[0] | (payload[1] << 8)
             height = payload[2] | (payload[3] << 8)
+            stream_fmt = payload[4]  # 0 = INDEX8, 1 = RGB565
             # These size every buffer below and the QImage the GUI builds from
             # each frame, so reject nonsense here rather than allocating on it.
             if not (0 < width <= _MAX_DIMENSION and 0 < height <= _MAX_DIMENSION):
@@ -125,10 +130,18 @@ class StreamReceiver(QThread):
                     f"Daemon reported an unusable frame size ({width}x{height})")
             self.width, self.height = width, height
 
+            # Read palette if INDEX8 format
             pal: list[PaletteEntry] = []
-            for i in range(256):
-                o = 4 + i * 3
-                pal.append(PaletteEntry(payload[o], payload[o + 1], payload[o + 2]))
+            if stream_fmt == 0:  # INDEX8
+                pal_payload = _recv_all(s, 256 * 3)
+                if pal_payload is None:
+                    raise ConnectionError("Palette payload truncated")
+                for i in range(256):
+                    o = i * 3
+                    pal.append(PaletteEntry(pal_payload[o], pal_payload[o + 1], pal_payload[o + 2]))
+            else:
+                # RGB565 format (Nautilus) - no palette needed
+                log.debug("RGB565 format detected - no palette needed")
             self.palette = pal
 
             log.info("handshake complete: %dx%d", self.width, self.height)
