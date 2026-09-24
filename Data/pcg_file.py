@@ -62,7 +62,20 @@ _BANK_CHUNK_OBJ_TYPE = {
     "SBK1": OBJ_SET_LIST,
 }
 
+# C#'s PcgObjectExtractor.BankChunkObjType additionally recognizes DBK1 (Drum
+# Kit) and WBK1 (Wave Sequence) — this client has no Local Library object type
+# for either yet, so their records are reported as skipped (PcgRejectedBank,
+# surfaced in the Librarian's "N rejected bank(s)" UI) rather than silently
+# vanishing, which is what happened before these two tags were even searched
+# for at all.
+_UNSUPPORTED_BANK_CHUNK_NAME = {
+    "DBK1": "Drum Kit",
+    "WBK1": "Wave Sequence",
+}
+
 _BANK_CHUNK_TAGS = tuple(t.encode("ascii") for t in _BANK_CHUNK_OBJ_TYPE)
+_UNSUPPORTED_BANK_CHUNK_TAGS = tuple(t.encode("ascii") for t in _UNSUPPORTED_BANK_CHUNK_NAME)
+_ALL_SCAN_TAGS = _BANK_CHUNK_TAGS + _UNSUPPORTED_BANK_CHUNK_TAGS
 
 
 # ── Bank-id decoding ─────────────────────────────────────────────────────────
@@ -197,7 +210,7 @@ def _candidate_offsets(data: bytes, limit: int) -> List[Tuple[int, bytes]]:
     than that.
     """
     hits: List[Tuple[int, bytes]] = []
-    for tag in _BANK_CHUNK_TAGS:
+    for tag in _ALL_SCAN_TAGS:
         pos = data.find(tag)
         while 0 <= pos < limit:
             hits.append((pos, tag))
@@ -217,13 +230,51 @@ def extract_objects(data: bytes) -> Tuple[List[PcgObjectEntry], List[PcgRejected
     for pos, tag_bytes in _candidate_offsets(data, len(data) - _HEADER_SIZE + 1):
         if pos < consumed_to:
             continue
-        obj_type = _BANK_CHUNK_OBJ_TYPE[tag_bytes.decode("ascii")]
-        consumed, reason = _try_read_bank(data, pos, obj_type, tag_bytes == b"MBK1", results)
+        tag_str = tag_bytes.decode("ascii")
+        if tag_str in _UNSUPPORTED_BANK_CHUNK_NAME:
+            consumed, reason = _try_skip_unsupported_bank(data, pos, tag_str)
+        else:
+            obj_type = _BANK_CHUNK_OBJ_TYPE[tag_str]
+            consumed, reason = _try_read_bank(data, pos, obj_type, tag_bytes == b"MBK1", results)
+        # Not mutually exclusive: _try_skip_unsupported_bank reports a reason
+        # on its success path too (consumed > 0 AND reason set), unlike
+        # _try_read_bank where the two are always exclusive.
         if consumed:
             consumed_to = pos + consumed
-        elif reason is not None:
+        if reason is not None:
             rejected.append(reason)
     return results, rejected
+
+
+def _try_skip_unsupported_bank(data: bytes, offset: int,
+                               tag_str: str) -> Tuple[int, Optional[PcgRejectedBank]]:
+    """DBK1/WBK1: validate the header enough to skip past the chunk's own
+    records (so their bytes aren't mistaken for spurious tag matches), but
+    never extract objects — this client has no Drum Kit/Wave Sequence object
+    type. Always reports a PcgRejectedBank on success, unlike a supported
+    chunk which only does on failure, so the count reaches the "rejected
+    bank(s)" UI. Upper bound 200, not 128, per PcgObjectExtractor.cs's own
+    comment ("largest real bank seen (WBK1 Int = 150)") — this is the one
+    chunk kind that bound was actually written for."""
+    label = _UNSUPPORTED_BANK_CHUNK_NAME[tag_str]
+    count = _read_be32(data, offset + 0x0C)
+    item_size = _read_be32(data, offset + 0x10)
+    bank_id_raw = _read_be32(data, offset + 0x14)
+
+    if not (1 <= count <= 200):
+        return 0, PcgRejectedBank(tag_str, offset, count, item_size, bank_id_raw,
+                                   f"{label}: count {count} out of range 1..200")
+    if not (64 <= item_size <= 200_000):
+        return 0, PcgRejectedBank(tag_str, offset, count, item_size, bank_id_raw,
+                                   f"{label}: itemSize {item_size} out of range 64..200000")
+    records_end = offset + _HEADER_SIZE + count * item_size
+    if records_end > len(data):
+        return 0, PcgRejectedBank(tag_str, offset, count, item_size, bank_id_raw,
+                                   f"{label}: records would run past end of file")
+
+    return records_end - offset, PcgRejectedBank(
+        tag_str, offset, count, item_size, bank_id_raw,
+        f"{label}: {count} record(s) skipped — not supported by this client yet")
 
 
 def _try_read_bank(data: bytes, offset: int, obj_type: int, is_exi: bool,
