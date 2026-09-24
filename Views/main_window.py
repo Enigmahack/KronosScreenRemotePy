@@ -55,6 +55,7 @@ from Models.models import CalBiasDot, CalHistEntry, CalHistKind, CalMesh, HistEn
 from Rendering.overlay_renderer import OverlayRenderer
 from Core.stream_receiver import StreamReceiver
 from Core.sysex_service import SysExService
+from Views.main_window_dialogs import MainWindowDialogMixin, add_testing_menu_items
 
 
 # ── ICMP ping (matches C# System.Net.NetworkInformation.Ping) ─────────────────
@@ -1353,8 +1354,9 @@ class _FtpLoginDialog(QDialog):
         self._show_error(f"{error} ({remaining} attempt{plural} remaining)")
 
 
-class MainWindow(QMainWindow):
+class MainWindow(MainWindowDialogMixin, QMainWindow):
     def __init__(self, settings: AppSettings):
+        MainWindowDialogMixin.__init__(self)
         super().__init__()
         self._settings    = settings
         self._conn_state  = "disconnected"
@@ -1896,6 +1898,9 @@ class MainWindow(QMainWindow):
         self._act_cmd_palette = help_menu.addAction("&Command Palette")
         help_menu.addSeparator()
         self._act_about       = help_menu.addAction("&About…")
+
+        # Add testing/diagnostics menu items
+        add_testing_menu_items(self)
 
     def _build_bank_menu(self, menu: QMenu):
         """3 sub-menus (Internal/User/U-User), matching C#'s MainWindow.xaml.cs
