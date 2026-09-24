@@ -191,6 +191,45 @@ QMenu::item:disabled { color: #606060; }
 QMenu::separator { height: 1px; background: #444444; margin: 3px 4px; }
 """
 
+# ── FTP path safety (port of C#'s Networking/FtpPathSafety.cs) ────────────────
+# The Kronos's OS/firmware expects a fixed name at each top-level FTP mount
+# point (SSD1/SSD2/SSD3/...) — renaming one is a real risk of corrupting or
+# bricking the unit's storage naming, not just a cosmetic mistake the user can
+# undo by renaming it back (see the C# original's comment: its own Rename
+# command was found capable of exactly this). _FtpWorker.rename() below is the
+# ONE chokepoint every FTP rename/move in this app goes through — do not call
+# ftplib's .rename directly anywhere else.
+
+# Hardware-verified 2026-09-04 (see FtpPathSafety.cs): the Kronos's own
+# filesystem refuses a path once its total length from the FTP root passes
+# this many characters.
+_MAX_REMOTE_PATH_LENGTH = 245
+
+
+def _is_top_level_ftp_path(path: str) -> bool:
+    """A path is "top-level" when it names a direct child of the FTP root —
+    no other slash in it besides (at most) the leading one."""
+    clean = path.rstrip("/")
+    return clean.rfind("/") <= 0
+
+
+class FtpTopLevelPathError(Exception):
+    """Raised by _FtpWorker.rename/delete_file/delete_dir when the path is a
+    top-level Kronos storage volume (SSD1/SSD2/SSD3/...)."""
+    def __init__(self, path: str, action: str = "rename/move"):
+        super().__init__(
+            f"Refusing to {action} '{path}' — top-level Kronos storage "
+            "volumes (SSD1/SSD2/SSD3/...) can never be renamed, moved, or deleted.")
+
+
+class FtpPathTooLongError(Exception):
+    def __init__(self, path: str):
+        super().__init__(
+            f"That would make the remote path {len(path)} characters long — the Kronos's "
+            f"own filesystem refuses anything over {_MAX_REMOTE_PATH_LENGTH}. Try a shorter "
+            "name, or a shallower destination folder.")
+
+
 # ── FTP worker (runs blocking ftplib calls off the main thread) ───────────────
 
 class _FtpWorker:
@@ -294,10 +333,20 @@ class _FtpWorker:
         self._ftp.retrbinary(f"RETR {remote_path}", on_chunk, blocksize)
 
     def delete_file(self, path: str):
+        if _is_top_level_ftp_path(path):
+            raise FtpTopLevelPathError(path, "delete")
         self.ensure_connected()
         self._ftp.delete(path)
 
     def delete_dir(self, path: str):
+        """Belt-and-suspenders on top of _on_remote_delete's UI-level check
+        (C# only gates this at the UI level; this app additionally guards the
+        actual FTP call, same as rename). Recursion-safe: only a literal
+        top-level path (SSD1) trips this, never a subfolder within one
+        (SSD1/subfolder has a second slash), so descending into a volume's
+        own contents is unaffected."""
+        if _is_top_level_ftp_path(path):
+            raise FtpTopLevelPathError(path, "delete")
         self.ensure_connected()
         for name, facts in self._ftp.mlsd(path):
             if name in (".", ".."):
@@ -310,10 +359,19 @@ class _FtpWorker:
         self._ftp.rmd(path)
 
     def rename(self, old: str, new: str):
+        """The ONE chokepoint every FTP rename/move goes through — see the
+        module-level FTP-path-safety block above. Ported from C#'s
+        FtpPathSafety.RenameGuardedAsync."""
+        if _is_top_level_ftp_path(old) or _is_top_level_ftp_path(new):
+            raise FtpTopLevelPathError(old, "rename/move")
+        if len(new) > _MAX_REMOTE_PATH_LENGTH:
+            raise FtpPathTooLongError(new)
         self.ensure_connected()
         self._ftp.rename(old, new)
 
     def mkdir(self, path: str):
+        if len(path) > _MAX_REMOTE_PATH_LENGTH:
+            raise FtpPathTooLongError(path)
         self.ensure_connected()
         self._ftp.mkd(path)
 
@@ -942,6 +1000,18 @@ class FileManagerWindow(QMainWindow):
         if not items:
             self._set_status("Select items to delete.")
             return
+        # A top-level entry is a Kronos storage volume (SSD1/SSD2/...), not a
+        # user folder — deleting one would recursively wipe the whole volume.
+        # Refused outright, not just warned about: a generic "Delete N item(s)?"
+        # confirmation doesn't convey what's actually about to happen (matches
+        # C#'s BuildContextMenu, which disables Delete entirely for these
+        # rather than relying on the confirmation dialog).
+        top_level = [e for e in items if _is_top_level_ftp_path(e.full_path)]
+        if top_level:
+            names = ", ".join(e.name for e in top_level)
+            self._set_status(f"Cannot delete {names} — top-level Kronos storage "
+                             "volumes can never be deleted.")
+            return
         r = QMessageBox.question(self, "Delete",
                                  f"Delete {len(items)} item(s) from Kronos?",
                                  QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
@@ -992,6 +1062,14 @@ class FileManagerWindow(QMainWindow):
             self._set_status("Select exactly one item to rename.")
             return
         entry = items[0]
+        # Checked here, ahead of even prompting for a new name, so the context
+        # menu's own disabled state isn't the only thing standing between the
+        # user and this — _FtpWorker.rename's guard is the last line of
+        # defense, not the first (matches C#'s OnRemoteRename).
+        if _is_top_level_ftp_path(entry.full_path):
+            self._set_status(f"Cannot rename '{entry.name}' — top-level Kronos storage "
+                             "volumes can never be renamed or moved.")
+            return
         new_name, ok = QInputDialog.getText(self, "Rename", "New name:", text=entry.name)
         if not ok or not new_name.strip() or new_name.strip() == entry.name:
             return
@@ -1017,6 +1095,11 @@ class FileManagerWindow(QMainWindow):
         has_files = any(not e.is_directory for e in entries)
         has_selection = len(entries) > 0
         is_single = len(entries) == 1
+        # A top-level remote entry (SSD1/SSD2/...) can never be cut, copied,
+        # renamed, or deleted — matches C#'s BuildContextMenu. Open (navigating
+        # INTO the volume) is unaffected.
+        remote_top_level_selected = is_remote and any(
+            _is_top_level_ftp_path(e.full_path) for e in entries)
 
         menu = QMenu(self)
 
@@ -1032,11 +1115,11 @@ class FileManagerWindow(QMainWindow):
         menu.addSeparator()
 
         a = menu.addAction("Cut")
-        a.setEnabled(has_selection)
+        a.setEnabled(has_selection and not remote_top_level_selected)
         a.triggered.connect(lambda: self._do_cut(tree, is_remote))
 
         a = menu.addAction("Copy")
-        a.setEnabled(has_selection)
+        a.setEnabled(has_selection and not remote_top_level_selected)
         a.triggered.connect(lambda: self._do_copy(tree, is_remote))
 
         a = menu.addAction("Paste")
@@ -1046,11 +1129,11 @@ class FileManagerWindow(QMainWindow):
         menu.addSeparator()
 
         a = menu.addAction("Rename")
-        a.setEnabled(is_single and entry is not None)
+        a.setEnabled(is_single and entry is not None and not remote_top_level_selected)
         a.triggered.connect(self._on_remote_rename if is_remote else self._on_local_rename)
 
         a = menu.addAction("Delete")
-        a.setEnabled(has_selection)
+        a.setEnabled(has_selection and not remote_top_level_selected)
         a.triggered.connect(self._on_remote_delete if is_remote else self._on_local_delete)
 
         menu.addSeparator()
