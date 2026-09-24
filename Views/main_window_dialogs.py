@@ -179,6 +179,22 @@ class MainWindowDialogMixin:
         """Action handler for sample editor menu item."""
         self.show_sample_editor()
 
+    def show_equalizer(self) -> bool:
+        """Show equalizer control dialog.
+
+        Returns:
+            True if dialog was shown
+        """
+        from Views.audio_controls import EqualizerDialog
+
+        dlg = EqualizerDialog(self)
+        dlg.exec()
+        return True
+
+    def on_show_equalizer(self):
+        """Action handler for equalizer menu item."""
+        self.show_equalizer()
+
 
 def add_testing_menu_items(main_window):
     """Add testing/debugging menu items to Tools menu."""
@@ -217,6 +233,11 @@ def add_testing_menu_items(main_window):
         act_recording = testing_menu.addAction("&Audio Recording…")
         act_recording.triggered.connect(main_window.on_show_recording)
         main_window._act_recording = act_recording
+
+        # Equalizer
+        act_eq = testing_menu.addAction("3-Band &Equalizer…")
+        act_eq.triggered.connect(main_window.on_show_equalizer)
+        main_window._act_eq = act_eq
 
         testing_menu.addSeparator()
 

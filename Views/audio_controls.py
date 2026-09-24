@@ -1,4 +1,4 @@
-"""Audio control UI components - VU meter, device selection, volume controls."""
+"""Audio control UI components - VU meter, device selection, volume controls, EQ."""
 from __future__ import annotations
 from typing import Optional, Callable
 import math
@@ -7,11 +7,12 @@ from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QPainter, QColor, QFont, QPainterPath
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel,
-    QComboBox, QSlider, QPushButton, QDialog, QSpinBox,
+    QComboBox, QSlider, QPushButton, QDialog, QSpinBox, QLineEdit,
 )
 
 import Utils.theme as T
 from Core.audio_engine import get_audio_devices, AudioDevice, AudioConfig
+from Core.audio_effects import get_audio_effects, SimpleEqualizerEffect
 
 
 class VuMeter(QWidget):
@@ -467,3 +468,218 @@ class AudioDeviceDialog(QDialog):
             channels=self.channels.value(),
             buffer_size=buffer_size,
         )
+
+
+class EqualizerControlPanel(QWidget):
+    """Real-time 3-band parametric equalizer control panel."""
+
+    eq_changed = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.eq_effect = None
+        self._setup_ui()
+        self._connect_eq()
+
+    def _setup_ui(self):
+        """Setup equalizer control panel."""
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+
+        # EQ enabled toggle
+        toggle_layout = QHBoxLayout()
+        self.eq_enabled = QPushButton("Enable EQ")
+        self.eq_enabled.setCheckable(True)
+        self.eq_enabled.setChecked(True)
+        self.eq_enabled.setMaximumWidth(100)
+        self.eq_enabled.toggled.connect(self._on_eq_enabled_toggled)
+        toggle_layout.addWidget(self.eq_enabled)
+        toggle_layout.addStretch()
+        layout.addLayout(toggle_layout)
+
+        # Low band
+        low_group = QGroupBox("Low Band (100 Hz)")
+        low_layout = QVBoxLayout(low_group)
+
+        low_h_layout = QHBoxLayout()
+        low_h_layout.addWidget(QLabel("Gain:"))
+        self.low_slider = QSlider(Qt.Orientation.Horizontal)
+        self.low_slider.setMinimum(-120)
+        self.low_slider.setMaximum(120)
+        self.low_slider.setValue(0)
+        self.low_slider.valueChanged.connect(self._on_low_changed)
+        low_h_layout.addWidget(self.low_slider)
+        self.low_label = QLabel("0 dB")
+        self.low_label.setMaximumWidth(50)
+        low_h_layout.addWidget(self.low_label)
+        low_layout.addLayout(low_h_layout)
+
+        layout.addWidget(low_group)
+
+        # Mid band
+        mid_group = QGroupBox("Mid Band (1 kHz)")
+        mid_layout = QVBoxLayout(mid_group)
+
+        mid_h_layout = QHBoxLayout()
+        mid_h_layout.addWidget(QLabel("Gain:"))
+        self.mid_slider = QSlider(Qt.Orientation.Horizontal)
+        self.mid_slider.setMinimum(-120)
+        self.mid_slider.setMaximum(120)
+        self.mid_slider.setValue(0)
+        self.mid_slider.valueChanged.connect(self._on_mid_changed)
+        mid_h_layout.addWidget(self.mid_slider)
+        self.mid_label = QLabel("0 dB")
+        self.mid_label.setMaximumWidth(50)
+        mid_h_layout.addWidget(self.mid_label)
+        mid_layout.addLayout(mid_h_layout)
+
+        layout.addWidget(mid_group)
+
+        # High band
+        high_group = QGroupBox("High Band (10 kHz)")
+        high_layout = QVBoxLayout(high_group)
+
+        high_h_layout = QHBoxLayout()
+        high_h_layout.addWidget(QLabel("Gain:"))
+        self.high_slider = QSlider(Qt.Orientation.Horizontal)
+        self.high_slider.setMinimum(-120)
+        self.high_slider.setMaximum(120)
+        self.high_slider.setValue(0)
+        self.high_slider.valueChanged.connect(self._on_high_changed)
+        high_h_layout.addWidget(self.high_slider)
+        self.high_label = QLabel("0 dB")
+        self.high_label.setMaximumWidth(50)
+        high_h_layout.addWidget(self.high_label)
+        high_layout.addLayout(high_h_layout)
+
+        layout.addWidget(high_group)
+
+        # Preset buttons
+        preset_group = QGroupBox("Presets")
+        preset_layout = QHBoxLayout(preset_group)
+
+        flat_btn = QPushButton("Flat")
+        flat_btn.clicked.connect(self._preset_flat)
+        preset_layout.addWidget(flat_btn)
+
+        bright_btn = QPushButton("Bright")
+        bright_btn.clicked.connect(self._preset_bright)
+        preset_layout.addWidget(bright_btn)
+
+        warm_btn = QPushButton("Warm")
+        warm_btn.clicked.connect(self._preset_warm)
+        preset_layout.addWidget(warm_btn)
+
+        bass_boost_btn = QPushButton("Bass Boost")
+        bass_boost_btn.clicked.connect(self._preset_bass_boost)
+        preset_layout.addWidget(bass_boost_btn)
+
+        layout.addWidget(preset_group)
+
+        # Reset button
+        reset_btn = QPushButton("Reset All")
+        reset_btn.clicked.connect(self._preset_flat)
+        layout.addWidget(reset_btn)
+
+        layout.addStretch()
+
+    def _connect_eq(self):
+        """Connect to the global EQ effect."""
+        effects = get_audio_effects()
+        self.eq_effect = effects.get_effect("Equalizer")
+
+    def _on_eq_enabled_toggled(self, checked: bool):
+        """Handle EQ enable/disable toggle."""
+        if self.eq_effect:
+            self.eq_effect.enabled = checked
+            self.eq_changed.emit()
+
+    def _on_low_changed(self, value: int):
+        """Handle low band slider change."""
+        db_value = value / 10.0
+        self.low_label.setText(f"{db_value:.1f} dB")
+        if self.eq_effect:
+            self.eq_effect.set_parameter("low", db_value)
+            self.eq_changed.emit()
+
+    def _on_mid_changed(self, value: int):
+        """Handle mid band slider change."""
+        db_value = value / 10.0
+        self.mid_label.setText(f"{db_value:.1f} dB")
+        if self.eq_effect:
+            self.eq_effect.set_parameter("mid", db_value)
+            self.eq_changed.emit()
+
+    def _on_high_changed(self, value: int):
+        """Handle high band slider change."""
+        db_value = value / 10.0
+        self.high_label.setText(f"{db_value:.1f} dB")
+        if self.eq_effect:
+            self.eq_effect.set_parameter("high", db_value)
+            self.eq_changed.emit()
+
+    def _preset_flat(self):
+        """Set flat EQ response."""
+        self.low_slider.setValue(0)
+        self.mid_slider.setValue(0)
+        self.high_slider.setValue(0)
+
+    def _preset_bright(self):
+        """Bright preset - boost highs."""
+        self.low_slider.setValue(0)
+        self.mid_slider.setValue(20)  # 2 dB
+        self.high_slider.setValue(60)  # 6 dB
+
+    def _preset_warm(self):
+        """Warm preset - boost lows and mids."""
+        self.low_slider.setValue(40)  # 4 dB
+        self.mid_slider.setValue(20)   # 2 dB
+        self.high_slider.setValue(-30)  # -3 dB
+
+    def _preset_bass_boost(self):
+        """Bass boost preset."""
+        self.low_slider.setValue(80)   # 8 dB
+        self.mid_slider.setValue(0)
+        self.high_slider.setValue(-40)  # -4 dB
+
+    def get_eq_state(self) -> dict:
+        """Get current EQ state."""
+        return {
+            "enabled": self.eq_enabled.isChecked(),
+            "low": self.low_slider.value() / 10.0,
+            "mid": self.mid_slider.value() / 10.0,
+            "high": self.high_slider.value() / 10.0,
+        }
+
+    def set_eq_state(self, state: dict):
+        """Set EQ state from dict."""
+        self.eq_enabled.setChecked(state.get("enabled", True))
+        self.low_slider.setValue(int(state.get("low", 0) * 10))
+        self.mid_slider.setValue(int(state.get("mid", 0) * 10))
+        self.high_slider.setValue(int(state.get("high", 0) * 10))
+
+
+class EqualizerDialog(QDialog):
+    """Dialog for real-time EQ control."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("3-Band Parametric Equalizer")
+        self.setMinimumWidth(400)
+        self.setMinimumHeight(500)
+        self._setup_ui()
+
+    def _setup_ui(self):
+        """Setup dialog UI."""
+        layout = QVBoxLayout(self)
+
+        self.eq_panel = EqualizerControlPanel(self)
+        layout.addWidget(self.eq_panel)
+
+        # OK/Close buttons
+        button_layout = QHBoxLayout()
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.accept)
+        button_layout.addStretch()
+        button_layout.addWidget(close_btn)
+        layout.addLayout(button_layout)

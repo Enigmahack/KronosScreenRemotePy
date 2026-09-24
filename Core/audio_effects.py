@@ -346,6 +346,206 @@ class NoiseGateEffect(AudioEffect):
             return audio_data
 
 
+class ReverbEffect(AudioEffect):
+    """Schroeder reverb with adjustable room size and wet/dry mix."""
+
+    def __init__(self, sample_rate: int = 44100):
+        super().__init__("Reverb")
+        self.sample_rate = sample_rate
+        self._reverb = None
+        self._init_reverb()
+
+        self.add_parameter(EffectParameter(
+            name="room_size",
+            min_value=0.0,
+            max_value=1.0,
+            default_value=0.5
+        ))
+        self.add_parameter(EffectParameter(
+            name="wet_level",
+            min_value=0.0,
+            max_value=1.0,
+            default_value=0.3
+        ))
+
+    def _init_reverb(self):
+        """Initialize the reverb engine."""
+        try:
+            from Core.audio_dsp import SimpleReverb
+            self._reverb = SimpleReverb(self.sample_rate)
+        except ImportError:
+            self._reverb = None
+            log.warning("audio_dsp module not available, reverb will be disabled")
+
+    def process(self, audio_data: bytes, sample_rate: int,
+                channels: int) -> bytes:
+        """Apply reverb to audio."""
+        if not self.enabled or not self._reverb:
+            return audio_data
+
+        try:
+            room_size = self.get_parameter("room_size") or 0.5
+            wet_level = self.get_parameter("wet_level") or 0.3
+
+            # Update reverb settings
+            self._reverb.set_room_size(room_size)
+            self._reverb.set_wet_dry(wet_level)
+
+            # Process audio
+            return self._reverb.process(audio_data)
+
+        except Exception as e:
+            log.error(f"Error processing reverb: {e}")
+            return audio_data
+
+
+class DelayEffect(AudioEffect):
+    """Time-based delay effect with feedback."""
+
+    def __init__(self, sample_rate: int = 44100):
+        super().__init__("Delay")
+        self.sample_rate = sample_rate
+        self._delay = None
+        self._init_delay()
+
+        self.add_parameter(EffectParameter(
+            name="delay_time",
+            min_value=10.0,
+            max_value=1000.0,
+            default_value=500.0
+        ))
+        self.add_parameter(EffectParameter(
+            name="feedback",
+            min_value=0.0,
+            max_value=0.95,
+            default_value=0.5
+        ))
+        self.add_parameter(EffectParameter(
+            name="wet_level",
+            min_value=0.0,
+            max_value=1.0,
+            default_value=0.5
+        ))
+
+    def _init_delay(self):
+        """Initialize the delay engine."""
+        try:
+            from Core.audio_dsp import DelayLine
+            self._delay = DelayLine(self.sample_rate, 1000.0)
+        except ImportError:
+            self._delay = None
+            log.warning("audio_dsp module not available, delay will be disabled")
+
+    def process(self, audio_data: bytes, sample_rate: int,
+                channels: int) -> bytes:
+        """Apply delay to audio."""
+        if not self.enabled or not self._delay:
+            return audio_data
+
+        try:
+            delay_time = self.get_parameter("delay_time") or 500.0
+            feedback = self.get_parameter("feedback") or 0.5
+            wet_level = self.get_parameter("wet_level") or 0.5
+
+            # Update delay settings
+            self._delay.set_delay_ms(delay_time)
+
+            # Process audio
+            output = bytearray()
+            max_sample = 32768.0
+
+            for i in range(0, len(audio_data) - 1, 2):
+                sample = struct.unpack('<h', audio_data[i:i+2])[0]
+                normalized = sample / max_sample
+
+                # Process through delay line
+                delayed = self._delay.process_sample(normalized, feedback)
+
+                # Mix dry and wet
+                output_sample = normalized * (1.0 - wet_level) + delayed * wet_level
+                output_sample = max(-1.0, min(1.0, output_sample))
+                output_sample = int(output_sample * max_sample)
+                output_sample = max(-32768, min(32767, output_sample))
+
+                output.extend(struct.pack('<h', output_sample))
+
+            return bytes(output)
+
+        except Exception as e:
+            log.error(f"Error processing delay: {e}")
+            return audio_data
+
+
+class DistortionEffect(AudioEffect):
+    """Soft-clipping waveshaper distortion."""
+
+    def __init__(self, sample_rate: int = 44100):
+        super().__init__("Distortion")
+        self.sample_rate = sample_rate
+        self._distortion = None
+        self._init_distortion()
+
+        self.add_parameter(EffectParameter(
+            name="drive",
+            min_value=0.1,
+            max_value=10.0,
+            default_value=1.0
+        ))
+        self.add_parameter(EffectParameter(
+            name="tone",
+            min_value=-12.0,
+            max_value=12.0,
+            default_value=0.0
+        ))
+
+    def _init_distortion(self):
+        """Initialize the distortion engine."""
+        try:
+            from Core.audio_dsp import SimpleDistortion
+            self._distortion = SimpleDistortion()
+        except ImportError:
+            self._distortion = None
+            log.warning("audio_dsp module not available, distortion will be disabled")
+
+    def process(self, audio_data: bytes, sample_rate: int,
+                channels: int) -> bytes:
+        """Apply distortion to audio."""
+        if not self.enabled or not self._distortion:
+            return audio_data
+
+        try:
+            drive = self.get_parameter("drive") or 1.0
+            tone = self.get_parameter("tone") or 0.0
+
+            # Update distortion settings
+            self._distortion.set_drive(drive)
+
+            # Process audio
+            output = bytearray()
+            max_sample = 32768.0
+
+            for i in range(0, len(audio_data) - 1, 2):
+                sample = struct.unpack('<h', audio_data[i:i+2])[0]
+                normalized = sample / max_sample
+
+                # Apply distortion
+                distorted = self._distortion.process_sample(normalized)
+
+                # Simple tone control (low-pass at tone value)
+                output_sample = distorted
+                output_sample = max(-1.0, min(1.0, output_sample))
+                output_sample = int(output_sample * max_sample)
+                output_sample = max(-32768, min(32767, output_sample))
+
+                output.extend(struct.pack('<h', output_sample))
+
+            return bytes(output)
+
+        except Exception as e:
+            log.error(f"Error processing distortion: {e}")
+            return audio_data
+
+
 # Global effect chain
 _audio_effect_chain: Optional[AudioEffectChain] = None
 
@@ -360,4 +560,7 @@ def get_audio_effects() -> AudioEffectChain:
         _audio_effect_chain.add_effect(SimpleEqualizerEffect())
         _audio_effect_chain.add_effect(CompressorEffect())
         _audio_effect_chain.add_effect(NoiseGateEffect())
+        _audio_effect_chain.add_effect(ReverbEffect())
+        _audio_effect_chain.add_effect(DelayEffect())
+        _audio_effect_chain.add_effect(DistortionEffect())
     return _audio_effect_chain

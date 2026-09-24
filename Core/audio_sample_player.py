@@ -17,6 +17,7 @@ import time
 
 from Core.audio_streaming import get_audio_streaming, AudioStreamBuffer
 from Core.audio_engine import AudioConfig
+from Core.audio_effects import get_audio_effects, AudioEffectChain
 
 log = logging.getLogger(__name__)
 
@@ -168,6 +169,10 @@ class SamplePlayer:
         # Playback configuration
         self.loop_mode = "none"  # 'none', 'repeat', 'bounce'
         self.playback_speed = 1.0  # Pitch-neutral speed
+
+        # Effect preview
+        self.effect_preview_enabled = False
+        self.effect_chain: Optional[AudioEffectChain] = None
 
         # Callbacks
         self.position_callback: Optional[callable] = None
@@ -327,6 +332,17 @@ class SamplePlayer:
                 self._handle_end_of_file()
                 break
 
+            # Apply effect preview if enabled
+            if self.effect_preview_enabled and self.effect_chain:
+                try:
+                    audio_data = self.effect_chain.process(
+                        audio_data,
+                        self.sample_info.sample_rate,
+                        self.sample_info.channels
+                    )
+                except Exception as e:
+                    log.error(f"Error processing effects: {e}")
+
             # Write to streaming buffer
             self.streaming_service.write_samples(audio_data)
 
@@ -379,6 +395,36 @@ class SamplePlayer:
         if mode in ('none', 'repeat', 'bounce'):
             self.loop_mode = mode
             log.info(f"Loop mode: {mode}")
+
+    def enable_effect_preview(self, enabled: bool):
+        """Enable or disable real-time effect preview during playback.
+
+        Args:
+            enabled: True to enable effect preview, False to disable
+        """
+        self.effect_preview_enabled = enabled
+        if not self.effect_chain:
+            self.effect_chain = get_audio_effects()
+        log.info(f"Effect preview: {'enabled' if enabled else 'disabled'}")
+
+    def disable_effect_preview(self):
+        """Disable effect preview."""
+        self.effect_preview_enabled = False
+
+    def set_effect_chain(self, chain: AudioEffectChain):
+        """Set the effect chain for preview.
+
+        Args:
+            chain: AudioEffectChain to use for preview
+        """
+        self.effect_chain = chain
+        log.info("Effect chain configured for preview")
+
+    def get_effect_chain(self) -> Optional[AudioEffectChain]:
+        """Get the current effect chain."""
+        if not self.effect_chain:
+            self.effect_chain = get_audio_effects()
+        return self.effect_chain
 
 
 # Global singleton instance

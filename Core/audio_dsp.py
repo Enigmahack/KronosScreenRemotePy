@@ -430,3 +430,145 @@ class NoiseGate:
         except Exception as e:
             log.error(f"Error processing noise gate: {e}")
             return audio_data
+
+
+class DelayLine:
+    """Simple delay line for time-domain effects."""
+
+    def __init__(self, sample_rate: int = 44100, max_delay_ms: float = 1000.0):
+        """Initialize delay line.
+
+        Args:
+            sample_rate: Sample rate in Hz
+            max_delay_ms: Maximum delay time in milliseconds
+        """
+        self.sample_rate = sample_rate
+        self.max_delay_samples = int(sample_rate * max_delay_ms / 1000.0)
+        self.buffer = [0.0] * self.max_delay_samples
+        self.write_pos = 0
+        self.delay_samples = int(sample_rate * 500 / 1000.0)  # Default 500ms
+
+    def set_delay_ms(self, delay_ms: float):
+        """Set delay time in milliseconds."""
+        self.delay_samples = min(
+            self.max_delay_samples - 1,
+            int(self.sample_rate * delay_ms / 1000.0)
+        )
+
+    def process_sample(self, sample: float, feedback: float = 0.5) -> float:
+        """Process single sample through delay line.
+
+        Args:
+            sample: Input sample
+            feedback: Feedback amount (0-1)
+
+        Returns:
+            Delayed sample
+        """
+        read_pos = (self.write_pos - self.delay_samples) % self.max_delay_samples
+        delayed = self.buffer[read_pos]
+
+        # Write with feedback
+        self.buffer[self.write_pos] = sample + delayed * feedback
+        self.write_pos = (self.write_pos + 1) % self.max_delay_samples
+
+        return delayed
+
+
+class SimpleDistortion:
+    """Soft-clipping waveshaper for distortion."""
+
+    def __init__(self):
+        """Initialize distortion processor."""
+        self.drive = 1.0
+
+    def process_sample(self, sample: float) -> float:
+        """Process sample through soft clipping.
+
+        Args:
+            sample: Input sample (normalized -1 to 1)
+
+        Returns:
+            Distorted sample
+        """
+        driven = sample * self.drive
+        # Soft clipping using tanh
+        return math.tanh(driven)
+
+    def set_drive(self, drive: float):
+        """Set distortion drive amount."""
+        self.drive = max(0.1, min(10.0, drive))
+
+
+class SimpleReverb:
+    """Schroeder reverb using parallel delay lines and diffusers."""
+
+    def __init__(self, sample_rate: int = 44100):
+        """Initialize reverb processor.
+
+        Args:
+            sample_rate: Sample rate in Hz
+        """
+        self.sample_rate = sample_rate
+        # Four parallel delay lines with different lengths
+        self.delays = [
+            DelayLine(sample_rate, 1000.0),
+            DelayLine(sample_rate, 1000.0),
+            DelayLine(sample_rate, 1000.0),
+            DelayLine(sample_rate, 1000.0),
+        ]
+        # Set slightly different delays for each line
+        self.delays[0].set_delay_ms(37.0)
+        self.delays[1].set_delay_ms(41.0)
+        self.delays[2].set_delay_ms(43.0)
+        self.delays[3].set_delay_ms(47.0)
+
+        self.wet_level = 0.3
+        self.dry_level = 0.7
+
+    def process(self, audio_data: bytes) -> bytes:
+        """Process audio through reverb.
+
+        Args:
+            audio_data: 16-bit PCM audio samples
+
+        Returns:
+            Reverb-processed audio
+        """
+        try:
+            output = bytearray()
+            max_sample = 32768.0
+
+            for i in range(0, len(audio_data) - 1, 2):
+                sample = struct.unpack('<h', audio_data[i:i+2])[0]
+                normalized = sample / max_sample
+
+                # Process through parallel delay lines
+                wet = sum(d.process_sample(normalized, 0.5) for d in self.delays) / len(self.delays)
+
+                # Mix dry and wet
+                output_sample = normalized * self.dry_level + wet * self.wet_level
+                output_sample = max(-1.0, min(1.0, output_sample))
+                output_sample = int(output_sample * max_sample)
+                output_sample = max(-32768, min(32767, output_sample))
+
+                output.extend(struct.pack('<h', output_sample))
+
+            return bytes(output)
+
+        except Exception as e:
+            log.error(f"Error processing reverb: {e}")
+            return audio_data
+
+    def set_room_size(self, size: float):
+        """Set room size (0-1), affects reverb time."""
+        # Adjust delay times based on room size
+        base_times = [37.0, 41.0, 43.0, 47.0]
+        scale = 0.5 + size * 1.5  # Range 0.5 to 2.0
+        for i, d in enumerate(self.delays):
+            d.set_delay_ms(base_times[i] * scale)
+
+    def set_wet_dry(self, wet: float):
+        """Set wet/dry mix (0-1)."""
+        self.wet_level = wet
+        self.dry_level = 1.0 - wet

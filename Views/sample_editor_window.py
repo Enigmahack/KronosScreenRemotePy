@@ -1,6 +1,7 @@
 """Sample editor window for editing audio samples.
 
 Provides:
+- Multi-track audio project editing
 - Waveform display with zoom/pan
 - Selection editing
 - Basic operations (cut, copy, paste, trim)
@@ -16,12 +17,17 @@ from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QToolBar,
     QPushButton, QLabel, QSlider, QSpinBox, QFileDialog, QMessageBox,
-    QStatusBar, QMenuBar, QMenu
+    QStatusBar, QMenuBar, QMenu, QSplitter
 )
 from PySide6.QtGui import QAction
 
 import Utils.theme as T
 from Views.waveform_display import WaveformDisplay
+from Views.track_list import TrackListWidget
+from Views.effect_preview_panel import EffectPreviewPanel
+from Views.cue_region_panel import CueRegionPanel
+from Core.sample_editor import AudioTrack, AudioProject
+from Core.audio_sample_player import get_sample_player
 
 
 class SampleEditorWindow(QMainWindow):
@@ -33,9 +39,15 @@ class SampleEditorWindow(QMainWindow):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Sample Editor")
-        self.setMinimumSize(800, 600)
+        self.setMinimumSize(1000, 700)
 
-        # Sample data
+        # Multi-track project
+        self.project = AudioProject("Untitled", 44100, 2)
+
+        # Sample player for playback
+        self.sample_player = get_sample_player()
+
+        # Sample data (for compatibility)
         self.audio_data: Optional[bytes] = None
         self.sample_rate = 44100
         self.channels = 2
@@ -66,10 +78,50 @@ class SampleEditorWindow(QMainWindow):
         toolbar = self._create_toolbar()
         main_layout.addWidget(toolbar)
 
+        # Setup keyboard shortcuts
+        self._setup_shortcuts()
+
+        # Splitter: track list on left, waveform in center, effects + cues on right
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+
+        # Track list
+        self.track_list = TrackListWidget(self.project, self)
+        self.track_list.track_changed.connect(self._on_track_changed)
+        self.track_list.add_track_requested.connect(self._on_add_track)
+        self.track_list.track_selected.connect(self._on_track_selected)
+        splitter.addWidget(self.track_list)
+
         # Waveform display
         self.waveform = WaveformDisplay(self)
         self.waveform.selection_changed.connect(self._on_selection_changed)
-        main_layout.addWidget(self.waveform)
+        splitter.addWidget(self.waveform)
+
+        # Right side panel with tabs for effects and cues/regions
+        right_panel = QWidget()
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(0)
+
+        # Effect preview panel
+        self.effect_panel = EffectPreviewPanel(self)
+        self.effect_panel.effects_changed.connect(self._on_effects_changed)
+        self.effect_panel.preview_enabled_changed.connect(self._on_preview_enabled)
+
+        # Cue/region panel
+        self.cue_panel = CueRegionPanel(parent=self)
+        self.cue_panel.selection_changed.connect(self._on_region_selected)
+
+        # Create tabs for effects and cues
+        from PySide6.QtWidgets import QTabWidget
+        right_tabs = QTabWidget()
+        right_tabs.addTab(self.effect_panel, "Effects")
+        right_tabs.addTab(self.cue_panel, "Cues & Regions")
+        right_layout.addWidget(right_tabs)
+        splitter.addWidget(right_panel)
+
+        # Set initial sizes (track list 150px, waveform 500px, right panel 220px)
+        splitter.setSizes([150, 500, 220])
+        main_layout.addWidget(splitter)
 
         # Controls
         control_layout = QHBoxLayout()
@@ -111,6 +163,55 @@ class SampleEditorWindow(QMainWindow):
 
         # Status bar
         self.statusBar().showMessage("Ready")
+
+    def _setup_shortcuts(self):
+        """Setup keyboard shortcuts for editing operations."""
+        from PySide6.QtGui import QKeySequence
+
+        # File operations
+        self.shortcut_open = self._add_shortcut(Qt.CTRL | Qt.Key_O, self._on_open, "Open")
+        self.shortcut_save = self._add_shortcut(Qt.CTRL | Qt.Key_S, self._on_save, "Save")
+
+        # Edit operations
+        self.shortcut_undo = self._add_shortcut(Qt.CTRL | Qt.Key_Z, self._on_undo, "Undo")
+        self.shortcut_redo = self._add_shortcut(Qt.CTRL | Qt.SHIFT | Qt.Key_Z, self._on_redo, "Redo")
+
+        # Sample editing
+        self.shortcut_cut = self._add_shortcut(Qt.CTRL | Qt.Key_X, self._on_cut, "Cut")
+        self.shortcut_copy = self._add_shortcut(Qt.CTRL | Qt.Key_C, self._on_copy, "Copy")
+        self.shortcut_paste = self._add_shortcut(Qt.CTRL | Qt.Key_V, self._on_paste, "Paste")
+
+        # Sample operations
+        self.shortcut_trim = self._add_shortcut(Qt.CTRL | Qt.Key_T, self._on_trim, "Trim")
+        self.shortcut_normalize = self._add_shortcut(Qt.CTRL | Qt.SHIFT | Qt.Key_N, self._on_normalize, "Normalize")
+        self.shortcut_reverse = self._add_shortcut(Qt.CTRL | Qt.SHIFT | Qt.Key_R, self._on_reverse, "Reverse")
+
+        # Fade operations
+        self.shortcut_fade_in = self._add_shortcut(Qt.CTRL | Qt.ALT | Qt.Key_I, self._on_fade_in, "Fade In")
+        self.shortcut_fade_out = self._add_shortcut(Qt.CTRL | Qt.ALT | Qt.Key_O, self._on_fade_out, "Fade Out")
+
+        # Playback
+        self.shortcut_play = self._add_shortcut(Qt.Key_Space, self._on_play, "Play/Pause")
+
+        # Selection
+        self.shortcut_select_all = self._add_shortcut(Qt.CTRL | Qt.Key_A, self._on_select_all, "Select All")
+
+    def _add_shortcut(self, key_combo, callback, name: str):
+        """Add a keyboard shortcut.
+
+        Args:
+            key_combo: Key combination (e.g., Qt.CTRL | Qt.Key_O)
+            callback: Function to call when shortcut is triggered
+            name: Shortcut name for logging
+
+        Returns:
+            QShortcut object
+        """
+        from PySide6.QtGui import QKeySequence
+        from PySide6.QtWidgets import QShortcut
+        shortcut = QShortcut(QKeySequence(key_combo), self)
+        shortcut.activated.connect(callback)
+        return shortcut
 
     def _create_toolbar(self) -> QToolBar:
         """Create the toolbar."""
@@ -375,3 +476,82 @@ class SampleEditorWindow(QMainWindow):
         self.statusBar().showMessage(
             f"Selection: {start_sec:.3f} - {end_sec:.3f} ({duration:.3f}s)"
         )
+
+    def _on_select_all(self):
+        """Select all audio."""
+        if self.audio_data:
+            self.waveform.set_selection(0.0, self.duration_sec)
+            self.statusBar().showMessage("Selected all audio")
+
+    def _on_track_changed(self):
+        """Handle track change (volume, pan, mute, solo)."""
+        # Re-render if playback is active or waveform display needs update
+        self.statusBar().showMessage("Track modified")
+
+    def _on_effects_changed(self):
+        """Handle effect parameter change."""
+        self.statusBar().showMessage("Effects updated")
+
+    def _on_preview_enabled(self, enabled: bool):
+        """Handle effect preview enable/disable."""
+        if self.sample_player:
+            self.sample_player.enable_effect_preview(enabled)
+            if enabled:
+                self.sample_player.set_effect_chain(self.effect_panel.get_effect_chain())
+                self.statusBar().showMessage("Effect preview enabled")
+            else:
+                self.statusBar().showMessage("Effect preview disabled")
+
+    def _on_add_track(self):
+        """Add a new audio track."""
+        new_track = AudioTrack(f"Track {len(self.project.tracks) + 1}", b'', self.sample_rate, self.channels)
+        self.track_list.add_track(new_track)
+        self.statusBar().showMessage(f"Added new track")
+
+    def _on_track_selected(self, track_index: int):
+        """Handle track selection change."""
+        track = self.project.get_track(track_index)
+        if track:
+            self.cue_panel.set_track(track)
+            self.statusBar().showMessage(f"Selected: {track.name}")
+
+    def _on_region_selected(self, start_sec: float, end_sec: float):
+        """Handle region selection from cue panel."""
+        self.waveform.set_selection(start_sec, end_sec)
+
+    def load_file(self, file_path: str):
+        """Load audio file into first track.
+
+        Args:
+            file_path: Path to audio file
+        """
+        try:
+            import wave
+            with wave.open(file_path, 'rb') as wav_file:
+                self.sample_rate = wav_file.getframerate()
+                self.channels = wav_file.getnchannels()
+                frames = wav_file.readframes(wav_file.getnframes())
+                self.audio_data = frames
+
+            # Add to project
+            self.project.sample_rate = self.sample_rate
+            self.project.channels = self.channels
+
+            # Clear existing tracks and add the loaded audio
+            self.project.tracks.clear()
+            track = AudioTrack("Imported Audio", self.audio_data, self.sample_rate, self.channels)
+            self.project.add_track(track)
+
+            self.current_file = Path(file_path)
+            self.setWindowTitle(f"Sample Editor - {self.current_file.name}")
+
+            # Update UI
+            self.track_list._refresh_tracks()
+            self.waveform.load_audio(self.audio_data, self.sample_rate, self.channels)
+
+            self.duration_sec = len(self.audio_data) / (self.sample_rate * self.channels * 2)
+            self.statusBar().showMessage(f"Loaded: {self.current_file.name}")
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to load audio: {e}")
+            self.statusBar().showMessage("Error loading file")
