@@ -200,9 +200,9 @@ from PySide6.QtWidgets import (
 from Commands.batch_clipboard import BatchClipboard, ClipboardMode
 from Data.blank_template_store import BlankTemplateStore
 import Tools.dependency_scanner as depscan
-import Objects.erase_body
+import Objects.erase_body as erase_body
 import Core.kronos_sysex as ksx
-import Objects.object_body
+import Objects.object_body as object_body
 from Data.changeset_sync import ChangesetPlan, SyncResult, commit_changes, sync_library
 from Data.librarian_model import (
     BatchPlacement, LibraryCatalog, ObjLoc, SequentialFillItem, WriteOp,
