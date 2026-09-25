@@ -1783,15 +1783,19 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         _seq_font = QFont(T.FONT_SYMBOL)
         _seq_font.setPixelSize(T.FS_SMALL)
 
-        def _seq_btn(glyph: str, tooltip: str, action: str) -> QLabel:
+        def _seq_btn(glyph: str, tooltip: str, action: str, kronos_only: bool = False) -> QLabel:
             lbl = QLabel(glyph)
             lbl.setObjectName("footerIcon")
             lbl.setFont(_seq_font)
             lbl.setStyleSheet(f"color: {T.TEXT_DIM}; padding: 0 3px;")
             lbl.setToolTip(tooltip)
             lbl.setCursor(Qt.CursorShape.PointingHandCursor)
-            lbl.mousePressEvent = lambda ev, a=action, l=lbl: (
-                None if ev.button() != Qt.MouseButton.LeftButton
+            # kronos_only: Fast-Forward/Rewind have no confirmed Nautilus wire
+            # token (kept in place but faded + non-clickable there, matching
+            # C#'s ApplyDeviceFamilyUi — unconditional, not just gated by
+            # Sequence mode like the rest of this row).
+            lbl.mousePressEvent = lambda ev, a=action, l=lbl, ko=kronos_only: (
+                None if ev.button() != Qt.MouseButton.LeftButton or (ko and self._is_nautilus)
                 else (self._ctrl_send(f"BUTTON {a}"),
                       l.setStyleSheet(f"color: {T.ACCENT}; padding: 0 3px;"),
                       QTimer.singleShot(180, lambda: l.setStyleSheet(
@@ -1818,8 +1822,8 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             return lbl
 
         self._seq_locate = _seq_btn("⏮", "Locate — return to the locate point", "SEQ_LOCATE")
-        self._seq_rew    = _seq_btn("◀◀", "Rewind (<<)", "SEQ_REW")
-        self._seq_ff     = _seq_btn("▶▶", "Fast-forward (>>)", "SEQ_FF")
+        self._seq_rew    = _seq_btn("◀◀", "Rewind (<<)", "SEQ_REW", kronos_only=True)
+        self._seq_ff     = _seq_btn("▶▶", "Fast-forward (>>)", "SEQ_FF", kronos_only=True)
         self._seq_pause  = _seq_btn("⏸", "Pause", "SEQ_PAUSE")
         self._seq_rec    = _seq_btn("⏺", "Record", "SEQ_REC")
         self._seq_start  = _seq_btn("▶", "Start / Stop", "SEQ_START")
@@ -2637,13 +2641,46 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         """Single hook every device-family-gated UI branch runs through —
         called once after each connect-family resolution (the cheap
         stream_fmt guess, and again if the authoritative MODEL response
-        changes it). Port of C#'s ApplyDeviceFamilyUi(); only the branches
-        already ported (Pass 1) live here so far — Bank Select disabling.
-        The remaining C# branches (right/left panel swap, Hide-Value-Input
-        forced on, Mode-select menu swap, footer FF/Rewind fade, Play/
-        Record lit-style, window re-fit, NautilusToken() wire-token remap)
-        are Phase 3b, not yet ported — see CLAUDE.md."""
+        changes it) and on every reconnect, so switching families back and
+        forth (or a stale Nautilus session followed by a Kronos one)
+        re-applies cleanly in both directions. Port of C#'s
+        ApplyDeviceFamilyUi(). Not yet ported here (Phase 3b remainder, see
+        CLAUDE.md): right-panel swap (needs a NautilusRightPanel-equivalent
+        widget — no visual reference available yet), Mode-select menu swap
+        (needs new Nautilus Mode/Page/A-F menu items), and NautilusToken()
+        wire-token remap for footer/keybind/command-palette actions. Play/
+        Record "lit while playing" style removal has no Python analog to
+        remove — Python's footer transport never implemented the
+        persistent lit-while-playing/recording indicator C# has at all
+        (checked: no _is_playing/_is_recording state exists anywhere in
+        this file), so there's nothing to un-light on Nautilus specifically."""
         self._bank_menu.menuAction().setEnabled(not self._is_nautilus)
+
+        # Hide Value Input has no effect on Nautilus (the value-slider panel
+        # doesn't exist there) — forced on, menu item hidden, matches C#'s
+        # unconditional bidirectional branch so switching families back to
+        # Kronos correctly restores the user's own setting. Only touches the
+        # "Full" layout preset's own hide-value-input mechanism, matching
+        # _toggle_hide_value_input's own guard — "Focused" layout drives the
+        # left panel from a separate rail-expand setting C# has no
+        # equivalent of, left alone here.
+        self._act_hide_value.setVisible(not self._is_nautilus)
+        if self._layout_preset == "Full":
+            effective_hide_value = True if self._is_nautilus else self._settings.hide_value_input
+            self._act_hide_value.blockSignals(True)
+            self._act_hide_value.setChecked(effective_hide_value)
+            self._act_hide_value.blockSignals(False)
+            self._show_left_panel(not effective_hide_value)
+        elif self._is_nautilus:
+            self._show_left_panel(False)
+
+        # Footer Fast-Forward/Rewind: faded + non-clickable on Nautilus, kept
+        # in place rather than hidden (matches C#). The click itself is
+        # already guarded in _seq_btn's kronos_only handler; this only
+        # updates the resting (non-flash) visual.
+        ff_rew_color = T.TEXT_FAINT if self._is_nautilus else T.TEXT_DIM
+        for lbl in (self._seq_rew, self._seq_ff):
+            lbl.setStyleSheet(f"color: {ff_rew_color}; padding: 0 3px;")
 
     def _set_pending_mode(self, mode: int):
         """Record a user-requested mode without lighting the button immediately.
