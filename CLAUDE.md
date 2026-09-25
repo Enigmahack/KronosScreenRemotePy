@@ -251,7 +251,7 @@ is partially done, across six more commits:
   from both `keyPressEvent`'s uncaptured path and `eventFilter`'s
   captured-on-Kronos path. C#'s palette-editor precedence steps are
   deliberately not ported — that feature is retired in C# itself.
-- **MIDI/SysEx codec parameterization** (`<pending commit>`): `Data/nautilus_sysex.py`
+- **MIDI/SysEx codec parameterization** (`48479a7`): `Data/nautilus_sysex.py`
   (new) ports `Networking/NautilusSysEx.cs` — the 6-byte Nautilus Exclusive
   Header (`F0 42 3g 00 01 5D`, vs. Kronos's 4-byte `F0 42 3g 68`) for the
   same hardware-verified primitive slice as C#'s `IKorgSysExCodec`: object
@@ -289,14 +289,62 @@ is partially done, across six more commits:
   the real `SysExDumpCollector.collect()`/`collect_per_object_names()`
   against both codecs (no real hardware reachable from this environment —
   see "Testing without real hardware" below).
+- **Right-panel swap** (`<pending commit>`): the last big Phase 3 item,
+  unblocked once the user pointed at the actual asset directory
+  (`../KronosScreenRemote/Resources/Images/`) and `Views/NautilusRightPanel.xaml`
+  for layout — no more "no visual reference" excuse. `Rendering/control_surface.py`
+  (previously a single Kronos-only 800×600 custom-painted `QWidget`) now
+  holds BOTH skins in one widget/class, switched at runtime by
+  `set_device_family()`, rather than porting C#'s two-separate-UserControls-
+  swapped-by-visibility approach — there's no tree of real child widgets
+  here to swap, just one custom paintEvent. Nautilus's button layout
+  (`_NAUT_BUTTON_DEFS`) is `NautilusRightPanel.xaml`'s 12 `Margin="l,t,r,b"`
+  values hand-converted to `(x,y,w,h)` in its native 1024×771 canvas; its
+  scale strategy is genuinely different from Kronos's uniform-letterbox
+  Viewbox — width-only (`scale = width/1024`, crops/gaps top-bottom, never
+  letterboxes left-right) — ported into a new `_scale_and_offset()`/
+  `_skin_dims()`/`_skin_wheel_rect()` trio the paint/hit-test code both
+  read from. New `_Btn.hold_lit` (Nautilus A-F: lit only while physically
+  held, set/cleared directly in mousePress/ReleaseEvent — a different
+  mechanism from Kronos's toggle/radio_group/external-`set_active` paths,
+  which stay unchanged). Wire tokens in `Views/main_window.py`'s
+  `_CTRL_BTN_CMD` (`NAUT_*` entries): A-F/Exit/Enter/Inc/Dec are direct
+  mode=0 sends; **MODE/PAGE deliberately reuse Combi's/Program's own
+  `(cmd, mode-index)` tuples byte-for-byte** (matching C#'s
+  `WireCommand(_nautilusRightPanel.BTN_Mode, "Mode Combi")`) so they get
+  the identical boot-gate/pending-mode/sysex-refresh bookkeeping Kronos's
+  own mode buttons get — verified this actually sends `BUTTON COMBI` and
+  sets `_pending_mode=2` on press+release. Their LIT state is NOT wired
+  through that bookkeeping at all, though (C#'s `ApplyNautilusLamps` is
+  independent of `WireButtons`/`SetModeButton`) — new
+  `_apply_nautilus_lamps()` mirrors the daemon's `STATE` poll
+  `MODE_LIT`/`PAGE_LIT` fields (docs/api.md, Nautilus-only, 3.1.0+/3.1.1+)
+  straight onto `NAUT_MODE`/`NAUT_PAGE`'s `active` flag, called on every
+  `STATE` poll (even mid-boot, matching C#'s call ordering) and cleared to
+  `None`/unlit on disconnect. Both button tables' buttons stay registered
+  in `self._btns`/`_btn_map` at ALL times regardless of which skin is
+  active/drawn — verified `set_mode()` still harmlessly lights the
+  invisible Kronos "Combi" button while the Nautilus skin is showing, so
+  reusing its mode index for `NAUT_MODE` doesn't need any special-casing.
+  **Found and fixed a real, previously-undiscovered bug while building
+  this**: `_res()`'s resource-path resolution (`Path(__file__).parent /
+  "Resources" / "Images"`) was off by one directory level in FOUR places
+  (`Rendering/control_surface.py`, `Rendering/overlay_renderer.py`,
+  `Views/main_window.py`'s left-panel slider widget, `Models/storage.py`'s
+  embedded `cal_data.json` fallback) — every `.exists()` guard silently
+  swallowed the miss, so the Kronos control-surface panel has been
+  rendering with ZERO images (no background, no wheel, no buttons) this
+  whole branch. Confirmed via headless probe before the fix, confirmed
+  fixed after. This is also the first actual pixel-level visual
+  verification this branch has had (see "Never attempted" item below,
+  now partially attempted) — both skins render correctly against the real
+  hardware photo/asset backgrounds, buttons aligned to their physical
+  positions; screenshots taken during this session confirm it visually,
+  not just structurally.
 
 Still not ported (documented inline in `_apply_device_family_ui()`'s own
-docstring in `Views/main_window.py`) — these are now the ENTIRE Phase 3
-remainder:
-- **Right-panel swap** — needs a `NautilusRightPanel`-equivalent widget
-  (12 buttons + data wheel). No visual/graphics reference was available
-  this session to build it correctly; this is the single largest
-  remaining piece of Phase 3.
+docstring in `Views/main_window.py`) — this is now the ENTIRE Phase 3
+remainder, down to one item:
 - **Mode-select menu swap** — Kronos's 7 mode menu items vs. Nautilus's
   Mode/Page/A-F. The underlying wire tokens for Kronos's existing mode
   commands are confirmed UNCHANGED on Nautilus (only the label/position
@@ -304,7 +352,13 @@ remainder:
   but that A-F mapping itself isn't confident enough to guess from what's
   in this repo (`Documentation/nautilus_button_mapping.md`'s own header
   calls it unverified/user-reported and superseded by a `button_labels.json`
-  this repo doesn't have a copy of).
+  this repo doesn't have a copy of). Note the right-panel work above
+  confirmed the A-F tooltips/QA-slot assignments from
+  `NautilusRightPanel.xaml`'s own comments (Setlist/Program/Sequencer/
+  Quick Access/Compare/Write-Save) — tooltips were NOT ported to the
+  Python control surface (it has no per-button tooltip mechanism at all,
+  for either skin — a pre-existing gap, not something this pass added),
+  but the same source data is available if picking up the menu-swap item.
 
 ## What's left
 
@@ -313,13 +367,13 @@ remainder:
 CLI-only in C# (`--nautilus-convert-*` flags), never reachable from its own
 GUI, so not a screen-remote client feature.
 
-Phase 1 and Phase 2 (above) are done. Phase 3 is down to its last two items
-— see the "Still not ported" list right above for exactly what's open
-(right-panel swap, Mode-select menu swap). C# itself calls the whole
-Nautilus area preliminary (its own `Documentation/nautilus_button_mapping.md`
-is marked unverified against real hardware — no rooted Nautilus unit even
-on the C# team's side yet), so treat both remaining items the same way:
-port the C# structure/behavior faithfully, don't invent new hardware
+Phase 1 and Phase 2 (above) are done. Phase 3 is down to its last item —
+see the "Still not ported" list right above (Mode-select menu swap only).
+C# itself calls the whole Nautilus area preliminary (its own
+`Documentation/nautilus_button_mapping.md` is marked unverified against
+real hardware — no rooted Nautilus unit even on the C# team's side yet),
+so treat this last item the same way: port the C# structure/behavior
+faithfully, don't invent new hardware
 assumptions where the source itself is unverified. Defer C#'s USB-direct
 MIDI transport path (`MidiDeviceIdentity.cs`, no daemon link at all) unless
 asked — Python has no USB-direct transport today, only the TCP bridge.

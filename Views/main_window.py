@@ -260,6 +260,38 @@ _CTRL_BTN_CMD: dict[str, tuple[str, int]] = {
     "NUM9":     ("BUTTON NUM9",     0),
     "NUM_DASH": ("BUTTON NUM_DASH", 0),
     "NUM_DOT":  ("BUTTON NUM_DOT",  0),
+
+    # ── Nautilus front panel (Views/NautilusRightPanel.xaml's port — see
+    # Rendering/control_surface.py's _NAUT_BUTTON_DEFS for the layout) ──────
+    # MODE/PAGE deliberately reuse Combi's/Program's own (cmd, mode-index)
+    # tuples byte-for-byte: C#'s WireCommand(_nautilusRightPanel.BTN_Mode,
+    # "Mode Combi") / ("Mode Program") sends the identical SendMode(mode)
+    # call Kronos's own Combi/Program buttons use — same boot-gate,
+    # _current_mode/_pending_mode bookkeeping, sysex refresh-on-change — so
+    # reusing the entries is a faithful port, not a shortcut. Their LIT
+    # state never comes from this table's mode>0 press/release flow (unlike
+    # Kronos's radio-group buttons) — it's driven exclusively by the STATE
+    # poll's MODE_LIT/PAGE_LIT fields via _apply_nautilus_lamps, matching
+    # C#'s ApplyNautilusLamps.
+    "NAUT_MODE":  ("BUTTON COMBI",      2),
+    "NAUT_PAGE":  ("BUTTON PROGRAM",    3),
+    # A-F: momentary quick-access shortcuts sent directly, mode=0 — C#
+    # explicitly skips SetPendingMode's bookkeeping for these (comment on
+    # WireButtons's A-F block: "don't reflect/track a confirmed mode").
+    # Wire tokens are the fixed NKS4 scan codes for these QA positions.
+    "NAUT_A":     ("BUTTON SEQUENCE",   0),
+    "NAUT_B":     ("BUTTON SAMPLING",   0),
+    "NAUT_C":     ("BUTTON GLOBAL",     0),
+    "NAUT_D":     ("BUTTON DISK",       0),
+    "NAUT_E":     ("BUTTON SETLIST",    0),
+    "NAUT_F":     ("BUTTON EXIT",       0),   # QA slot F = Write/Save shortcut
+    # Exit/Enter, Data Inc/Dec — no lit version, direct sends. Exit=NUM1,
+    # Enter=KARMA_ONOFF (confirmed NOT Octave -/+, despite reusing Kronos's
+    # Exit/Enter button graphics as placeholder art).
+    "NAUT_EXIT":  ("BUTTON NUM1",       0),
+    "NAUT_ENTER": ("BUTTON KARMA_ONOFF", 0),
+    "NAUT_INC":   ("BUTTON HELP",       0),
+    "NAUT_DEC":   ("BUTTON COMPARE",    0),
 }
 
 
@@ -2498,6 +2530,9 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         self._frame_w.update()
         self._mode_poll_timer.stop()
         self._poll_in_progress = False
+        # No session, no LED reading — don't leave stale Nautilus lamps lit
+        # (C#'s ClearModeButtons calling ApplyNautilusLamps(null, null)).
+        self._apply_nautilus_lamps(None, None)
         self._stop_ping()
         # The stream is gone, so the daemon has dropped our ctrl ownership too
         # (screenremote.c clears g_ctrl_allowed_ip on client disconnect). Stop
@@ -2703,21 +2738,34 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         hardware-confirmed wire difference — see Data/nautilus_sysex.py);
         live-stream mode/performance/name decode there stays Kronos-only
         regardless, a real documented gap matching C#'s own scoping decision.
-        Not yet ported here (Phase 3b remainder, see CLAUDE.md): right-panel
-        swap (needs a NautilusRightPanel-equivalent widget — no visual
-        reference available yet) and Mode-select menu swap (needs new
-        Nautilus Mode/Page/A-F menu items — the wire tokens for Kronos's
-        existing 7 mode commands are confirmed UNCHANGED on Nautilus per
-        this same button_labels.json source, only the menu's item set/
-        labels need to change, but the A-F QA-slot mapping itself isn't
-        confident enough to guess here). Play/Record "lit while playing"
-        style removal has no Python analog to remove — Python's footer
-        transport never implemented the persistent lit-while-playing/
-        recording indicator C# has at all (checked: no
-        _is_playing/_is_recording state exists anywhere in this file), so
-        there's nothing to un-light on Nautilus specifically."""
+
+        **Right-panel swap is now done**: `self._ctrl_surface.set_device_family()`
+        switches which skin Rendering/control_surface.py's single
+        custom-painted widget draws/hit-tests (Kronos's 800×600
+        uniform-letterbox layout, or Nautilus's 1024×771 width-only-scale
+        layout ported from NautilusRightPanel.xaml — one widget with two
+        skins, not two separate widgets swapped by visibility the way C#
+        does it, since this surface has no tree of real child widgets to
+        swap). MODE/PAGE lamp state comes from the STATE poll's
+        MODE_LIT/PAGE_LIT fields via `_apply_nautilus_lamps` below, not from
+        this hook — matching C#'s ApplyNautilusLamps being independent of
+        WireButtons.
+
+        Not yet ported (Phase 3b remainder, see CLAUDE.md): Mode-select menu
+        swap (needs new Nautilus Mode/Page/A-F menu items — the wire tokens
+        for Kronos's existing 7 mode commands are confirmed UNCHANGED on
+        Nautilus per the same button_labels.json source used for the
+        right-panel button layout, only the menu's item set/labels need to
+        change, but the A-F QA-slot mapping itself isn't confident enough to
+        guess here). Play/Record "lit while playing" style removal has no
+        Python analog to remove — Python's footer transport never
+        implemented the persistent lit-while-playing/recording indicator C#
+        has at all (checked: no _is_playing/_is_recording state exists
+        anywhere in this file), so there's nothing to un-light on Nautilus
+        specifically."""
         self._bank_menu.menuAction().setEnabled(not self._is_nautilus)
         self._sysex_service.set_device_family(self._is_nautilus)
+        self._ctrl_surface.set_device_family(self._is_nautilus)
 
         # Hide Value Input has no effect on Nautilus (the value-slider panel
         # doesn't exist there) — forced on, menu item hidden, matches C#'s
@@ -2812,6 +2860,20 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         self._ctrl_surface.set_mode(mode)
         self._mode_label.setText(_MODE_NAMES[mode] if 1 <= mode <= 7 else "")
         self._update_seq_enabled()
+
+    def _apply_nautilus_lamps(self, mode_lit: Optional[bool], page_lit: Optional[bool]) -> None:
+        """Nautilus MODE/PAGE front-panel LEDs, mirrored straight from the STATE
+        poll's MODE_LIT/PAGE_LIT fields (docs/api.md, 3.1.0+, Nautilus only).
+        Port of C#'s ApplyNautilusLamps. These are two independent popup
+        toggles, not a mode reading, so they never go through
+        _set_mode_button/_ctrl_surface.set_mode — and the daemon's hook
+        counts injected BUTTON presses as well as physical ones, so this
+        client must not toggle optimistically on click (see _CTRL_BTN_CMD's
+        NAUT_MODE/NAUT_PAGE comment) or every press would count twice.
+        None (Kronos, or a Nautilus whose mode_page_hook.ko didn't load)
+        leaves both unlit rather than guessing — matches C#'s `?? false`."""
+        self._ctrl_surface.set_active("NAUT_MODE", mode_lit or False)
+        self._ctrl_surface.set_active("NAUT_PAGE", page_lit or False)
 
     # ── Boot phase ────────────────────────────────────────────────────────────
 
@@ -2968,6 +3030,8 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             mode = 0
             edit_ctx = 0
             boot = 1
+            mode_lit: Optional[bool] = None   # Nautilus-only (docs/api.md STATE) — None on Kronos
+            page_lit: Optional[bool] = None
             for part in resp.split():
                 if part.startswith("MODE="):
                     try:
@@ -2984,12 +3048,18 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
                         boot = int(part[5:])
                     except ValueError:
                         boot = 1
-            QTimer.singleShot(0, self, lambda m=mode, e=edit_ctx, b=boot:
-                              self._apply_daemon_state(m, e, b))
+                elif part.startswith("MODE_LIT="):
+                    mode_lit = part[9:] == "1"
+                elif part.startswith("PAGE_LIT="):
+                    page_lit = part[9:] == "1"
+            QTimer.singleShot(0, self, lambda m=mode, e=edit_ctx, b=boot, ml=mode_lit, pl=page_lit:
+                              self._apply_daemon_state(m, e, b, ml, pl))
         finally:
             self._poll_in_progress = False
 
-    def _apply_daemon_state(self, mode: int, edit_ctx: int, boot: int) -> None:
+    def _apply_daemon_state(self, mode: int, edit_ctx: int, boot: int,
+                            mode_lit: Optional[bool] = None,
+                            page_lit: Optional[bool] = None) -> None:
         """Port of MainWindow.Streaming.cs's ApplyDaemonState + boot gate handling:
         BOOT=1 keeps the boot phase up (daemon's own authoritative gate); MODE/EDITCTX
         only apply once boot clears. EDITCTX (program-edit-from-Combi/Sequence) drives
@@ -2998,6 +3068,10 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             return
         self._daemon_state_ok = True
         self._frame_w._daemon_authoritative = True
+        # Nautilus MODE/PAGE front-panel LEDs — applied on every STATE poll
+        # regardless of boot state, matching C#'s OnSessionStateReceived
+        # calling ApplyNautilusLamps before ApplyDaemonState's own boot gate.
+        self._apply_nautilus_lamps(mode_lit, page_lit)
         daemon_booting = boot != 0
         if daemon_booting:
             self._daemon_booting = True
