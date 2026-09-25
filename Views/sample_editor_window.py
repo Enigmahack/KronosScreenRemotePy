@@ -42,6 +42,7 @@ from Data.ksf_sample import KsfSample
 import Models.storage as storage
 import Utils.theme as T
 from Views.sample_keymap_control import SampleKeymapControl
+from Views.sample_waveform_control import SampleWaveformControl
 
 log = logging.getLogger(__name__)
 
@@ -377,6 +378,10 @@ class SampleEditorWindow(QMainWindow):
         self._header_warning.setVisible(False)
         panel_layout.addWidget(self._header_warning)
 
+        self._waveform = SampleWaveformControl()
+        self._waveform.markers_changed.connect(self._on_waveform_markers_changed)
+        panel_layout.addWidget(self._waveform)
+
         group = QGroupBox("Sample")
         form = QFormLayout(group)
 
@@ -571,6 +576,7 @@ class SampleEditorWindow(QMainWindow):
     def _on_tree_selection_changed(self):
         self._current_ksf = None
         self._current_ksf_path = None
+        self._waveform.load_ksf(None)
         try:
             ctx = self._selected_zone_ctx()
             if ctx is None:
@@ -1106,12 +1112,34 @@ class SampleEditorWindow(QMainWindow):
             self._loop_enabled_check.setChecked(ksf.is_loop_enabled)
             self._reverse_check.setChecked(ksf.is_reversed)
             self._boost_check.setChecked(ksf.is_12db_boost_enabled)
+
+            self._waveform.load_ksf(None if ksf.is_header_only else ksf)
         finally:
             self._loading_fields = False
 
     def _mark_dirty_from_field(self, *_args):
         if self._loading_fields or self._current_ksf is None:
             return
+        self._act_save.setEnabled(True)
+        # Keep the waveform's loop-region overlay in sync when the loop
+        # start/end spinboxes are edited directly (not via a marker drag,
+        # which already updates the waveform's own state before this fires).
+        self._waveform.set_markers(
+            self._current_ksf.sample_start,
+            self._loop_start_spin.value(), self._loop_end_spin.value())
+
+    def _on_waveform_markers_changed(self, sample_start: int, loop_start: int, loop_end: int):
+        if self._current_ksf is None:
+            return
+        self._current_ksf.sample_start = sample_start
+        self._current_ksf.loop_start = loop_start
+        self._current_ksf.loop_end = loop_end
+        self._loading_fields = True
+        try:
+            self._loop_start_spin.setValue(loop_start)
+            self._loop_end_spin.setValue(loop_end)
+        finally:
+            self._loading_fields = False
         self._act_save.setEnabled(True)
 
     def _apply_fields_to_current(self):
