@@ -136,9 +136,77 @@ Everything above has actual verification behind it (real-fixture round-trips,
 fake-FTP-backend integration tests exercising the real window code, targeted
 unit tests for each fix) — not just "it compiles."
 
+**Pass 3 — re-audit found C# had moved on substantially (2026-09-19..23), plus
+Phase 1 of the resulting catch-up plan.** A full re-audit against the C# repo
+found it had shipped a large batch of new work Python had no knowledge of:
+zone-management + waveform-rendering overhaul in the Sample Editor, FTP
+folder-management additions, and — the largest item — real, live (not stub)
+**Nautilus device-family UI support** (swapped right-panel skin, connect-time
+device detection via the daemon's `MODEL` command, button/wheel remapping),
+plus a generalized MIDI/SysEx transport to go with it. See "What's left"
+below for the phased catch-up plan this produced. Phase 1 (low-risk items)
+landed this pass (`535f359`): a real reveal-password widget
+(`Views/revealable_password_edit.py`, replacing C#'s dual-PasswordBox/TextBox
+hack with a plain `QLineEdit.EchoMode` toggle), double-click-slider-reset and
+a "Default window size" dropdown in Settings (which needed window geometry
+persistence added — Python had none at all before this), Sample
+Editor/Librarian keybind entries, `ConnectionFailedDialog` wired into the
+*initial* connect-failure path only (deliberately **not** the background
+auto-reconnect loop — that's a Python-only feature, C#'s own docs say "does
+not auto-reconnect", so a modal on every unattended retry would be a
+regression), and removal of the confirmed-dead `LoginDialog`,
+`UnresolvedDependenciesDialog`, and `file_dialogs.py`'s two picker dialogs
+(all zero-caller, each duplicating a real implementation elsewhere).
+
 ## What's left
 
-Roughly in priority order, none of this started:
+**Nautilus PCG format-conversion (`Core/Pcg/Nautilus/`,
+`Core/Pcg/NautilusConversion/` in C#) is explicitly OUT OF SCOPE** — confirmed
+CLI-only in C# (`--nautilus-convert-*` flags), never reachable from its own
+GUI, so not a screen-remote client feature.
+
+Phase 1 (above) is done. Remaining phases, in priority order:
+
+**Phase 2 — Sample Editor: zone management + waveform rendering.** Currently
+fully read-only (`sample_editor_window.py` only loads a zone's KSF into a
+flat field form; no visual keymap, no add/delete/rename/link). Port from C#
+`776334a`/`5b1e805` (zone mgmt: new `Core/Sample/SampleLinkResolver.cs`,
+`Views/SampleKeymapControl.cs`'s two-pass paint) and `358907d` (waveform: new
+`Views/WaveformPyramid.cs` min/max mip-map + layered-`DrawingVisual`
+live-preview-drag rendering). Open question: `Views/waveform_display.py`
+(295 lines, dead, never imported) — audit for reuse against the C# design
+before deciding reuse-vs-rewrite. Also port C#'s FTP folder-management
+addition to the Sample Editor's own Push dialog (`_RemoteKscBrowserDialog`),
+reusing the existing `FtpPropertiesDialog` and `Tools/file_manager.py`
+top-level-path-safety guards rather than rebuilding. Before writing any zone
+code, re-read `kronosology/docs/interfaces/ksc_kmp_ksf_file_format.md`
+§1.6/§3.2's `SNO1`-uniqueness requirement — get it wrong and it silently
+drops audio on real hardware. Still deferred within this phase: DSP effects
+preview, normalization report, Create Multisample / Insert Silence dialogs —
+DSP preview specifically must not start without asking about item 2 below
+first.
+
+**Phase 3 — Nautilus device-family UI + MIDI/SysEx transport
+generalization.** C# itself calls this preliminary (its own
+`Documentation/nautilus_button_mapping.md` is marked unverified against real
+hardware — no rooted Nautilus unit even on the C# team's side yet). Add
+connect-time device-family detection (daemon `MODEL` command — Python's
+`Core/ctrl_client.py:query()` already supports arbitrary commands and has a
+one-off ad-hoc `MODEL` call to use as a parsing template in
+`main_window_dialogs.py`'s Device Info dialog, but no real connect-time
+state transition exists yet). Then port C#'s `ApplyDeviceFamilyUi()` — a
+dozen behavior branches (right/left panel swap, Bank Select fully disabled
+not just the action, footer FF/Rewind fade, `NautilusToken()` wire-token
+remap, etc., all with exact C# file:line references in the git history of
+this file / the branch's earlier planning). Then parameterize
+`Core/sysex_service.py`'s hardcoded Kronos-only codec on device family
+(the one hardware-confirmed wire difference is a 4-byte vs. 6-byte SysEx
+Exclusive Header) — scope this as parameterizing the existing transport, not
+building new infrastructure. Defer C#'s USB-direct MIDI transport path
+(`MidiDeviceIdentity.cs`, no daemon link at all) unless asked — Python has no
+USB-direct transport today, only the TCP bridge.
+
+**Older, still-relevant items:**
 
 1. **Sample Editor is intentionally a first slice.** C#'s `SampleEditorWindow`
    is 2500+ lines; this port covers the hard, safety-critical part (format +
@@ -176,16 +244,11 @@ Roughly in priority order, none of this started:
    asking; don't build on top of it without verifying it against C# first
    either (nothing in it has been checked for correctness).
 
-3. **Confirmed-dead code not yet removed** (low priority, low risk, needs
-   the same explicit-confirmation dance as any deletion in this harness):
-   `Views/connection_dialogs.py`'s `ConnectionFailedDialog`/`LoginDialog`,
-   `Views/property_dialogs.py`'s `UnresolvedDependenciesDialog`,
-   `Views/file_dialogs.py`'s `RemoteFilePickerDialog`/
-   `RemoteSampleBrowserDialog` — all zero-caller, each duplicating a real,
-   working implementation elsewhere (the real FTP login flow is
-   `_FtpLoginDialog` in `main_window.py`; the real file picker/dependency
-   dialog are `librarian_shell_window.py`'s own `_RemoteFilePickerDialog`/
-   `_UnresolvedDependenciesDialog`).
+3. ~~Confirmed-dead code~~ — resolved in Pass 3 (`535f359`): the dead
+   duplicates were deleted, and `ConnectionFailedDialog` was revived and
+   wired into the initial connect-failure path (see Pass 3 above) rather
+   than deleted, since C# itself revived/redesigned its own version in the
+   same time window this session was auditing against.
 
 4. **Never attempted, whole project**: pixel-level visual comparison against
    the C# app. Everything verified so far is code-level/behavioral/protocol-
@@ -198,11 +261,8 @@ Roughly in priority order, none of this started:
      Left (Qt doesn't distinguish them without a native-scancode check,
      unlike WPF's distinct `Key.RightShift` etc.) — documented as a known
      limitation in a comment, not implemented.
-   - `Views/connection_dialogs.py`'s dead `LoginDialog` doesn't enforce the
-     real 1-64-byte non-empty-username rule from `docs/api.md` §3.2 — only
-     matters if a future session wires it up instead of deleting it.
-   - No dedicated "reveal password" widget (C#'s `RevealablePasswordBox`) —
-     password fields are presumably plain masked `QLineEdit`s. Cosmetic.
+   - ~~No dedicated "reveal password" widget~~ — resolved in Pass 3
+     (`Views/revealable_password_edit.py`).
 
 6. **General UI sweep was real but not exhaustive.** Covered: menu structure
    and placement, Settings (all tabs), Help, control-surface tokens, SysEx
