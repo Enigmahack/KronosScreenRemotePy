@@ -158,6 +158,59 @@ regression), and removal of the confirmed-dead `LoginDialog`,
 `UnresolvedDependenciesDialog`, and `file_dialogs.py`'s two picker dialogs
 (all zero-caller, each duplicating a real implementation elsewhere).
 
+Phase 2 (Sample Editor zone management + waveform) landed the same pass,
+across five commits:
+- Zone management (`db5544d`): the tree was fully read-only before this —
+  now has Add Zone (128-zone cap, mirrored onto an in-sync stereo sibling),
+  Delete Zone (zero-zone guard on both halves of a stereo pair, single-slot
+  "Undo Delete Zone" rather than a full Ctrl+Z/redo stack — no undo stack
+  exists anywhere else in this codebase, and C#'s own version needs live-
+  object-identity tree-patching machinery this simpler window doesn't
+  have), Remove Sample (deletes the real audio file + matching bare
+  repository `.ksf` entries — the actual bug C#'s own version fixed;
+  previously only the reference was cleared), and Rename (sample + whole
+  multisample, 22-char UI cap, stereo-partner mirroring, multisample
+  rename moves the `.kmp` file + zone folder immediately). New
+  `Core/sample_link_resolver.py` (read-side stub-to-real-audio resolution)
+  and `Data/kmp_multisample.py`'s `find_stereo_sibling()`. "Link" (assign
+  an existing sample to a zone, sharing audio via SNO1) is deferred — it
+  needs a "pick an existing sample" UI that doesn't exist yet.
+- `Views/sample_keymap_control.py` (`10e8280`): visual piano-keyboard
+  keymap, two-pass zone-bar paint implemented correctly from the start
+  (see the module's own docstring for the black-key-boundary bug this
+  avoids — C# had to patch it after the fact). Click-to-select only;
+  boundary-drag resize and zone-bar reorder-drag are not ported (Add Zone
+  is a toolbar action, not a drag gesture, so nothing depends on them).
+- FTP folder management in the Load/Push browser (`be8ead5`): New Folder/
+  Rename/Delete/Refresh on `_RemoteKscBrowserDialog`, reusing
+  `Tools/file_manager.py`'s `_FtpWorker` methods and top-level-volume
+  safety guards rather than rebuilding. "Properties" wasn't ported — the
+  Python class named `FtpPropertiesDialog` is an FTP-connection-settings
+  dialog, a real naming collision with C#'s item-properties viewer of the
+  same name, not something reusable for this.
+- `Core/waveform_pyramid.py` + `Views/sample_waveform_control.py`
+  (`9acd550`): real waveform display, resolving the reuse-vs-rewrite
+  question on `Views/waveform_display.py` (user confirmed: write fresh —
+  that file remains untouched, still its own separate dead-code question).
+  Min/max mip-map (numpy `reduceat`, verified fold-vs-direct-computation
+  correct at every level) backs draggable Sample-Start/Loop-Start/Loop-End
+  markers with live-preview-until-release drag semantics and abandoned-
+  drag revert (Qt's `QEvent.UngrabMouse`, the equivalent of C#'s
+  `OnLostMouseCapture` hook). Fade/DSP preview, the ruler sub-control, and
+  stereo-pair pan/zoom sync are not ported.
+- Targeted bug checks: the C# reverse-playback-freeze bug doesn't apply
+  yet (no audio playback engine exists here — flagged as a must-not-
+  reintroduce constraint for whenever one is added). The C# calibration-
+  mode MIDI-disconnect crash was root-caused to an NAudio/winmm GC-
+  finalizer race specific to that native handle; checked Python's actual
+  transport close path (`Core/midi_bridge.py:stop()` — a plain
+  `socket.close()` in a try/except, no finalizer, no native handle) and
+  confirmed the bug class doesn't apply to this architecture at all.
+
+This leaves Phase 3 (Nautilus device-family UI + MIDI/SysEx transport
+generalization) as the only unstarted phase from the Pass 3 plan — by far
+the largest remaining piece; see "What's left" below.
+
 ## What's left
 
 **Nautilus PCG format-conversion (`Core/Pcg/Nautilus/`,
@@ -165,26 +218,7 @@ regression), and removal of the confirmed-dead `LoginDialog`,
 CLI-only in C# (`--nautilus-convert-*` flags), never reachable from its own
 GUI, so not a screen-remote client feature.
 
-Phase 1 (above) is done. Remaining phases, in priority order:
-
-**Phase 2 — Sample Editor: zone management + waveform rendering.** Currently
-fully read-only (`sample_editor_window.py` only loads a zone's KSF into a
-flat field form; no visual keymap, no add/delete/rename/link). Port from C#
-`776334a`/`5b1e805` (zone mgmt: new `Core/Sample/SampleLinkResolver.cs`,
-`Views/SampleKeymapControl.cs`'s two-pass paint) and `358907d` (waveform: new
-`Views/WaveformPyramid.cs` min/max mip-map + layered-`DrawingVisual`
-live-preview-drag rendering). Open question: `Views/waveform_display.py`
-(295 lines, dead, never imported) — audit for reuse against the C# design
-before deciding reuse-vs-rewrite. Also port C#'s FTP folder-management
-addition to the Sample Editor's own Push dialog (`_RemoteKscBrowserDialog`),
-reusing the existing `FtpPropertiesDialog` and `Tools/file_manager.py`
-top-level-path-safety guards rather than rebuilding. Before writing any zone
-code, re-read `kronosology/docs/interfaces/ksc_kmp_ksf_file_format.md`
-§1.6/§3.2's `SNO1`-uniqueness requirement — get it wrong and it silently
-drops audio on real hardware. Still deferred within this phase: DSP effects
-preview, normalization report, Create Multisample / Insert Silence dialogs —
-DSP preview specifically must not start without asking about item 2 below
-first.
+Phase 1 and Phase 2 (above) are done. Remaining:
 
 **Phase 3 — Nautilus device-family UI + MIDI/SysEx transport
 generalization.** C# itself calls this preliminary (its own
@@ -208,25 +242,28 @@ USB-direct transport today, only the TCP bridge.
 
 **Older, still-relevant items:**
 
-1. **Sample Editor is intentionally a first slice.** C#'s `SampleEditorWindow`
-   is 2500+ lines; this port covers the hard, safety-critical part (format +
-   transfer) and a minimal real UI. Deferred, in the C# reference at
-   `Views/SampleWaveformControl.cs`, `SampleWaveformRulerControl.cs`,
-   `SampleKeymapControl.cs`, `SamplePanControl.cs`, `SampleVolumeControl.cs`,
-   `SampleVuMeterControl.cs`, `CreateMultisampleDialog.xaml.cs`,
-   `InsertSilenceDialog.xaml.cs`, `SampleNormalizationReportWindow.xaml.cs`:
-   - Waveform drawing + interactive selection/trim/fade editing
-   - Multisample zone creation/splitting UI (currently can only edit fields
-     on zones that already exist — no way to add a new zone/sample from this
-     tool)
-   - DSP effects preview
+1. **Sample Editor is still not a full port of C#'s 2500+-line
+   `SampleEditorWindow`, but the hard/safety-critical parts plus zone
+   management and waveform editing are now real** (Phase 2, above). What's
+   left, in the C# reference at `SamplePanControl.cs`,
+   `SampleVolumeControl.cs`, `SampleVuMeterControl.cs`,
+   `CreateMultisampleDialog.xaml.cs`, `InsertSilenceDialog.xaml.cs`,
+   `SampleNormalizationReportWindow.xaml.cs`, and the fade/DSP-preview part
+   of `SampleWaveformControl.cs`:
+   - DSP effects preview + fade editing (must not start without resolving
+     item 2 below first — this is exactly where someone would be tempted to
+     reach for that code)
    - Normalization report
    - Create Multisample / Insert Silence dialogs
+   - "Link" a zone to an existing sample's audio (sharing via SNO1) — the
+     read-side resolver (`Core/sample_link_resolver.py`) and every data-layer
+     primitive it needs already exist; this needs a "pick an existing
+     sample" UI that doesn't exist yet
+   - Pan/volume controls, VU meter, stereo-pair pan/zoom-window sync in the
+     waveform view
    Before writing any of this, re-read `ksc_kmp_ksf_file_format.md` for the
    specific operation — it documents a hardware landmine for nearly every one
-   of these (e.g. §1.6/§3.2's `SNO1`-uniqueness requirement is exactly what a
-   "create new zone" flow needs to get right, or it silently drops audio on a
-   real unit).
+   of these.
 
 2. **The Phase 4-6 "fake" audio/DSP code is still present, untouched.**
    `Core/sample_editor.py`, `Core/audio_engine.py`, `Views/waveform_display.py`,
