@@ -41,6 +41,7 @@ from Data.kmp_multisample import KmpMultisample, KmpZone, find_stereo_sibling
 from Data.ksf_sample import KsfSample
 import Models.storage as storage
 import Utils.theme as T
+from Views.sample_keymap_control import SampleKeymapControl
 
 log = logging.getLogger(__name__)
 
@@ -257,6 +258,10 @@ class SampleEditorWindow(QMainWindow):
 
         panel = QWidget()
         panel_layout = QVBoxLayout(panel)
+
+        self._keymap = SampleKeymapControl()
+        self._keymap.zone_clicked.connect(self._on_keymap_zone_clicked)
+        panel_layout.addWidget(self._keymap)
 
         self._header_warning = QLabel(self._GENERIC_HEADER_ONLY_WARNING)
         self._header_warning.setStyleSheet(f"color: {T.WARN}; font-weight: bold;")
@@ -487,6 +492,25 @@ class SampleEditorWindow(QMainWindow):
             self._populate_fields(ksf, kmp_local_path)
         finally:
             self._update_zone_actions_enabled()
+            self._update_keymap()
+
+    def _update_keymap(self):
+        ms_ctx = self._selected_multisample_ctx()
+        if ms_ctx is None:
+            self._keymap.set_zones([])
+            self._keymap.set_selected_index(None)
+            return
+        m, _kmp_local_path = ms_ctx
+        zone_ctx = self._selected_zone_ctx()
+        self._keymap.set_zones(m.zones)
+        self._keymap.set_selected_index(zone_ctx[3] if zone_ctx is not None else None)
+
+    def _on_keymap_zone_clicked(self, zone_index: int):
+        ms_ctx = self._selected_multisample_ctx()
+        if ms_ctx is None:
+            return
+        _m, kmp_local_path = ms_ctx
+        self._reselect_zone(kmp_local_path, zone_index)
 
     def _selected_multisample_ctx(self):
         """(multisample, kmp_local_path) for whatever's selected — a "kmp"
