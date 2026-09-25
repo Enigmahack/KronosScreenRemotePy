@@ -1847,13 +1847,14 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         self._seq_rew    = _seq_btn("◀◀", "Rewind (<<)", "SEQ_REW", kronos_only=True)
         self._seq_ff     = _seq_btn("▶▶", "Fast-forward (>>)", "SEQ_FF", kronos_only=True)
         self._seq_pause  = _seq_btn("⏸", "Pause", "SEQ_PAUSE", nautilus_action="MS3")
-        self._seq_rec    = _seq_btn("⏺", "Record", "SEQ_REC")
-        self._seq_start  = _seq_btn("▶", "Start / Stop", "SEQ_START")
+        self._seq_rec    = _seq_btn("⏺", "Record", "SEQ_REC", nautilus_action="MS2")
+        self._seq_start  = _seq_btn("▶", "Start / Stop", "SEQ_START", nautilus_action="MP6")
         self._tap_tempo_lbl = _seq_icon_btn("metronome",
             "Tap Tempo — one tap per press; the Kronos averages", "TAP_TEMPO",
             nautilus_action="NUM9")
         self._seq_save_lbl  = _seq_icon_btn("save",
-            "Write / Save — REC/WRITE (Setlist/Combi/Program/Global)", "SEQ_REC")
+            "Write / Save — REC/WRITE (Setlist/Combi/Program/Global)", "SEQ_REC",
+            nautilus_action="EXIT")
         # Transport row is one widget so it can be faded/enabled as a unit (req 12).
         _seq_box = QWidget()
         _seq_lay = QHBoxLayout(_seq_box)
@@ -2679,11 +2680,13 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         forth (or a stale Nautilus session followed by a Kronos one)
         re-applies cleanly in both directions. Port of C#'s
         ApplyDeviceFamilyUi(). `_nautilus_token()` (see its own docstring)
-        now covers Seq Locate/Rewind/Forward/Pause + Tap Tempo's wire-token
-        remap across the footer buttons, keybind dispatch, and command
-        palette — Seq Record/Start/Save are NOT remapped yet, C#'s own
-        version routes those through SeqTransportViewModel's own additional
-        swap logic that hasn't been read closely enough to port correctly.
+        now covers Seq Locate/Rewind/Forward/Pause/Record/Start/Save + Tap
+        Tempo's wire-token remap across the footer buttons, keybind
+        dispatch, and command palette — Record/Start/Save mirror C#'s
+        SeqTransportViewModel (Record→MS2, Start/Stop→MP6 swapped with
+        Pause's MS3, Save→EXIT since Nautilus's front-panel "F" QA slot is
+        wire EXIT and programmed as Write/Save there, while Kronos fires
+        the same REC/WRITE press for both Record and Save).
         Not yet ported here (Phase 3b remainder, see CLAUDE.md): right-panel
         swap (needs a NautilusRightPanel-equivalent widget — no visual
         reference available yet) and Mode-select menu swap (needs new
@@ -3250,23 +3253,24 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
                 return
 
         # Sequencer transport keybinds (unassigned by default — see REBINDABLE_DEFS).
-        # Locate/Rewind/Forward/Pause remap to Nautilus's own scan codes (see
-        # _nautilus_token) — real wire tokens, sourced from hardware-tested
-        # button_labels.json per C#'s MainWindow.xaml.cs BuildCommandRegistry
-        # comment, NOT the older unverified nautilus_button_mapping.md this
-        # repo also has. Unlike the footer FF/Rewind buttons (kept disabled
-        # there, a separate UI decision — see _seq_btn's kronos_only), the
-        # keybind path works on both families. Record/Start/Save are NOT
-        # remapped here yet — C#'s own version routes them through
-        # SeqTransportViewModel's own additional Nautilus swap logic, not
-        # read closely enough yet to port correctly; left Kronos-only tokens
-        # for now rather than guess.
+        # All six remap to Nautilus's own scan codes (see _nautilus_token) — real
+        # wire tokens, sourced from hardware-tested button_labels.json per C#'s
+        # MainWindow.xaml.cs BuildCommandRegistry comment, NOT the older unverified
+        # nautilus_button_mapping.md this repo also has. Unlike the footer
+        # FF/Rewind buttons (kept disabled there, a separate UI decision — see
+        # _seq_btn's kronos_only), the keybind path works on both families.
+        # Record/Start/Save mirror C#'s SeqTransportViewModel: Record is Nautilus
+        # MS2 ("SEQ REC"), Start/Stop is MP6 (swapped with Pause's MS3), and Save
+        # is Nautilus front-panel "F" — wire EXIT, that QA slot is programmed as
+        # Write/Save — while on Kronos Save fires the same REC/WRITE press as
+        # Record (one physical key there).
         seq = {"Seq Locate":  self._nautilus_token("SEQ_LOCATE", "MS1"),
                "Seq Rewind":  self._nautilus_token("SEQ_REW", "MP7"),
                "Seq Forward": self._nautilus_token("SEQ_FF", "MP8"),
                "Seq Pause":   self._nautilus_token("SEQ_PAUSE", "MS3"),
-               "Seq Record": "SEQ_REC", "Seq Start": "SEQ_START",
-               "Seq Save": "SEQ_REC"}   # Save fires the same REC/WRITE press
+               "Seq Record":  self._nautilus_token("SEQ_REC", "MS2"),
+               "Seq Start":   self._nautilus_token("SEQ_START", "MP6"),
+               "Seq Save":    self._nautilus_token("SEQ_REC", "EXIT")}
         for action, token in seq.items():
             if self._matches_keybind(event, action):
                 self._ctrl_send(f"BUTTON {token}")
@@ -4035,16 +4039,16 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             "HideDataInput":   lambda: self._toggle_hide_data_input(not self._settings.hide_data_input),
             "HideValueInput":  lambda: self._toggle_hide_value_input(not self._settings.hide_value_input),
             # Sequencer transport + tap tempo (shared with keybind handling).
-            # Locate/Rewind/Forward/Pause/Tap Tempo remap to Nautilus's own
-            # scan codes — see keyPressEvent's matching seq dict for why
-            # Record/Start/Save don't yet.
+            # All six remap to Nautilus's own scan codes — see keyPressEvent's
+            # matching seq dict for the Record/Start/Save source (C#'s
+            # SeqTransportViewModel).
             "Seq Locate":  lambda: self._ctrl_send(f"BUTTON {self._nautilus_token('SEQ_LOCATE', 'MS1')}"),
             "Seq Rewind":  lambda: self._ctrl_send(f"BUTTON {self._nautilus_token('SEQ_REW', 'MP7')}"),
             "Seq Forward": lambda: self._ctrl_send(f"BUTTON {self._nautilus_token('SEQ_FF', 'MP8')}"),
             "Seq Pause":   lambda: self._ctrl_send(f"BUTTON {self._nautilus_token('SEQ_PAUSE', 'MS3')}"),
-            "Seq Record":  lambda: self._ctrl_send("BUTTON SEQ_REC"),
-            "Seq Start":   lambda: self._ctrl_send("BUTTON SEQ_START"),
-            "Seq Save":    lambda: self._ctrl_send("BUTTON SEQ_REC"),
+            "Seq Record":  lambda: self._ctrl_send(f"BUTTON {self._nautilus_token('SEQ_REC', 'MS2')}"),
+            "Seq Start":   lambda: self._ctrl_send(f"BUTTON {self._nautilus_token('SEQ_START', 'MP6')}"),
+            "Seq Save":    lambda: self._ctrl_send(f"BUTTON {self._nautilus_token('SEQ_REC', 'EXIT')}"),
             "Tap Tempo":   lambda: (self._ctrl_send(f"BUTTON {self._nautilus_token('TAP_TEMPO', 'NUM9')}"),
                                      self._flash_tap_tempo()),
         })
