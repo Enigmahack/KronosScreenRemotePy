@@ -4573,6 +4573,15 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
                     if (t == QEvent.Type.KeyPress and (event.modifiers() & Qt.ControlModifier)
                             and event.key() in (Qt.Key_V, Qt.Key_A)):
                         return False
+                    # Escape is front-panel EXIT injection on Kronos (see
+                    # keyPressEvent's dedicated handler — only reachable
+                    # when NOT captured, a known separate gap, see
+                    # CLAUDE.md), never a raw keystroke there; C# excludes
+                    # it from this same forward-while-captured path only
+                    # when NOT Nautilus (MainWindow.Input.cs:337-339) — on
+                    # Nautilus it IS a real keystroke and forwards normally.
+                    if (event.key() == Qt.Key_Escape and not self._is_nautilus):
+                        return True   # consumed, but not forwarded as a raw key
                     if not event.isAutoRepeat():
                         if self._kbd_send_en:
                             self._forward_key(event,
