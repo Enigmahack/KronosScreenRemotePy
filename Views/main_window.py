@@ -1783,7 +1783,8 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         _seq_font = QFont(T.FONT_SYMBOL)
         _seq_font.setPixelSize(T.FS_SMALL)
 
-        def _seq_btn(glyph: str, tooltip: str, action: str, kronos_only: bool = False) -> QLabel:
+        def _seq_btn(glyph: str, tooltip: str, action: str, kronos_only: bool = False,
+                     nautilus_action: Optional[str] = None) -> QLabel:
             lbl = QLabel(glyph)
             lbl.setObjectName("footerIcon")
             lbl.setFont(_seq_font)
@@ -1793,16 +1794,20 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             # kronos_only: Fast-Forward/Rewind have no confirmed Nautilus wire
             # token (kept in place but faded + non-clickable there, matching
             # C#'s ApplyDeviceFamilyUi — unconditional, not just gated by
-            # Sequence mode like the rest of this row).
-            lbl.mousePressEvent = lambda ev, a=action, l=lbl, ko=kronos_only: (
+            # Sequence mode like the rest of this row). nautilus_action: a
+            # real remapped scan code to send instead on Nautilus (see
+            # _nautilus_token) — resolved at click time, not baked in here,
+            # since device family can change across a reconnect.
+            lbl.mousePressEvent = lambda ev, a=action, na=nautilus_action, l=lbl, ko=kronos_only: (
                 None if ev.button() != Qt.MouseButton.LeftButton or (ko and self._is_nautilus)
-                else (self._ctrl_send(f"BUTTON {a}"),
+                else (self._ctrl_send(f"BUTTON {self._nautilus_token(a, na) if na else a}"),
                       l.setStyleSheet(f"color: {T.ACCENT}; padding: 0 3px;"),
                       QTimer.singleShot(180, lambda: l.setStyleSheet(
                           f"color: {T.TEXT_DIM}; padding: 0 3px;"))))
             return lbl
 
-        def _seq_icon_btn(kind: str, tooltip: str, action: str) -> QLabel:
+        def _seq_icon_btn(kind: str, tooltip: str, action: str,
+                          nautilus_action: Optional[str] = None) -> QLabel:
             # Painted vector icon, not an emoji glyph — 💾 (U+1F4BE) and the metronome
             # shape have no Segoe UI Symbol coverage, so Qt falls back to the system's
             # COLOR emoji font for them, which is why Save used to render as a colored,
@@ -1814,21 +1819,23 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             lbl.setPixmap(_paint_seq_icon(kind, T.TEXT_DIM, size))
             lbl.setToolTip(tooltip)
             lbl.setCursor(Qt.CursorShape.PointingHandCursor)
-            lbl.mousePressEvent = lambda ev, a=action, l=lbl, k=kind, sz=size: (
+            lbl.mousePressEvent = lambda ev, a=action, na=nautilus_action, l=lbl, k=kind, sz=size: (
                 None if ev.button() != Qt.MouseButton.LeftButton
-                else (self._ctrl_send(f"BUTTON {a}"),
+                else (self._ctrl_send(f"BUTTON {self._nautilus_token(a, na) if na else a}"),
                       l.setPixmap(_paint_seq_icon(k, T.ACCENT, sz)),
                       QTimer.singleShot(180, lambda: l.setPixmap(_paint_seq_icon(k, T.TEXT_DIM, sz)))))
             return lbl
 
-        self._seq_locate = _seq_btn("⏮", "Locate — return to the locate point", "SEQ_LOCATE")
+        self._seq_locate = _seq_btn("⏮", "Locate — return to the locate point", "SEQ_LOCATE",
+                                     nautilus_action="MS1")
         self._seq_rew    = _seq_btn("◀◀", "Rewind (<<)", "SEQ_REW", kronos_only=True)
         self._seq_ff     = _seq_btn("▶▶", "Fast-forward (>>)", "SEQ_FF", kronos_only=True)
-        self._seq_pause  = _seq_btn("⏸", "Pause", "SEQ_PAUSE")
+        self._seq_pause  = _seq_btn("⏸", "Pause", "SEQ_PAUSE", nautilus_action="MS3")
         self._seq_rec    = _seq_btn("⏺", "Record", "SEQ_REC")
         self._seq_start  = _seq_btn("▶", "Start / Stop", "SEQ_START")
         self._tap_tempo_lbl = _seq_icon_btn("metronome",
-            "Tap Tempo — one tap per press; the Kronos averages", "TAP_TEMPO")
+            "Tap Tempo — one tap per press; the Kronos averages", "TAP_TEMPO",
+            nautilus_action="NUM9")
         self._seq_save_lbl  = _seq_icon_btn("save",
             "Write / Save — REC/WRITE (Setlist/Combi/Program/Global)", "SEQ_REC")
         # Transport row is one widget so it can be faded/enabled as a unit (req 12).
@@ -2637,6 +2644,17 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
                 self._is_nautilus = resolved_nautilus
         self._apply_device_family_ui()
 
+    def _nautilus_token(self, kronos: str, nautilus: str) -> str:
+        """Resolves a panel-function wire token to Nautilus's own scan code
+        when connected to one, else the Kronos token unchanged. Port of
+        C#'s NautilusToken(). Source: the same hardware-tested
+        button_labels.json C#'s own comment cites as superseding the older,
+        unverified Documentation/nautilus_button_mapping.md — only the
+        handful of tokens that doc/that comment actually confirm are wired
+        here (Seq Locate/Rewind/Forward/Pause, Tap Tempo); everything else
+        stays Kronos-only rather than guessing."""
+        return nautilus if self._is_nautilus else kronos
+
     def _apply_device_family_ui(self):
         """Single hook every device-family-gated UI branch runs through —
         called once after each connect-family resolution (the cheap
@@ -2644,16 +2662,25 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         changes it) and on every reconnect, so switching families back and
         forth (or a stale Nautilus session followed by a Kronos one)
         re-applies cleanly in both directions. Port of C#'s
-        ApplyDeviceFamilyUi(). Not yet ported here (Phase 3b remainder, see
-        CLAUDE.md): right-panel swap (needs a NautilusRightPanel-equivalent
-        widget — no visual reference available yet), Mode-select menu swap
-        (needs new Nautilus Mode/Page/A-F menu items), and NautilusToken()
-        wire-token remap for footer/keybind/command-palette actions. Play/
-        Record "lit while playing" style removal has no Python analog to
-        remove — Python's footer transport never implemented the
-        persistent lit-while-playing/recording indicator C# has at all
-        (checked: no _is_playing/_is_recording state exists anywhere in
-        this file), so there's nothing to un-light on Nautilus specifically."""
+        ApplyDeviceFamilyUi(). `_nautilus_token()` (see its own docstring)
+        now covers Seq Locate/Rewind/Forward/Pause + Tap Tempo's wire-token
+        remap across the footer buttons, keybind dispatch, and command
+        palette — Seq Record/Start/Save are NOT remapped yet, C#'s own
+        version routes those through SeqTransportViewModel's own additional
+        swap logic that hasn't been read closely enough to port correctly.
+        Not yet ported here (Phase 3b remainder, see CLAUDE.md): right-panel
+        swap (needs a NautilusRightPanel-equivalent widget — no visual
+        reference available yet) and Mode-select menu swap (needs new
+        Nautilus Mode/Page/A-F menu items — the wire tokens for Kronos's
+        existing 7 mode commands are confirmed UNCHANGED on Nautilus per
+        this same button_labels.json source, only the menu's item set/
+        labels need to change, but the A-F QA-slot mapping itself isn't
+        confident enough to guess here). Play/Record "lit while playing"
+        style removal has no Python analog to remove — Python's footer
+        transport never implemented the persistent lit-while-playing/
+        recording indicator C# has at all (checked: no
+        _is_playing/_is_recording state exists anywhere in this file), so
+        there's nothing to un-light on Nautilus specifically."""
         self._bank_menu.menuAction().setEnabled(not self._is_nautilus)
 
         # Hide Value Input has no effect on Nautilus (the value-slider panel
@@ -3185,17 +3212,30 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
                 self._ctrl_send(bank_cmd)
                 return
 
-        # Sequencer transport keybinds (unassigned by default — see REBINDABLE_DEFS)
-        seq = {"Seq Locate": "BUTTON SEQ_LOCATE", "Seq Rewind": "BUTTON SEQ_REW",
-               "Seq Forward": "BUTTON SEQ_FF", "Seq Pause": "BUTTON SEQ_PAUSE",
-               "Seq Record": "BUTTON SEQ_REC", "Seq Start": "BUTTON SEQ_START",
-               "Seq Save": "BUTTON SEQ_REC"}   # Save fires the same REC/WRITE press
-        for action, cmd in seq.items():
+        # Sequencer transport keybinds (unassigned by default — see REBINDABLE_DEFS).
+        # Locate/Rewind/Forward/Pause remap to Nautilus's own scan codes (see
+        # _nautilus_token) — real wire tokens, sourced from hardware-tested
+        # button_labels.json per C#'s MainWindow.xaml.cs BuildCommandRegistry
+        # comment, NOT the older unverified nautilus_button_mapping.md this
+        # repo also has. Unlike the footer FF/Rewind buttons (kept disabled
+        # there, a separate UI decision — see _seq_btn's kronos_only), the
+        # keybind path works on both families. Record/Start/Save are NOT
+        # remapped here yet — C#'s own version routes them through
+        # SeqTransportViewModel's own additional Nautilus swap logic, not
+        # read closely enough yet to port correctly; left Kronos-only tokens
+        # for now rather than guess.
+        seq = {"Seq Locate":  self._nautilus_token("SEQ_LOCATE", "MS1"),
+               "Seq Rewind":  self._nautilus_token("SEQ_REW", "MP7"),
+               "Seq Forward": self._nautilus_token("SEQ_FF", "MP8"),
+               "Seq Pause":   self._nautilus_token("SEQ_PAUSE", "MS3"),
+               "Seq Record": "SEQ_REC", "Seq Start": "SEQ_START",
+               "Seq Save": "SEQ_REC"}   # Save fires the same REC/WRITE press
+        for action, token in seq.items():
             if self._matches_keybind(event, action):
-                self._ctrl_send(cmd)
+                self._ctrl_send(f"BUTTON {token}")
                 return
         if self._matches_keybind(event, "Tap Tempo"):
-            self._ctrl_send("BUTTON TAP_TEMPO")
+            self._ctrl_send(f"BUTTON {self._nautilus_token('TAP_TEMPO', 'NUM9')}")
             self._flash_tap_tempo()
             return
 
@@ -3932,15 +3972,19 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             "Quit":            self._try_quit,
             "HideDataInput":   lambda: self._toggle_hide_data_input(not self._settings.hide_data_input),
             "HideValueInput":  lambda: self._toggle_hide_value_input(not self._settings.hide_value_input),
-            # Sequencer transport + tap tempo (shared with keybind handling)
-            "Seq Locate":  lambda: self._ctrl_send("BUTTON SEQ_LOCATE"),
-            "Seq Rewind":  lambda: self._ctrl_send("BUTTON SEQ_REW"),
-            "Seq Forward": lambda: self._ctrl_send("BUTTON SEQ_FF"),
-            "Seq Pause":   lambda: self._ctrl_send("BUTTON SEQ_PAUSE"),
+            # Sequencer transport + tap tempo (shared with keybind handling).
+            # Locate/Rewind/Forward/Pause/Tap Tempo remap to Nautilus's own
+            # scan codes — see keyPressEvent's matching seq dict for why
+            # Record/Start/Save don't yet.
+            "Seq Locate":  lambda: self._ctrl_send(f"BUTTON {self._nautilus_token('SEQ_LOCATE', 'MS1')}"),
+            "Seq Rewind":  lambda: self._ctrl_send(f"BUTTON {self._nautilus_token('SEQ_REW', 'MP7')}"),
+            "Seq Forward": lambda: self._ctrl_send(f"BUTTON {self._nautilus_token('SEQ_FF', 'MP8')}"),
+            "Seq Pause":   lambda: self._ctrl_send(f"BUTTON {self._nautilus_token('SEQ_PAUSE', 'MS3')}"),
             "Seq Record":  lambda: self._ctrl_send("BUTTON SEQ_REC"),
             "Seq Start":   lambda: self._ctrl_send("BUTTON SEQ_START"),
             "Seq Save":    lambda: self._ctrl_send("BUTTON SEQ_REC"),
-            "Tap Tempo":   lambda: (self._ctrl_send("BUTTON TAP_TEMPO"), self._flash_tap_tempo()),
+            "Tap Tempo":   lambda: (self._ctrl_send(f"BUTTON {self._nautilus_token('TAP_TEMPO', 'NUM9')}"),
+                                     self._flash_tap_tempo()),
         })
         fn = cmds.get(action)
         if fn:
