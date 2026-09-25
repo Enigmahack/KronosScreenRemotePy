@@ -1,635 +1,510 @@
-"""Sample editor window for editing audio samples.
+"""SampleEditorWindow — browse, pull, edit, and push real Kronos sample
+content (.KSC/.KMP/.KSF) over FTP.
 
-Provides:
-- Multi-track audio project editing
-- Waveform display with zoom/pan
-- Selection editing
-- Basic operations (cut, copy, paste, trim)
-- File I/O
-- Undo/redo
+This is a first, deliberately-scoped slice of C#'s much larger
+SampleEditorWindow (2500+ lines, waveform editing, multisample zone
+splitting, DSP effects, normalization reports — see PROJECT_STRUCTURE.md /
+session notes for what's deferred). What this DOES do is real and
+hardware-verified: parse/write the actual .KSC/.KMP/.KSF format (Data/
+ksf_sample.py, kmp_multisample.py, ksc_collection.py — every real fixture in
+KronosScreenRemote/SampleFixtures/ round-trips through it byte-identical),
+and pull/push it over FTP using the app's real connection (Core/sample_ftp.py).
+
+Editable fields are deliberately limited to what's safe without a waveform
+view: display name, loop start/end, and the one-shot/reverse/+12dB-boost
+flags. A header-only sample (no PCM — a legitimate stub OR silent data loss,
+indistinguishable by inspection per kronosology doc §3.3) is read-only and
+is never re-uploaded — see Core/sample_ftp.py's push_closure `only_ksf_paths`
+parameter, used here to push only samples this session actually edited.
 """
 from __future__ import annotations
-from pathlib import Path
-from typing import Optional
-import struct
 
-from PySide6.QtCore import Qt, QTimer, Signal
+import logging
+import os
+import threading
+from typing import Dict, List, Optional, Set
+
+from PySide6.QtCore import Qt, QTimer, Signal, Slot
 from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QToolBar,
-    QPushButton, QLabel, QSlider, QSpinBox, QFileDialog, QMessageBox,
-    QStatusBar, QMenuBar, QMenu, QSplitter
+    QDialog, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
+    QMainWindow, QMessageBox, QPushButton, QSpinBox, QSplitter, QStatusBar,
+    QToolBar, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget, QCheckBox,
+    QProgressDialog,
 )
-from PySide6.QtGui import QAction
 
+import Core.sample_ftp as sample_ftp
+import Data.ksc_collection as ksc_mod
+from Data.ksc_collection import KscCollection
+from Data.kmp_multisample import KmpMultisample
+from Data.ksf_sample import KsfSample
+import Models.storage as storage
 import Utils.theme as T
-from Views.waveform_display import WaveformDisplay
-from Views.track_list import TrackListWidget
-from Views.effect_preview_panel import EffectPreviewPanel
-from Views.cue_region_panel import CueRegionPanel
-from Core.sample_editor import AudioTrack, AudioProject
-from Core.audio_sample_player import get_sample_player
+
+log = logging.getLogger(__name__)
+
+
+def _workspace_root() -> str:
+    root = storage.data_dir() / "SampleEditorWorkspace"
+    root.mkdir(parents=True, exist_ok=True)
+    return str(root)
+
+
+class _RemoteKscBrowserDialog(QDialog):
+    """Minimal remote FTP tree browser scoped to picking a .KSC file.
+
+    Not the full dual-pane File Manager (Tools/file_manager.py) — this only
+    needs drill-down navigation and a single-file pick, so it's a much
+    smaller, purpose-built tree rather than reusing that window's much larger
+    surface (drag-drop, cut/copy/paste, rename, delete — none of which apply
+    here)."""
+
+    def __init__(self, ftp, parent=None):
+        super().__init__(parent)
+        self._ftp = ftp
+        self.selected_path: Optional[str] = None
+        self.setWindowTitle("Load Sample Collection from Kronos")
+        self.resize(480, 520)
+
+        layout = QVBoxLayout(self)
+        info = QLabel("Select a .KSC file on the Kronos's SSD.")
+        info.setStyleSheet(f"color: {T.TEXT_DIM};")
+        layout.addWidget(info)
+
+        self._tree = QTreeWidget()
+        self._tree.setHeaderHidden(True)
+        self._tree.itemExpanded.connect(self._on_expand)
+        self._tree.itemDoubleClicked.connect(self._on_double_click)
+        layout.addWidget(self._tree, 1)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        self._ok_btn = QPushButton("Load")
+        self._ok_btn.setEnabled(False)
+        self._ok_btn.clicked.connect(self.accept)
+        btn_row.addWidget(self._ok_btn)
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(cancel_btn)
+        layout.addLayout(btn_row)
+
+        self._tree.itemSelectionChanged.connect(self._on_selection_changed)
+        self._populate_dir(None, "/")
+
+    def _populate_dir(self, parent_item: Optional[QTreeWidgetItem], path: str):
+        try:
+            entries = self._ftp.list_dir(path)
+        except Exception as e:
+            log.warning("sample browser: list_dir('%s') failed: %s", path, e)
+            return
+        entries.sort(key=lambda e: (not e.is_directory, e.name.lower()))
+        for entry in entries:
+            if entry.is_directory:
+                item = QTreeWidgetItem([f"\U0001F4C1 {entry.name}"])
+                item.setData(0, Qt.UserRole, ("dir", entry.full_path))
+                item.setChildIndicatorPolicy(QTreeWidgetItem.ShowIndicator)
+                if parent_item is None:
+                    self._tree.addTopLevelItem(item)
+                else:
+                    parent_item.addChild(item)
+            elif entry.name.upper().endswith(".KSC"):
+                item = QTreeWidgetItem([entry.name])
+                item.setData(0, Qt.UserRole, ("ksc", entry.full_path))
+                if parent_item is None:
+                    self._tree.addTopLevelItem(item)
+                else:
+                    parent_item.addChild(item)
+
+    def _on_expand(self, item: QTreeWidgetItem):
+        if item.childCount() > 0:
+            return
+        kind, path = item.data(0, Qt.UserRole)
+        if kind == "dir":
+            self._populate_dir(item, path)
+
+    def _on_selection_changed(self):
+        items = self._tree.selectedItems()
+        if not items:
+            self._ok_btn.setEnabled(False)
+            return
+        kind, path = items[0].data(0, Qt.UserRole)
+        self._ok_btn.setEnabled(kind == "ksc")
+        if kind == "ksc":
+            self.selected_path = path
+
+    def _on_double_click(self, item: QTreeWidgetItem, _col: int):
+        kind, path = item.data(0, Qt.UserRole)
+        if kind == "ksc":
+            self.selected_path = path
+            self.accept()
 
 
 class SampleEditorWindow(QMainWindow):
-    """Main window for sample editing."""
+    _pull_done = Signal(object, object, list, object)   # local_path, remote_map, failures, error
+    _push_done = Signal(list, object)                    # failures, error
+    _progress = Signal(str)
 
-    # Signals
-    sample_saved = Signal(str)  # filename
-
-    def __init__(self, parent=None):
+    def __init__(self, host: str, ftp_port: int, user: str, password: str, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Sample Editor")
-        self.setMinimumSize(1000, 700)
+        self._host = host
+        self._ftp_port = ftp_port
+        self._user = user
+        self._pass = password
 
-        # Multi-track project
-        self.project = AudioProject("Untitled", 44100, 2)
+        self._collection: Optional[KscCollection] = None
+        self._local_ksc_path: Optional[str] = None
+        self._remote_dest_dir: Optional[str] = None
+        self._dirty_ksf_paths: Set[str] = set()
+        self._kmp_cache: Dict[str, KmpMultisample] = {}   # kmp_local_path -> parsed
+        self._current_ksf: Optional[KsfSample] = None
+        self._current_ksf_path: Optional[str] = None
+        self._loading_fields = False   # suppresses dirty-marking while populating the form
 
-        # Sample player for playback
-        self.sample_player = get_sample_player()
-
-        # Sample data (for compatibility)
-        self.audio_data: Optional[bytes] = None
-        self.sample_rate = 44100
-        self.channels = 2
-        self.duration_sec = 0.0
-        self.current_file: Optional[Path] = None
-
-        # Playback
-        self.is_playing = False
-        self.playhead_timer = QTimer(self)
-        self.playhead_timer.timeout.connect(self._update_playhead)
-
-        # Undo/redo
-        self.undo_stack = []
-        self.redo_stack = []
-
+        self.setWindowTitle("Sample Editor — Kronos")
+        self.resize(760, 540)
         self._setup_ui()
-        self._setup_menu()
+
+        self._pull_done.connect(self._on_pull_done)
+        self._push_done.connect(self._on_push_done)
+        self._progress.connect(self._on_progress)
+
+    # ── UI construction ──────────────────────────────────────────────────────
 
     def _setup_ui(self):
-        """Setup the user interface."""
-        central = QWidget(self)
-        self.setCentralWidget(central)
-
-        main_layout = QVBoxLayout(central)
-        main_layout.setSpacing(10)
-
-        # Toolbar
-        toolbar = self._create_toolbar()
-        main_layout.addWidget(toolbar)
-
-        # Setup keyboard shortcuts
-        self._setup_shortcuts()
-
-        # Splitter: track list on left, waveform in center, effects + cues on right
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-
-        # Track list
-        self.track_list = TrackListWidget(self.project, self)
-        self.track_list.track_changed.connect(self._on_track_changed)
-        self.track_list.add_track_requested.connect(self._on_add_track)
-        self.track_list.track_selected.connect(self._on_track_selected)
-        splitter.addWidget(self.track_list)
-
-        # Waveform display
-        self.waveform = WaveformDisplay(self)
-        self.waveform.selection_changed.connect(self._on_selection_changed)
-        splitter.addWidget(self.waveform)
-
-        # Right side panel with tabs for effects and cues/regions
-        right_panel = QWidget()
-        right_layout = QVBoxLayout(right_panel)
-        right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.setSpacing(0)
-
-        # Effect preview panel
-        self.effect_panel = EffectPreviewPanel(self)
-        self.effect_panel.effects_changed.connect(self._on_effects_changed)
-        self.effect_panel.preview_enabled_changed.connect(self._on_preview_enabled)
-
-        # Cue/region panel
-        self.cue_panel = CueRegionPanel(parent=self)
-        self.cue_panel.selection_changed.connect(self._on_region_selected)
-
-        # Create tabs for effects and cues
-        from PySide6.QtWidgets import QTabWidget
-        right_tabs = QTabWidget()
-        right_tabs.addTab(self.effect_panel, "Effects")
-        right_tabs.addTab(self.cue_panel, "Cues & Regions")
-        right_layout.addWidget(right_tabs)
-        splitter.addWidget(right_panel)
-
-        # Set initial sizes (track list 150px, waveform 500px, right panel 220px)
-        splitter.setSizes([150, 500, 220])
-        main_layout.addWidget(splitter)
-
-        # Controls
-        control_layout = QHBoxLayout()
-
-        # Playback controls
-        self.play_btn = QPushButton("▶ Play")
-        self.play_btn.clicked.connect(self._on_play)
-        control_layout.addWidget(self.play_btn)
-
-        self.stop_btn = QPushButton("⏹ Stop")
-        self.stop_btn.clicked.connect(self._on_stop)
-        control_layout.addWidget(self.stop_btn)
-
-        # Position display
-        control_layout.addWidget(QLabel("Position:"))
-        self.position_label = QLabel("00:00.000")
-        control_layout.addWidget(self.position_label)
-
-        control_layout.addWidget(QLabel("Duration:"))
-        self.duration_label = QLabel("00:00.000")
-        control_layout.addWidget(self.duration_label)
-
-        control_layout.addStretch()
-
-        # Zoom controls
-        control_layout.addWidget(QLabel("Zoom:"))
-        self.zoom_slider = QSlider(Qt.Orientation.Horizontal)
-        self.zoom_slider.setMinimum(0)
-        self.zoom_slider.setMaximum(100)
-        self.zoom_slider.setValue(50)
-        self.zoom_slider.setMaximumWidth(100)
-        control_layout.addWidget(self.zoom_slider)
-
-        zoom_fit_btn = QPushButton("Fit")
-        zoom_fit_btn.clicked.connect(self.waveform.zoom_to_fit)
-        control_layout.addWidget(zoom_fit_btn)
-
-        main_layout.addLayout(control_layout)
-
-        # Status bar
-        self.statusBar().showMessage("Ready")
-
-    def _setup_shortcuts(self):
-        """Setup keyboard shortcuts for editing operations."""
-        from PySide6.QtGui import QKeySequence
-
-        # File operations
-        self.shortcut_open = self._add_shortcut(Qt.CTRL | Qt.Key_O, self._on_open, "Open")
-        self.shortcut_save = self._add_shortcut(Qt.CTRL | Qt.Key_S, self._on_save, "Save")
-
-        # Edit operations
-        self.shortcut_undo = self._add_shortcut(Qt.CTRL | Qt.Key_Z, self._on_undo, "Undo")
-        self.shortcut_redo = self._add_shortcut(Qt.CTRL | Qt.SHIFT | Qt.Key_Z, self._on_redo, "Redo")
-
-        # Sample editing
-        self.shortcut_cut = self._add_shortcut(Qt.CTRL | Qt.Key_X, self._on_cut, "Cut")
-        self.shortcut_copy = self._add_shortcut(Qt.CTRL | Qt.Key_C, self._on_copy, "Copy")
-        self.shortcut_paste = self._add_shortcut(Qt.CTRL | Qt.Key_V, self._on_paste, "Paste")
-
-        # Sample operations
-        self.shortcut_trim = self._add_shortcut(Qt.CTRL | Qt.Key_T, self._on_trim, "Trim")
-        self.shortcut_normalize = self._add_shortcut(Qt.CTRL | Qt.SHIFT | Qt.Key_N, self._on_normalize, "Normalize")
-        self.shortcut_reverse = self._add_shortcut(Qt.CTRL | Qt.SHIFT | Qt.Key_R, self._on_reverse, "Reverse")
-
-        # Fade operations
-        self.shortcut_fade_in = self._add_shortcut(Qt.CTRL | Qt.ALT | Qt.Key_I, self._on_fade_in, "Fade In")
-        self.shortcut_fade_out = self._add_shortcut(Qt.CTRL | Qt.ALT | Qt.Key_O, self._on_fade_out, "Fade Out")
-
-        # Playback
-        self.shortcut_play = self._add_shortcut(Qt.Key_Space, self._on_play, "Play/Pause")
-
-        # Selection
-        self.shortcut_select_all = self._add_shortcut(Qt.CTRL | Qt.Key_A, self._on_select_all, "Select All")
-
-    def _add_shortcut(self, key_combo, callback, name: str):
-        """Add a keyboard shortcut.
-
-        Args:
-            key_combo: Key combination (e.g., Qt.CTRL | Qt.Key_O)
-            callback: Function to call when shortcut is triggered
-            name: Shortcut name for logging
-
-        Returns:
-            QShortcut object
-        """
-        from PySide6.QtGui import QKeySequence
-        from PySide6.QtWidgets import QShortcut
-        shortcut = QShortcut(QKeySequence(key_combo), self)
-        shortcut.activated.connect(callback)
-        return shortcut
-
-    def _create_toolbar(self) -> QToolBar:
-        """Create the toolbar."""
-        toolbar = QToolBar("Main Toolbar")
-
-        # File operations
-        open_action = QAction("📂 Open", self)
-        open_action.triggered.connect(self._on_open)
-        toolbar.addAction(open_action)
-
-        save_action = QAction("💾 Save", self)
-        save_action.triggered.connect(self._on_save)
-        toolbar.addAction(save_action)
-
-        toolbar.addSeparator()
-
-        # Edit operations
-        undo_action = QAction("↶ Undo", self)
-        undo_action.triggered.connect(self._on_undo)
-        toolbar.addAction(undo_action)
-
-        redo_action = QAction("↷ Redo", self)
-        redo_action.triggered.connect(self._on_redo)
-        toolbar.addAction(redo_action)
-
-        toolbar.addSeparator()
-
-        # Sample operations
-        cut_action = QAction("✂️ Cut", self)
-        cut_action.triggered.connect(self._on_cut)
-        toolbar.addAction(cut_action)
-
-        copy_action = QAction("📋 Copy", self)
-        copy_action.triggered.connect(self._on_copy)
-        toolbar.addAction(copy_action)
-
-        paste_action = QAction("📌 Paste", self)
-        paste_action.triggered.connect(self._on_paste)
-        toolbar.addAction(paste_action)
-
-        trim_action = QAction("✂️ Trim", self)
-        trim_action.triggered.connect(self._on_trim)
-        toolbar.addAction(trim_action)
-
-        return toolbar
-
-    def _setup_menu(self):
-        """Setup the menu bar."""
-        menubar = self.menuBar()
-
-        # File menu
-        file_menu = menubar.addMenu("&File")
-        file_menu.addAction("&New Project", self._on_new_project)
-        file_menu.addAction("&Open Sample", self._on_open)
-        file_menu.addAction("Open &Project", self._on_open_project)
-        file_menu.addSeparator()
-        file_menu.addAction("&Save Project", self._on_save_project)
-        file_menu.addAction("Save Project &As", self._on_save_project_as)
-        file_menu.addSeparator()
-        file_menu.addAction("E&xport Mix", self._on_export_mix)
-        file_menu.addSeparator()
-        file_menu.addAction("&Close", self.close)
-
-        # Edit menu
-        edit_menu = menubar.addMenu("&Edit")
-        edit_menu.addAction("&Undo", self._on_undo)
-        edit_menu.addAction("&Redo", self._on_redo)
-        edit_menu.addSeparator()
-        edit_menu.addAction("&Cut", self._on_cut)
-        edit_menu.addAction("&Copy", self._on_copy)
-        edit_menu.addAction("&Paste", self._on_paste)
-
-        # Sample menu
-        sample_menu = menubar.addMenu("&Sample")
-        sample_menu.addAction("&Trim", self._on_trim)
-        sample_menu.addAction("&Normalize", self._on_normalize)
-        sample_menu.addAction("&Reverse", self._on_reverse)
-        sample_menu.addAction("&Fade In", self._on_fade_in)
-        sample_menu.addAction("&Fade Out", self._on_fade_out)
-
-    def load_sample(self, filepath: Path) -> bool:
-        """Load a sample file.
-
-        Args:
-            filepath: Path to sample file
-
-        Returns:
-            True if loaded successfully
-        """
-        try:
-            from Core.audio_sample_player import WavFileReader
-
-            info = WavFileReader.read_header(filepath)
-            if not info:
-                QMessageBox.warning(self, "Error", f"Cannot load {filepath.name}")
-                return False
-
-            # Load audio data
-            self.audio_data = WavFileReader.read_samples(filepath, 0, info.data_size)
-            if not self.audio_data:
-                return False
-
-            self.current_file = filepath
-            self.sample_rate = info.sample_rate
-            self.channels = info.channels
-            self.duration_sec = info.duration_sec
-
-            # Update waveform display
-            self.waveform.load_audio(
-                self.audio_data, self.sample_rate, self.channels, self.duration_sec
-            )
-
-            # Update labels
-            self._update_labels()
-
-            self.statusBar().showMessage(f"Loaded: {filepath.name}")
-            self.setWindowTitle(f"Sample Editor - {filepath.name}")
-            return True
-
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to load sample: {e}")
-            return False
-
-    def _update_labels(self):
-        """Update position and duration labels."""
-        duration_str = self._format_time(self.duration_sec)
-        self.duration_label.setText(duration_str)
-
-    def _format_time(self, seconds: float) -> str:
-        """Format time as MM:SS.ms."""
-        minutes = int(seconds // 60)
-        secs = int(seconds % 60)
-        ms = int((seconds % 1) * 1000)
-        return f"{minutes}:{secs:02d}.{ms:03d}"
-
-    def _update_playhead(self):
-        """Update playhead position during playback."""
-        # This would be connected to actual playback engine
-        pass
-
-    # File operations
-
-    def _on_open(self):
-        """Open a sample file."""
-        filepath, _ = QFileDialog.getOpenFileName(
-            self, "Open Sample", "", "WAV Files (*.wav);;All Files (*)"
-        )
-        if filepath:
-            self.load_sample(Path(filepath))
-
-    def _on_save(self):
-        """Save the current sample."""
-        if self.current_file:
-            self._save_to_file(self.current_file)
-        else:
-            self._on_save_as()
-
-    def _on_save_as(self):
-        """Save sample as a new file."""
-        filepath, _ = QFileDialog.getSaveFileName(
-            self, "Save Sample As", "", "WAV Files (*.wav)"
-        )
-        if filepath:
-            self._save_to_file(Path(filepath))
-
-    def _save_to_file(self, filepath: Path):
-        """Save sample to file."""
-        if not self.audio_data:
-            QMessageBox.warning(self, "Error", "No sample loaded")
+        toolbar = QToolBar("Sample Editor")
+        self.addToolBar(toolbar)
+        self._act_load = toolbar.addAction("Load from Kronos…")
+        self._act_load.triggered.connect(self._on_load_from_kronos)
+        self._act_save = toolbar.addAction("Save Changes")
+        self._act_save.setEnabled(False)
+        self._act_save.triggered.connect(self._on_save_changes)
+        self._act_push = toolbar.addAction("Push to Kronos")
+        self._act_push.setEnabled(False)
+        self._act_push.triggered.connect(self._on_push_to_kronos)
+
+        splitter = QSplitter(Qt.Horizontal)
+        self.setCentralWidget(splitter)
+
+        self._tree = QTreeWidget()
+        self._tree.setHeaderLabels(["Multisample / Zone"])
+        self._tree.itemSelectionChanged.connect(self._on_tree_selection_changed)
+        splitter.addWidget(self._tree)
+
+        panel = QWidget()
+        panel_layout = QVBoxLayout(panel)
+
+        self._header_warning = QLabel(
+            "This sample has no audio data (header-only). It may be a legitimate\n"
+            "link to another sample, or data loss — there is no way to tell from the\n"
+            "file alone. It cannot be edited or pushed by this tool.")
+        self._header_warning.setStyleSheet(f"color: {T.WARN}; font-weight: bold;")
+        self._header_warning.setWordWrap(True)
+        self._header_warning.setVisible(False)
+        panel_layout.addWidget(self._header_warning)
+
+        group = QGroupBox("Sample")
+        form = QFormLayout(group)
+
+        self._name_edit = QLineEdit()
+        self._name_edit.editingFinished.connect(self._mark_dirty_from_field)
+        form.addRow("Name:", self._name_edit)
+
+        self._info_label = QLabel("—")
+        self._info_label.setStyleSheet(f"color: {T.TEXT_DIM};")
+        form.addRow("Rate / Length:", self._info_label)
+
+        self._loop_start_spin = QSpinBox()
+        self._loop_start_spin.setRange(0, 0)
+        self._loop_start_spin.valueChanged.connect(self._mark_dirty_from_field)
+        form.addRow("Loop Start:", self._loop_start_spin)
+
+        self._loop_end_spin = QSpinBox()
+        self._loop_end_spin.setRange(0, 0)
+        self._loop_end_spin.valueChanged.connect(self._mark_dirty_from_field)
+        form.addRow("Loop End:", self._loop_end_spin)
+
+        self._loop_enabled_check = QCheckBox("Loop enabled (off = one-shot)")
+        self._loop_enabled_check.toggled.connect(self._mark_dirty_from_field)
+        form.addRow(self._loop_enabled_check)
+
+        self._reverse_check = QCheckBox("Reverse playback")
+        self._reverse_check.toggled.connect(self._mark_dirty_from_field)
+        form.addRow(self._reverse_check)
+
+        self._boost_check = QCheckBox("+12dB gain boost")
+        self._boost_check.toggled.connect(self._mark_dirty_from_field)
+        form.addRow(self._boost_check)
+
+        panel_layout.addWidget(group)
+        panel_layout.addStretch()
+        group.setEnabled(False)
+        self._field_group = group
+
+        splitter.addWidget(panel)
+        splitter.setSizes([300, 460])
+
+        self.setStatusBar(QStatusBar())
+        self.statusBar().showMessage(
+            "Load a collection from the Kronos to begin — Tools ▸ Sample Editor…")
+
+    # ── Load from Kronos ─────────────────────────────────────────────────────
+
+    def _on_load_from_kronos(self):
+        self._act_load.setEnabled(False)
+        self.statusBar().showMessage("Connecting…")
+
+        def bg():
+            from Tools.file_manager import _FtpWorker
+            ftp = _FtpWorker(self._host, self._ftp_port, self._user, self._pass)
+            try:
+                ftp.connect()
+            except Exception as e:
+                QTimer.singleShot(0, self, lambda: self._on_connect_failed(str(e)))
+                return
+            QTimer.singleShot(0, self, lambda: self._open_browser(ftp))
+
+        threading.Thread(target=bg, daemon=True, name="SampleEditorConnect").start()
+
+    def _on_connect_failed(self, message: str):
+        self._act_load.setEnabled(True)
+        self.statusBar().showMessage("Not connected")
+        QMessageBox.warning(self, "Sample Editor", f"Could not connect: {message}")
+
+    def _open_browser(self, ftp):
+        self._act_load.setEnabled(True)
+        dlg = _RemoteKscBrowserDialog(ftp, self)
+        if dlg.exec() != QDialog.Accepted or not dlg.selected_path:
+            return
+        self._start_pull(ftp, dlg.selected_path)
+
+    def _start_pull(self, ftp, remote_ksc_path: str):
+        self._progress_dlg = QProgressDialog("Downloading…", None, 0, 0, self)
+        self._progress_dlg.setWindowModality(Qt.WindowModal)
+        self._progress_dlg.setMinimumDuration(0)
+        self._progress_dlg.show()
+
+        def bg():
+            try:
+                local_root = _workspace_root()
+                local_path, remote_map, failures = sample_ftp.pull(
+                    ftp, remote_ksc_path, local_root,
+                    on_progress=lambda msg: self._progress.emit(msg))
+                self._pull_done.emit(local_path, remote_map, failures, None)
+            except Exception as e:
+                log.exception("sample pull failed")
+                self._pull_done.emit(None, None, [], str(e))
+
+        threading.Thread(target=bg, daemon=True, name="SampleEditorPull").start()
+
+    @Slot(str)
+    def _on_progress(self, message: str):
+        if getattr(self, "_progress_dlg", None):
+            self._progress_dlg.setLabelText(message)
+
+    @Slot(object, object, list, object)
+    def _on_pull_done(self, local_path, remote_map, failures, error):
+        if getattr(self, "_progress_dlg", None):
+            self._progress_dlg.close()
+            self._progress_dlg = None
+        if error:
+            QMessageBox.warning(self, "Sample Editor", f"Load failed: {error}")
             return
 
-        try:
-            from Core.audio_recorder import WavFileWriter
+        with open(local_path, "rb") as f:
+            self._collection = KscCollection.open(f.read())
+        self._collection.path = local_path
+        self._local_ksc_path = local_path
+        remote_ksc_path = remote_map[local_path]
+        self._remote_dest_dir = remote_ksc_path.rsplit("/", 1)[0] or "/"
+        self._dirty_ksf_paths.clear()
+        self._kmp_cache.clear()
+        self._current_ksf = None
+        self._current_ksf_path = None
+        self._field_group.setEnabled(False)
+        self._act_push.setEnabled(False)
 
-            writer = WavFileWriter(
-                filepath, self.sample_rate, self.channels, bit_depth=16
-            )
-            if writer.open():
-                writer.write(self.audio_data)
-                writer.close()
-                self.current_file = filepath
-                self.statusBar().showMessage(f"Saved: {filepath.name}")
-                self.sample_saved.emit(str(filepath))
-            else:
-                QMessageBox.critical(self, "Error", "Failed to save sample")
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Save failed: {e}")
-
-    # Playback
-
-    def _on_play(self):
-        """Start playback."""
-        if self.audio_data:
-            self.is_playing = True
-            self.play_btn.setText("⏸ Pause")
-            self.playhead_timer.start(50)
-
-    def _on_stop(self):
-        """Stop playback."""
-        self.is_playing = False
-        self.play_btn.setText("▶ Play")
-        self.playhead_timer.stop()
-        self.waveform.set_playhead(0.0)
-
-    # Edit operations
-
-    def _on_undo(self):
-        """Undo the last operation."""
-        if self.undo_stack:
-            self.redo_stack.append(self.audio_data)
-            self.audio_data = self.undo_stack.pop()
-            self.waveform.load_audio(
-                self.audio_data, self.sample_rate, self.channels, self.duration_sec
-            )
-            self.statusBar().showMessage("Undo")
-
-    def _on_redo(self):
-        """Redo the last undone operation."""
-        if self.redo_stack:
-            self.undo_stack.append(self.audio_data)
-            self.audio_data = self.redo_stack.pop()
-            self.waveform.load_audio(
-                self.audio_data, self.sample_rate, self.channels, self.duration_sec
-            )
-            self.statusBar().showMessage("Redo")
-
-    # Sample operations
-
-    def _on_cut(self):
-        """Cut selected region."""
-        start_sec, end_sec = self.waveform.get_selection()
-        self.statusBar().showMessage(f"Cut: {start_sec:.3f} - {end_sec:.3f}")
-
-    def _on_copy(self):
-        """Copy selected region."""
-        start_sec, end_sec = self.waveform.get_selection()
-        self.statusBar().showMessage(f"Copy: {start_sec:.3f} - {end_sec:.3f}")
-
-    def _on_paste(self):
-        """Paste at current position."""
-        self.statusBar().showMessage("Paste")
-
-    def _on_trim(self):
-        """Trim to selection."""
-        start_sec, end_sec = self.waveform.get_selection()
-        self.statusBar().showMessage(f"Trim: {start_sec:.3f} - {end_sec:.3f}")
-
-    def _on_normalize(self):
-        """Normalize audio level."""
-        self.statusBar().showMessage("Normalize")
-
-    def _on_reverse(self):
-        """Reverse audio."""
-        self.statusBar().showMessage("Reverse")
-
-    def _on_fade_in(self):
-        """Apply fade in to selection."""
-        self.statusBar().showMessage("Fade In")
-
-    def _on_fade_out(self):
-        """Apply fade out to selection."""
-        self.statusBar().showMessage("Fade Out")
-
-    def _on_selection_changed(self, start_sec: float, end_sec: float):
-        """Handle selection change."""
-        duration = end_sec - start_sec
+        self._rebuild_tree()
         self.statusBar().showMessage(
-            f"Selection: {start_sec:.3f} - {end_sec:.3f} ({duration:.3f}s)"
-        )
+            f"Loaded {os.path.basename(local_path)} — "
+            f"{len(self._collection.entries)} entr{'y' if len(self._collection.entries)==1 else 'ies'}"
+            + (f", {len(failures)} file(s) failed" if failures else ""))
+        if failures:
+            QMessageBox.warning(
+                self, "Sample Editor",
+                "Some files could not be downloaded and are missing locally:\n\n"
+                + "\n".join(failures[:20])
+                + ("\n…" if len(failures) > 20 else ""))
 
-    def _on_select_all(self):
-        """Select all audio."""
-        if self.audio_data:
-            self.waveform.set_selection(0.0, self.duration_sec)
-            self.statusBar().showMessage("Selected all audio")
+    # ── Tree ─────────────────────────────────────────────────────────────────
 
-    def _on_track_changed(self):
-        """Handle track change (volume, pan, mute, solo)."""
-        # Re-render if playback is active or waveform display needs update
-        self.statusBar().showMessage("Track modified")
+    def _rebuild_tree(self):
+        self._tree.clear()
+        if not self._collection or not self._local_ksc_path:
+            return
+        content_dir = ksc_mod.content_dir_for(self._local_ksc_path)
+        for entry in self._collection.entries:
+            if not entry.upper().endswith(".KMP"):
+                continue
+            kmp_local_path = os.path.join(content_dir, entry)
+            if not os.path.isfile(kmp_local_path):
+                continue
+            with open(kmp_local_path, "rb") as f:
+                m = KmpMultisample.open(f.read())
+            if m is None:
+                continue
+            self._kmp_cache[kmp_local_path] = m
+            label = f"{m.name}{m.suffix} ({entry})"
+            kmp_item = QTreeWidgetItem([label])
+            kmp_item.setData(0, Qt.UserRole, ("kmp", kmp_local_path))
+            for zone in m.zones:
+                if zone.is_skipped:
+                    zlabel = f"[{zone.original_key}-{zone.top_key}] (skipped)"
+                    zone_item = QTreeWidgetItem([zlabel])
+                    zone_item.setDisabled(True)
+                else:
+                    zlabel = f"[{zone.original_key}-{zone.top_key}] {zone.filename}"
+                    zone_item = QTreeWidgetItem([zlabel])
+                    zone_item.setData(0, Qt.UserRole, ("zone", zone.ksf_path(kmp_local_path)))
+                kmp_item.addChild(zone_item)
+            self._tree.addTopLevelItem(kmp_item)
+        self._tree.expandAll()
 
-    def _on_effects_changed(self):
-        """Handle effect parameter change."""
-        self.statusBar().showMessage("Effects updated")
+    def _on_tree_selection_changed(self):
+        items = self._tree.selectedItems()
+        if not items or items[0].data(0, Qt.UserRole) is None:
+            self._current_ksf = None
+            self._current_ksf_path = None
+            self._field_group.setEnabled(False)
+            return
+        kind, path = items[0].data(0, Qt.UserRole)
+        if kind != "zone":
+            self._field_group.setEnabled(False)
+            return
+        if not os.path.isfile(path):
+            QMessageBox.warning(self, "Sample Editor", f"Not found locally: {path}")
+            return
+        with open(path, "rb") as f:
+            ksf = KsfSample.open(f.read())
+        if ksf is None:
+            QMessageBox.warning(self, "Sample Editor", f"Not a recognizable .KSF: {path}")
+            return
+        ksf.path = path
+        self._current_ksf = ksf
+        self._current_ksf_path = path
+        self._populate_fields(ksf)
 
-    def _on_preview_enabled(self, enabled: bool):
-        """Handle effect preview enable/disable."""
-        if self.sample_player:
-            self.sample_player.enable_effect_preview(enabled)
-            if enabled:
-                self.sample_player.set_effect_chain(self.effect_panel.get_effect_chain())
-                self.statusBar().showMessage("Effect preview enabled")
-            else:
-                self.statusBar().showMessage("Effect preview disabled")
+    # ── Field panel ──────────────────────────────────────────────────────────
 
-    def _on_add_track(self):
-        """Add a new audio track."""
-        new_track = AudioTrack(f"Track {len(self.project.tracks) + 1}", b'', self.sample_rate, self.channels)
-        self.track_list.add_track(new_track)
-        self.statusBar().showMessage(f"Added new track")
-
-    def _on_track_selected(self, track_index: int):
-        """Handle track selection change."""
-        track = self.project.get_track(track_index)
-        if track:
-            self.cue_panel.set_track(track)
-            self.statusBar().showMessage(f"Selected: {track.name}")
-
-    def _on_region_selected(self, start_sec: float, end_sec: float):
-        """Handle region selection from cue panel."""
-        self.waveform.set_selection(start_sec, end_sec)
-
-    def _on_new_project(self):
-        """Create a new project."""
-        self.project = AudioProject("Untitled", self.sample_rate, self.channels)
-        self.track_list._refresh_tracks()
-        self.cue_panel.set_track(None)
-        self.current_file = None
-        self.setWindowTitle("Sample Editor - [New Project]")
-        self.statusBar().showMessage("New project created")
-
-    def _on_open_project(self):
-        """Open a project file."""
-        filepath, _ = QFileDialog.getOpenFileName(
-            self, "Open Project", "", "Project Files (*.kronos);;All Files (*)"
-        )
-        if filepath:
-            project = AudioProject.load_project(Path(filepath))
-            if project:
-                self.project = project
-                self.sample_rate = project.sample_rate
-                self.channels = project.channels
-                self.track_list._refresh_tracks()
-                self.current_file = Path(filepath)
-                self.setWindowTitle(f"Sample Editor - {self.current_file.name}")
-                self.statusBar().showMessage(f"Opened: {self.current_file.name}")
-            else:
-                QMessageBox.critical(self, "Error", "Failed to open project")
-
-    def _on_save_project(self):
-        """Save current project."""
-        if not self.current_file:
-            self._on_save_project_as()
-        else:
-            if self.project.save_project(self.current_file):
-                self.statusBar().showMessage(f"Project saved: {self.current_file.name}")
-            else:
-                QMessageBox.critical(self, "Error", "Failed to save project")
-
-    def _on_save_project_as(self):
-        """Save project with new filename."""
-        filepath, _ = QFileDialog.getSaveFileName(
-            self, "Save Project As", "", "Project Files (*.kronos);;All Files (*)"
-        )
-        if filepath:
-            self.current_file = Path(filepath)
-            if self.project.save_project(self.current_file):
-                self.setWindowTitle(f"Sample Editor - {self.current_file.name}")
-                self.statusBar().showMessage(f"Project saved: {self.current_file.name}")
-            else:
-                QMessageBox.critical(self, "Error", "Failed to save project")
-
-    def _on_export_mix(self):
-        """Export mixed audio to file."""
-        filepath, _ = QFileDialog.getSaveFileName(
-            self, "Export Mix", "", "WAV Files (*.wav);;All Files (*)"
-        )
-        if filepath:
-            try:
-                import wave
-                audio_data = self.project.render()
-                if not audio_data:
-                    QMessageBox.warning(self, "Warning", "No audio to export")
-                    return
-
-                with wave.open(filepath, 'wb') as wav_file:
-                    wav_file.setnchannels(2)
-                    wav_file.setsampwidth(2)
-                    wav_file.setframerate(self.sample_rate)
-                    wav_file.writeframes(audio_data)
-
-                self.statusBar().showMessage(f"Exported: {Path(filepath).name}")
-            except Exception as e:
-                QMessageBox.critical(self, "Error", f"Export failed: {e}")
-
-    def load_file(self, file_path: str):
-        """Load audio file into first track.
-
-        Args:
-            file_path: Path to audio file
-        """
+    def _populate_fields(self, ksf: KsfSample):
+        self._loading_fields = True
         try:
-            import wave
-            with wave.open(file_path, 'rb') as wav_file:
-                self.sample_rate = wav_file.getframerate()
-                self.channels = wav_file.getnchannels()
-                frames = wav_file.readframes(wav_file.getnframes())
-                self.audio_data = frames
+            self._header_warning.setVisible(ksf.is_header_only)
+            self._field_group.setEnabled(not ksf.is_header_only)
 
-            # Add to project
-            self.project.sample_rate = self.sample_rate
-            self.project.channels = self.channels
+            self._name_edit.setText(ksf.name)
+            duration_s = ksf.frame_count / ksf.sample_rate if ksf.sample_rate else 0.0
+            self._info_label.setText(
+                f"{ksf.sample_rate} Hz, {ksf.frame_count:,} frames ({duration_s:.2f}s), "
+                f"{ksf.bits}-bit")
 
-            # Clear existing tracks and add the loaded audio
-            self.project.tracks.clear()
-            track = AudioTrack("Imported Audio", self.audio_data, self.sample_rate, self.channels)
-            self.project.add_track(track)
+            max_frame = max(0, ksf.frame_count - 1)
+            self._loop_start_spin.setRange(0, max_frame)
+            self._loop_end_spin.setRange(0, max_frame)
+            self._loop_start_spin.setValue(min(ksf.loop_start, max_frame))
+            self._loop_end_spin.setValue(min(ksf.loop_end, max_frame))
 
-            self.current_file = Path(file_path)
-            self.setWindowTitle(f"Sample Editor - {self.current_file.name}")
+            self._loop_enabled_check.setChecked(ksf.is_loop_enabled)
+            self._reverse_check.setChecked(ksf.is_reversed)
+            self._boost_check.setChecked(ksf.is_12db_boost_enabled)
+        finally:
+            self._loading_fields = False
 
-            # Update UI
-            self.track_list._refresh_tracks()
-            self.waveform.load_audio(self.audio_data, self.sample_rate, self.channels)
+    def _mark_dirty_from_field(self, *_args):
+        if self._loading_fields or self._current_ksf is None:
+            return
+        self._act_save.setEnabled(True)
 
-            self.duration_sec = len(self.audio_data) / (self.sample_rate * self.channels * 2)
-            self.statusBar().showMessage(f"Loaded: {self.current_file.name}")
+    def _apply_fields_to_current(self):
+        """Copy the form's current values onto self._current_ksf — does not
+        touch disk (see _on_save_changes)."""
+        ksf = self._current_ksf
+        if ksf is None or ksf.is_header_only:
+            return
+        ksf.name = self._name_edit.text().strip() or ksf.name
+        ksf.loop_start = self._loop_start_spin.value()
+        ksf.loop_end = self._loop_end_spin.value()
+        # One-shot bit is the INVERSE of "loop enabled" — see FLAG_ONE_SHOT.
+        ksf.flags = (ksf.flags & ~0x80) if self._loop_enabled_check.isChecked() else (ksf.flags | 0x80)
+        ksf.is_reversed = self._reverse_check.isChecked()
+        ksf.is_12db_boost_enabled = self._boost_check.isChecked()
 
+    def _on_save_changes(self):
+        if self._current_ksf is None or self._current_ksf_path is None:
+            return
+        self._apply_fields_to_current()
+        try:
+            self._current_ksf.save(self._current_ksf_path)
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to load audio: {e}")
-            self.statusBar().showMessage("Error loading file")
+            QMessageBox.warning(self, "Sample Editor", f"Could not save locally: {e}")
+            return
+        self._dirty_ksf_paths.add(self._current_ksf_path)
+        self._act_save.setEnabled(False)
+        self._act_push.setEnabled(True)
+        self.statusBar().showMessage(
+            f"Saved locally — {len(self._dirty_ksf_paths)} sample(s) changed, not yet pushed")
+
+    # ── Push to Kronos ───────────────────────────────────────────────────────
+
+    def _on_push_to_kronos(self):
+        if not self._dirty_ksf_paths or not self._collection or not self._local_ksc_path:
+            return
+        r = QMessageBox.question(
+            self, "Push to Kronos",
+            f"Push {len(self._dirty_ksf_paths)} changed sample(s) back to the Kronos "
+            f"at {self._remote_dest_dir}?\n\n"
+            "This overwrites the matching files on the Kronos's SSD.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if r != QMessageBox.Yes:
+            return
+
+        self._progress_dlg = QProgressDialog("Uploading…", None, 0, 0, self)
+        self._progress_dlg.setWindowModality(Qt.WindowModal)
+        self._progress_dlg.setMinimumDuration(0)
+        self._progress_dlg.show()
+
+        local_ksc_path = self._local_ksc_path
+        collection = self._collection
+        remote_dest_dir = self._remote_dest_dir
+        only_paths = set(self._dirty_ksf_paths)
+
+        def bg():
+            from Tools.file_manager import _FtpWorker
+            try:
+                ftp = _FtpWorker(self._host, self._ftp_port, self._user, self._pass)
+                ftp.connect()
+                failures = sample_ftp.push_closure(
+                    ftp, local_ksc_path, collection, remote_dest_dir,
+                    on_progress=lambda msg: self._progress.emit(msg),
+                    only_ksf_paths=only_paths)
+                self._push_done.emit(failures, None)
+            except Exception as e:
+                log.exception("sample push failed")
+                self._push_done.emit([], str(e))
+
+        threading.Thread(target=bg, daemon=True, name="SampleEditorPush").start()
+
+    @Slot(list, object)
+    def _on_push_done(self, failures: List[str], error):
+        if getattr(self, "_progress_dlg", None):
+            self._progress_dlg.close()
+            self._progress_dlg = None
+        if error:
+            QMessageBox.warning(self, "Sample Editor", f"Push failed: {error}")
+            return
+        if failures:
+            QMessageBox.warning(
+                self, "Sample Editor",
+                "Some files did not push successfully:\n\n" + "\n".join(failures[:20]))
+        else:
+            self._dirty_ksf_paths.clear()
+            self._act_push.setEnabled(False)
+            self.statusBar().showMessage("Pushed to Kronos successfully")

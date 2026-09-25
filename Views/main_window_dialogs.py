@@ -2,6 +2,7 @@
 from __future__ import annotations
 from typing import Optional
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDialog
 
 from Views.dialogs import (
@@ -19,6 +20,7 @@ class MainWindowDialogMixin:
         super().__init__()
         self._input_tester = None
         self._button_injector = None
+        self._sample_editor_win = None
 
     def show_object_info(self, obj_type: str, bank: int, number: int,
                         name: str, properties: dict):
@@ -157,15 +159,27 @@ class MainWindowDialogMixin:
         self.show_recording_dialog()
 
     def show_sample_editor(self) -> bool:
-        """Show sample editor window.
-
-        Returns:
-            True if editor was opened
-        """
+        """Show the Sample Editor window (real FTP-backed .KSC/.KMP/.KSF
+        browsing/editing — see Views/sample_editor_window.py). Same
+        singleton-window + credential pattern as _open_file_manager."""
+        if self._sample_editor_win is not None:
+            self._sample_editor_win.raise_()
+            self._sample_editor_win.activateWindow()
+            return True
+        if not self._ensure_ftp_credentials():
+            return False
+        host = self._host or self._settings.kronos_host
+        if not host:
+            MessageBox.warning(self, "Sample Editor",
+                              "No Kronos host configured. Set it in Settings first.")
+            return False
         from Views.sample_editor_window import SampleEditorWindow
-
-        editor = SampleEditorWindow(self)
-        editor.show()
+        self._sample_editor_win = SampleEditorWindow(
+            host, self._settings.ftp_port,
+            self._settings.ftp_username, self._settings.ftp_password, self)
+        self._sample_editor_win.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self._sample_editor_win.destroyed.connect(lambda: setattr(self, '_sample_editor_win', None))
+        self._sample_editor_win.show()
         return True
 
     def on_show_sample_editor(self):
@@ -228,11 +242,6 @@ def add_testing_menu_items(main_window):
         main_window._act_eq = act_eq
 
         testing_menu.addSeparator()
-
-        # Sample editor
-        act_sample_editor = testing_menu.addAction("&Sample Editor…")
-        act_sample_editor.triggered.connect(main_window.on_show_sample_editor)
-        main_window._act_sample_editor = act_sample_editor
 
         # Device info
         act_device_info = testing_menu.addAction("&Device Information…")

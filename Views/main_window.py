@@ -1964,6 +1964,8 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         tools_menu.addSeparator()
         self._act_sysex_tool = tools_menu.addAction("Open &SysEx Tool…")
         self._act_librarian_shell = tools_menu.addAction("&Librarian…")
+        self._act_sample_editor = tools_menu.addAction("Sample &Editor…")
+        self._act_sample_editor.triggered.connect(self.on_show_sample_editor)
         # C# MainWindow.xaml: MNU_FileManager lives in MENU_Tools, after Librarian/
         # Sample Editor — not in Connection.
         self._act_file_mgr   = tools_menu.addAction("File &Manager…")
@@ -3723,8 +3725,9 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             CommandEntry("LayoutFocused", "Layout Preset: Focused", "",
                         lambda: self._apply_layout("Focused")),
             CommandEntry("KeyboardInfo", "Keyboard Info…", "", self._open_keyboard_info),
-            # C# BuildCommandRegistry's ── Tools section has this one too (Views/
-            # MainWindow.xaml.cs:2145) — was missing from this list entirely.
+            # C# BuildCommandRegistry's ── Tools section has both of these too
+            # (Views/MainWindow.xaml.cs:2145) — were missing from this list entirely.
+            CommandEntry("Sample Editor", "Sample Editor…", "", self.show_sample_editor),
             CommandEntry("Librarian", "Librarian…", "", self._open_librarian_shell),
             CommandEntry("SaveScreenshot", "Save Screenshot…", "", self._save_screenshot),
             CommandEntry("ToggleKeyboardSend", "Toggle Keyboard Send", "",
