@@ -2611,6 +2611,13 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         # MIDI bridge (SysEx tool / Set List viewer / name caching) — port 9875
         if self._settings.midi_monitor_enabled:
             self._sysex_service.start(self._host)
+            # start() always resets to the Kronos codec default (a reconnect
+            # may be a different instrument) — re-push the currently-known
+            # family guess immediately so a Nautilus session isn't briefly
+            # using Kronos SysEx framing until the async MODEL reply lands
+            # and _apply_device_family_ui() runs again. _apply_device_family_ui
+            # itself ran before start() this same call, too early to stick.
+            self._sysex_service.set_device_family(self._is_nautilus)
         # Update perf window if open
         if self._perf_window:
             self._perf_window.update_host(self._host, self._ctrl_port)
@@ -2687,6 +2694,12 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         Pause's MS3, Save→EXIT since Nautilus's front-panel "F" QA slot is
         wire EXIT and programmed as Write/Save there, while Kronos fires
         the same REC/WRITE press for both Record and Save).
+        Also re-pushes the device family into SysExService.set_device_family()
+        so its object-dump/store-bank/dump-bank/bank-digest/reply primitives
+        pick the right 4-byte-vs-6-byte SysEx Exclusive Header (the ONE
+        hardware-confirmed wire difference — see Data/nautilus_sysex.py);
+        live-stream mode/performance/name decode there stays Kronos-only
+        regardless, a real documented gap matching C#'s own scoping decision.
         Not yet ported here (Phase 3b remainder, see CLAUDE.md): right-panel
         swap (needs a NautilusRightPanel-equivalent widget — no visual
         reference available yet) and Mode-select menu swap (needs new
@@ -2701,6 +2714,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         _is_playing/_is_recording state exists anywhere in this file), so
         there's nothing to un-light on Nautilus specifically."""
         self._bank_menu.menuAction().setEnabled(not self._is_nautilus)
+        self._sysex_service.set_device_family(self._is_nautilus)
 
         # Hide Value Input has no effect on Nautilus (the value-slider panel
         # doesn't exist there) — forced on, menu item hidden, matches C#'s

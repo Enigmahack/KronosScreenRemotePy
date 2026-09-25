@@ -24,8 +24,9 @@ from PySide6.QtCore import QObject, Signal
 
 import Core.kronos_sysex as ksx
 import Data.librarian_sysex as lsx
+import Data.nautilus_sysex as nsx
 import Models.storage
-from Data.librarian_sysex import ObjectDump, parse_bank_digest, parse_object_dump
+from Data.librarian_sysex import ObjectDump
 from Core.midi_bridge import MidiBridgeClient
 from Tools.setlist_data import SetListData, SetListSyncResult, MAX_COUNT
 from Tools.sysex_dump_collector import SysExDumpCollector
@@ -124,6 +125,12 @@ class SysExService(QObject):
         self._dump: Optional[SysExDumpCollector] = None
         self._cache_key = ""
         self._dump_gate = DumpGate()
+        # Kronos (4-byte Exclusive Header) framing until told otherwise — see
+        # set_device_family(). Reset to this default on every start()/stop(),
+        # matching C#'s SysExService.SetDeviceFamily/Start/Stop: a reconnect
+        # may be to a genuinely different instrument, so a stale family guess
+        # is never carried over.
+        self._codec = lsx
 
         self._state_mode = 0
         self._bank_msb = 0
@@ -164,7 +171,7 @@ class SysExService(QObject):
         self._bridge.connection_changed.connect(self._on_connection_changed)
         self._bridge.message_sent.connect(lambda _n: self.tx_activity.emit())
         self._bridge.start()
-        self._dump = SysExDumpCollector(self._bridge)
+        self._dump = SysExDumpCollector(self._bridge, self._codec)
 
         threading.Thread(target=self._probe, daemon=True, name="SysExProbe").start()
 
@@ -183,8 +190,39 @@ class SysExService(QObject):
             self._bridge.dispose()
             self._bridge = None
         self._dump = None
+        # A reconnect may be to a genuinely different instrument (host change,
+        # or the same host now running a different family) — don't carry over
+        # a stale family guess. set_device_family() re-asserts the real one
+        # once the daemon's MODEL reply is back.
+        self._codec = lsx
         self._is_available = False
         self._performance_display = ""
+
+    def set_device_family(self, is_nautilus: bool) -> None:
+        """Selects Kronos (4-byte Exclusive Header) vs Nautilus (6-byte) SysEx
+        wire framing for the hardware round-trip-verified primitive slice this
+        service is codec-aware for (object dump request/write/parse, store
+        bank, dump bank, bank digest request/parse, reply parse — see
+        Data/nautilus_sysex.py's own docstring for the exact list). Port of
+        C#'s SysExService.SetDeviceFamily; called from
+        Views/main_window.py's _apply_device_family_ui() — the same single
+        hook every other device-family-gated UI branch runs through — with
+        the same `_is_nautilus` bool already used everywhere else there,
+        rather than importing Core.device_family's enum into this module for
+        one caller.
+
+        A no-op if the family hasn't actually changed (the common case: this
+        gets called on every connect, most of which just reconfirm what's
+        already set). Live-stream mode/performance/name decode (
+        _on_raw_message) stays Kronos-only regardless of this setting — a
+        real, documented gap on Nautilus matching C#'s own scoping decision
+        (see that method's own comment)."""
+        codec = nsx if is_nautilus else lsx
+        if codec is self._codec:
+            return
+        self._codec = codec
+        if self._bridge is not None:
+            self._dump = SysExDumpCollector(self._bridge, self._codec)
 
     @property
     def bridge(self) -> Optional[MidiBridgeClient]:
@@ -439,7 +477,7 @@ class SysExService(QObject):
                 done_ok = False
 
                 if obj_bank < 0x40:
-                    req = ksx.dump_bank_request(name_obj, obj_bank)
+                    req = dump.dump_bank_request(name_obj, obj_bank)
                     msgs = dump.collect(req, name_obj, expected_count=None,
                                         idle_ms=600, no_response_ms=1200,
                                         stall_ms=3000, overall_ms=30000)
@@ -519,7 +557,7 @@ class SysExService(QObject):
         return SetListSyncResult(found, empty, attempted, cancel_event.is_set())
 
     def _dump_one_set_list(self, dump: SysExDumpCollector, number: int) -> Optional[SetListData]:
-        req = ksx.object_dump_request(0x0D, 0, number)
+        req = dump.object_dump_request(0x0D, 0, number)
         msgs = dump.collect(req, 0x0D, expected_count=1, no_response_ms=10000)
         if not msgs:
             return None
@@ -543,14 +581,14 @@ class SysExService(QObject):
         dump = self._dump
         if dump is None or not self.can_dump:
             return None
-        req = ksx.object_dump_request(obj, bank, index)
+        req = dump.object_dump_request(obj, bank, index)
         msgs = dump.collect(req, obj, expected_count=1, no_response_ms=no_response_ms)
         return msgs[0] if msgs else None
 
     def dump_object_parsed(self, obj: int, bank: int, index: int,
                            **kw) -> Optional[ObjectDump]:
         raw = self.dump_object(obj, bank, index, **kw)
-        return parse_object_dump(raw) if raw else None
+        return self._codec.parse_object_dump(raw) if raw else None
 
     def _send_expect_reply(self, data: bytes, timeout_s: float) -> Optional[int]:
         """Send raw bytes, wait for the next func-0x24 Reply, return its code
@@ -559,10 +597,7 @@ class SysExService(QObject):
         bridge = self._bridge
 
         def match(m: bytes) -> Optional[int]:
-            if (len(m) >= 6 and m[0] == 0xF0 and m[1] == 0x42 and (m[2] & 0xF0) == 0x30
-                    and m[3] == 0x68 and m[4] == 0x24):
-                return m[5]
-            return None
+            return self._codec.parse_reply(m)
 
         result = _await_reply(bridge, lambda: bridge is not None and bridge.send_bytes(data),
                                match, timeout_s)
@@ -571,14 +606,14 @@ class SysExService(QObject):
     def write_object(self, op, timeout_s: float = 6.0) -> int:
         """Send a re-addressed func-0x73 Object Dump (volatile). Returns the
         Reply code (0 OK); -1 on timeout."""
-        msg = lsx.object_dump_write(op.obj, op.bank, op.index, op.version, op.body)
+        msg = self._codec.object_dump_write(op.obj, op.bank, op.index, op.version, op.body)
         code = self._send_expect_reply(msg, timeout_s)
         return -1 if code is None else code
 
     def store_bank(self, obj: int, bank: int, timeout_s: float = 20.0) -> int:
         """Commit a bank to non-volatile storage (func 0x76). Returns Reply code
         (0 OK); -1 on timeout. Longer timeout — flash commit can be slow."""
-        msg = lsx.store_bank_request(obj, bank)
+        msg = self._codec.store_bank_request(obj, bank)
         code = self._send_expect_reply(msg, timeout_s)
         return -1 if code is None else code
 
@@ -599,13 +634,13 @@ class SysExService(QObject):
         bridge = self._bridge
 
         def match(m: bytes) -> Optional[bytes]:
-            bd = parse_bank_digest(m)
+            bd = self._codec.parse_bank_digest(m)
             if bd is not None and bd.obj == obj and bd.bank == bank:
                 return bd.sha1
             return None
 
         result = _await_reply(
-            bridge, lambda: bridge is not None and bridge.send_bytes(lsx.bank_digest_request(obj, bank)),
+            bridge, lambda: bridge is not None and bridge.send_bytes(self._codec.bank_digest_request(obj, bank)),
             match, timeout_s)
         return None if result is _NO_REPLY else result
 
@@ -615,8 +650,8 @@ class SysExService(QObject):
         affected banks."""
         with open(path, "wb") as f:
             for op in ops:
-                f.write(lsx.object_dump_write(op.obj, op.bank, op.index,
-                                              op.version, op.body))
+                f.write(self._codec.object_dump_write(op.obj, op.bank, op.index,
+                                                       op.version, op.body))
 
     def backup_bank_to_syx(self, obj: int, bank: int, path: str,
                            slot_count: int = 128,

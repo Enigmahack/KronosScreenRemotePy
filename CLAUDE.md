@@ -221,29 +221,78 @@ is partially done, across six more commits:
   interaction specifically — Nautilus force-hides the left panel in both,
   but Kronos's own Focused-mode rail-expand state (a separate mechanism
   C# has no equivalent of) survives untouched.
-- `NautilusToken()` wire-token remap (`2b03d82`): Seq Locate/Rewind/
-  Forward/Pause + Tap Tempo send real Nautilus scan codes (MS1/MP7/MP8/
-  MS3/NUM9), wired into the footer buttons, keybind dispatch, and command
-  palette. Seq Record/Start/Save are NOT remapped — C#'s own version
-  routes those through `SeqTransportViewModel`'s own additional swap
-  logic, not read closely enough yet to port correctly.
+- `NautilusToken()` wire-token remap (`2b03d82`, extended `a2cbb4d`): Seq
+  Locate/Rewind/Forward/Pause + Tap Tempo send real Nautilus scan codes
+  (MS1/MP7/MP8/MS3/NUM9), wired into the footer buttons, keybind dispatch,
+  and command palette. **Seq Record/Start/Save are now remapped too**
+  (`a2cbb4d`): ported C#'s `SeqTransportViewModel` swap logic — Record→MS2,
+  Start/Stop→MP6 (swapped with Pause's MS3 per C#'s own 2026-09-22 hardware
+  correction), Save→EXIT (Nautilus front-panel "F" is wired to EXIT and
+  that QA slot is programmed as Write/Save there, while Kronos fires the
+  same REC/WRITE press for both Record and Save) — same three call sites
+  as the rest of this remap (footer buttons, keybind dispatch, command
+  palette).
 - Window re-fit on connect (`a659eef`): only when the window is at a
   known preset scale (Small/Medium/Large/Huge) — a custom or "Last
   Used"-restored size is left alone rather than guessed at, since Python
   has no continuous scale-tracking to safely reapply the way C#'s
   `_currentScale` does.
-- Escape-key routing fix (`808b0b3`): no longer raw-forwarded to the
-  daemon while keyboard-captured on Kronos (matches C#'s device-family
-  exclusion). Found but NOT fixed: C# also unconditionally sends `BUTTON
-  EXIT` on every Escape press, gated behind a precedence chain
-  (fullscreen/palette-editor/drag-cancel) that fires first; Python's own
-  `BUTTON EXIT`-on-Escape handler is only reachable when NOT captured, so
-  captured-mode Escape currently does nothing at all on Kronos. Pre-
-  existing gap, not introduced by this fix — correctly closing it means
-  replicating C#'s full precedence chain in the captured path too.
+- Escape-key routing fix (`808b0b3`), **completed `16102c5`**: no longer
+  raw-forwarded to the daemon while keyboard-captured on Kronos (matches
+  C#'s device-family exclusion), and captured-mode Escape now runs the
+  same precedence chain as the uncaptured path instead of doing nothing.
+  `MainWindow._handle_escape()` (new, `Views/main_window.py`) ports C#'s
+  `MainWindow.Input.cs:389-408`: fullscreen-exit, then drag-cancel (new
+  `FrameWidget.cancel_drag()` — mirrors C#'s cancel-drag block, including
+  sending a bare TOUCH_UP for a pending-only drag with no prior
+  TOUCH_DOWN, matching C# exactly), then zoom-off, then BUTTON EXIT
+  (repeat-guarded; the earlier three branches are naturally idempotent on
+  key-repeat since the state they check clears after firing once). Called
+  from both `keyPressEvent`'s uncaptured path and `eventFilter`'s
+  captured-on-Kronos path. C#'s palette-editor precedence steps are
+  deliberately not ported — that feature is retired in C# itself.
+- **MIDI/SysEx codec parameterization** (`<pending commit>`): `Data/nautilus_sysex.py`
+  (new) ports `Networking/NautilusSysEx.cs` — the 6-byte Nautilus Exclusive
+  Header (`F0 42 3g 00 01 5D`, vs. Kronos's 4-byte `F0 42 3g 68`) for the
+  same hardware-verified primitive slice as C#'s `IKorgSysExCodec`: object
+  dump request/write/parse (0x72/0x73), store bank (0x76), dump bank
+  (0x77), bank digest request/parse (0x37/0x38), reply parse (0x24).
+  `Data/librarian_sysex.py` gained two Kronos-side counterparts that didn't
+  exist yet (`dump_bank_request` bytes form, `parse_reply`) so both modules
+  expose an identical function surface — a "codec" is just one of these two
+  modules, selected by reference, no interface/class needed.
+  `Tools/sysex_dump_collector.py`'s `SysExDumpCollector` now takes a
+  `codec` (default Kronos) and uses `codec.parse_object_dump`/
+  `codec.parse_reply` instead of hardcoded header-byte matching in both
+  `collect()` and `collect_per_object_names()`, plus codec-aware
+  `object_dump_request()`/`dump_bank_request()` wrapper methods (mirroring
+  C#'s `SysExDumpCollector.ObjectDumpRequest`/`DumpBankRequest`) so
+  `SysExService` never touches the codec's byte builders directly.
+  `SysExService.set_device_family(is_nautilus)` (new, port of C#'s
+  `SetDeviceFamily`) selects the codec, is a no-op if unchanged, and
+  rebuilds `_dump` on the current bridge when it does change; reset to
+  Kronos on every `start()`/`stop()` (a reconnect may be a different
+  instrument). Wired into `_apply_device_family_ui()` (the single hook
+  every other device-family branch runs through) — plus one extra call
+  right after `_sysex_service.start()`, since `start()`'s own reset would
+  otherwise silently undo the guess `_apply_device_family_ui()` set just
+  before it (that first call always runs pre-`start()` in
+  `_apply_new_receiver`; only the *second* call, once the async `MODEL`
+  reply resolves, reliably lands after). Live-stream mode/performance/name
+  decode (`_on_raw_message`) deliberately stays Kronos-only regardless — a
+  real, documented gap on Nautilus, matching C#'s own scoping decision
+  (unmatched Nautilus messages there simply fall through unparsed rather
+  than misparsing). Same for func 0x7C Change Program Bank Type — not part
+  of the codec-verified slice on either side. Verified via self-tests in
+  both codec modules (`python -m Data.librarian_sysex` /
+  `python -m Data.nautilus_sysex`) plus a fake-bridge round-trip exercising
+  the real `SysExDumpCollector.collect()`/`collect_per_object_names()`
+  against both codecs (no real hardware reachable from this environment —
+  see "Testing without real hardware" below).
 
-Still not ported (all documented inline in `_apply_device_family_ui()`'s
-own docstring in `Views/main_window.py`):
+Still not ported (documented inline in `_apply_device_family_ui()`'s own
+docstring in `Views/main_window.py`) — these are now the ENTIRE Phase 3
+remainder:
 - **Right-panel swap** — needs a `NautilusRightPanel`-equivalent widget
   (12 buttons + data wheel). No visual/graphics reference was available
   this session to build it correctly; this is the single largest
@@ -256,12 +305,6 @@ own docstring in `Views/main_window.py`):
   in this repo (`Documentation/nautilus_button_mapping.md`'s own header
   calls it unverified/user-reported and superseded by a `button_labels.json`
   this repo doesn't have a copy of).
-- **MIDI/SysEx codec parameterization** — `Core/sysex_service.py:26`
-  still hardcodes `Core.kronos_sysex`; the Nautilus codec split (4-byte
-  vs. 6-byte SysEx Exclusive Header) hasn't been started. Needs a close
-  read of `Core/kronos_sysex.py` (515 lines) first.
-- **Seq Record/Start/Save** Nautilus token remap (see above).
-- **Captured-mode Escape → BUTTON EXIT** (see above).
 
 ## What's left
 
@@ -270,25 +313,16 @@ own docstring in `Views/main_window.py`):
 CLI-only in C# (`--nautilus-convert-*` flags), never reachable from its own
 GUI, so not a screen-remote client feature.
 
-Phase 1 and Phase 2 (above) are done. Phase 3 is partially done — see just
-above for exactly what landed and what's still open within it.
-
-**Phase 3 remainder** — see the itemized "Still not ported" list right
-above "What's left" for exactly what's open (right-panel swap, Mode-select
-menu swap, MIDI/SysEx codec parameterization, Seq Record/Start/Save
-remap, captured-mode Escape→BUTTON EXIT). C# itself calls the whole
+Phase 1 and Phase 2 (above) are done. Phase 3 is down to its last two items
+— see the "Still not ported" list right above for exactly what's open
+(right-panel swap, Mode-select menu swap). C# itself calls the whole
 Nautilus area preliminary (its own `Documentation/nautilus_button_mapping.md`
 is marked unverified against real hardware — no rooted Nautilus unit even
-on the C# team's side yet), so treat every remaining item the same way:
+on the C# team's side yet), so treat both remaining items the same way:
 port the C# structure/behavior faithfully, don't invent new hardware
-assumptions where the source itself is unverified. When picking up MIDI/
-SysEx codec work specifically: parameterize `Core/sysex_service.py`'s
-existing hardcoded Kronos-only codec on device family (the one hardware-
-confirmed wire difference is a 4-byte vs. 6-byte SysEx Exclusive Header)
-— scope it as parameterizing the existing transport, not building new
-infrastructure. Defer C#'s USB-direct MIDI transport path
-(`MidiDeviceIdentity.cs`, no daemon link at all) unless asked — Python has
-no USB-direct transport today, only the TCP bridge.
+assumptions where the source itself is unverified. Defer C#'s USB-direct
+MIDI transport path (`MidiDeviceIdentity.cs`, no daemon link at all) unless
+asked — Python has no USB-direct transport today, only the TCP bridge.
 
 **Older, still-relevant items:**
 
