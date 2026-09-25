@@ -3186,13 +3186,18 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
     def wheelEvent(self, event: QWheelEvent):
         delta = event.angleDelta().y()
         if event.modifiers() & Qt.ControlModifier:
+            # Route through the one shared zoom-step implementation
+            # (_zoom_step) instead of reimplementing it — this used to have
+            # its own hardcoded bounds (0.25 step, 8.0 cap, 1.0 floor) that
+            # silently disagreed with every other zoom trigger (keyboard,
+            # context menu, Command Palette all use 0.5/10.0/zoom_default_level
+            # via _zoom_step, matching C#'s single DoZoomIn/DoZoomOut used by
+            # OnMouseWheel too — Views/MainWindow.Input.cs's OnMouseWheel calls
+            # DoZoomIn()/DoZoomOut() directly, no separate wheel-specific math).
             if delta > 0:
-                self._frame_w._zoom_level = min(8.0, self._frame_w._zoom_level + 0.25)
-                if not self._zoom_on:
-                    self._act_zoom.setChecked(True)
+                self._zoom_step(+0.5)
             elif delta < 0:
-                self._frame_w._zoom_level = max(1.0, self._frame_w._zoom_level - 0.25)
-            self._frame_w.update()
+                self._zoom_step(-0.5)
             event.accept()
             return
         if self._settings.reverse_scrolling:
