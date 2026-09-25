@@ -58,6 +58,7 @@ from Models.models import CalBiasDot, CalHistEntry, CalHistKind, CalMesh, HistEn
 from Rendering.overlay_renderer import OverlayRenderer
 from Core.stream_receiver import StreamReceiver
 from Core.sysex_service import SysExService
+from Core.device_family import DeviceFamily
 from Views.main_window_dialogs import MainWindowDialogMixin, add_testing_menu_items
 from Views.revealable_password_edit import RevealablePasswordEdit
 
@@ -1530,11 +1531,16 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         self._zoom_on      = False
         self._zoom_level   = settings.zoom_default_level
         self._mirror_state = False
-        # Set True on connect when the daemon's stream reports RGB565LE (Nautilus).
+        # Set True on connect, initially from the cheap stream_fmt heuristic
+        # (RGB565LE only ships on Nautilus, no extra round trip needed) and
+        # then upgraded once the daemon's own MODEL command resolves
+        # (_fetch_device_family) — that FAMILY field is the authoritative
+        # signal, stream_fmt is a fast correlate of it, not a substitute.
         # Gates commands with no confirmed Nautilus wire behavior — see
         # _ctrl_send_bank and MIRROR_ON's docs/api.md note (mirror is VGA-only,
         # Nautilus has no display behind the panel to mirror to).
         self._is_nautilus  = False
+        self._device_family = DeviceFamily.UNKNOWN
         self._perf_window  = None   # PerformanceWindow singleton (lazy)
         self._file_manager_win = None
         self._sysex_tool_win = None
@@ -2534,8 +2540,13 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         self._frame_w.set_frame_size(rx.width, rx.height, rx.stream_fmt)
         # RGB565LE only ships on Nautilus (docs/api.md §4.5) — cheapest available
         # family signal, no extra daemon round trip needed for the gating below.
+        # Immediately usable; _fetch_device_family below upgrades it (and
+        # re-applies the gating) once the daemon's own MODEL command
+        # resolves, since FAMILY is the authoritative signal and stream_fmt
+        # is only a fast correlate of it.
         self._is_nautilus = (rx.stream_fmt == 1)
-        self._bank_menu.menuAction().setEnabled(not self._is_nautilus)
+        self._apply_device_family_ui()
+        self._fetch_device_family()
         rx.frame_received.connect(self._on_frame)
         rx.disconnected.connect(self._on_disconnected)
         rx.start()
@@ -2575,6 +2586,64 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         # Update perf window if open
         if self._perf_window:
             self._perf_window.update_host(self._host, self._ctrl_port)
+
+    def _fetch_device_family(self):
+        """Connect-time device-family detection via the daemon's own MODEL
+        command (docs/api.md §"MODEL") — port of C#'s ScreenSession issuing
+        MODEL right after the stream handshake on every connect. Runs off
+        the UI thread since it blocks on the network (matches
+        _fetch_unit_calibration's own pattern); the ad-hoc MODEL call in
+        main_window_dialogs.py's Device Info dialog uses the same response
+        format (space-separated KEY=VALUE) but that one only ever feeds a
+        read-only dialog — this is the first real connect-time state
+        transition off of it."""
+        import threading
+        host, port = self._host, self._ctrl_port
+
+        def fetch():
+            resp = self._ctrl.query(host, port, "MODEL", timeout_ms=1500)
+            try:
+                QTimer.singleShot(0, self, lambda: self._apply_device_family(resp))
+            except RuntimeError:
+                pass  # window closed before the query finished
+
+        threading.Thread(target=fetch, daemon=True, name="ModelQuery").start()
+
+    def _apply_device_family(self, model_resp: Optional[str]):
+        if model_resp is None:
+            # No response (daemon older than 3.0.2, or the connection has
+            # already moved on) — UNKNOWN is treated the same as Kronos
+            # everywhere this matters (DeviceFamily's own docstring), and
+            # the stream_fmt-derived _is_nautilus from _apply_new_receiver
+            # already stands, so there's nothing to correct.
+            return
+        kv = {}
+        for part in model_resp.split():
+            if "=" in part:
+                k, _, v = part.partition("=")
+                kv[k] = v
+        self._device_family = DeviceFamily.parse(kv.get("FAMILY"))
+        if self._device_family != DeviceFamily.UNKNOWN:
+            resolved_nautilus = self._device_family == DeviceFamily.NAUTILUS
+            if resolved_nautilus != self._is_nautilus:
+                logging.info(
+                    "[conn] MODEL FAMILY=%s disagrees with stream_fmt heuristic "
+                    "(is_nautilus was %s) — using MODEL as authoritative",
+                    kv.get("FAMILY"), self._is_nautilus)
+                self._is_nautilus = resolved_nautilus
+        self._apply_device_family_ui()
+
+    def _apply_device_family_ui(self):
+        """Single hook every device-family-gated UI branch runs through —
+        called once after each connect-family resolution (the cheap
+        stream_fmt guess, and again if the authoritative MODEL response
+        changes it). Port of C#'s ApplyDeviceFamilyUi(); only the branches
+        already ported (Pass 1) live here so far — Bank Select disabling.
+        The remaining C# branches (right/left panel swap, Hide-Value-Input
+        forced on, Mode-select menu swap, footer FF/Rewind fade, Play/
+        Record lit-style, window re-fit, NautilusToken() wire-token remap)
+        are Phase 3b, not yet ported — see CLAUDE.md."""
+        self._bank_menu.menuAction().setEnabled(not self._is_nautilus)
 
     def _set_pending_mode(self, mode: int):
         """Record a user-requested mode without lighting the button immediately.
