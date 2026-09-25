@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 import Models.storage
 from Models.app_settings import AppSettings, MacroDef, RawKeyMap, get_rebindable
 from Models.models import Keybind
+import Utils.key_map as key_map
 import Utils.theme as T
 
 _DIM  = T.TEXT_DIM
@@ -923,24 +924,40 @@ class SettingsWindow(QDialog):
         self._macro_steps_view.setReadOnly(False)
         self._macro_steps_view.setPlaceholderText("Recording… press keys here")
 
-        orig_key = self._macro_steps_view.keyPressEvent
-
-        def capture(event):
+        # Separate press/release hooks, matching C#'s SettingsWindow.xaml.cs
+        # (OnMacroKeyDown/OnMacroKeyUp record a MacroStep{Code, Down} on each
+        # real key event) — a held key or a chord (e.g. Shift held while
+        # another key is pressed and released) needs its down and up as two
+        # independently-timed steps to replay correctly. The previous version
+        # only hooked keyPressEvent and synthesized an instant down+up pair
+        # per keystroke, so a hold/chord could never be captured at all.
+        def capture_press(event):
             from PySide6.QtCore import Qt as _Qt
-            import Utils.key_map
-            key  = event.key()
+            key = event.key()
             if key in (_Qt.Key_Escape,):
                 self._stop_recording()
                 return
+            if event.isAutoRepeat():
+                event.accept()
+                return
             lc = key_map.to_linux(key)
             if lc:
-                step_dn = f"KEY {lc} 1"
-                step_up = f"KEY {lc} 0"
-                self._recording_steps.extend([step_dn, step_up])
+                self._recording_steps.append(f"KEY {lc} 1")
                 self._macro_steps_view.setPlainText("\n".join(self._recording_steps))
             event.accept()
 
-        self._macro_steps_view.keyPressEvent = capture
+        def capture_release(event):
+            if event.isAutoRepeat():
+                event.accept()
+                return
+            lc = key_map.to_linux(event.key())
+            if lc:
+                self._recording_steps.append(f"KEY {lc} 0")
+                self._macro_steps_view.setPlainText("\n".join(self._recording_steps))
+            event.accept()
+
+        self._macro_steps_view.keyPressEvent = capture_press
+        self._macro_steps_view.keyReleaseEvent = capture_release
 
     def _stop_recording(self):
         idx = self._recording_macro_idx
@@ -955,6 +972,8 @@ class SettingsWindow(QDialog):
         self._macro_steps_view.setReadOnly(True)
         self._macro_steps_view.setPlaceholderText("(no steps recorded)")
         self._macro_steps_view.keyPressEvent = QTextEdit.keyPressEvent.__get__(
+            self._macro_steps_view, type(self._macro_steps_view))
+        self._macro_steps_view.keyReleaseEvent = QTextEdit.keyReleaseEvent.__get__(
             self._macro_steps_view, type(self._macro_steps_view))
         self._reload_macro_list()
 

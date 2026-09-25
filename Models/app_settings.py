@@ -29,7 +29,7 @@ class MacroDef:
     description: str = ""
     trigger_key: int = 0
     trigger_mods: int = 0
-    step_delay_ms: int = 100
+    step_delay_ms: int = 50   # matches C#'s MacroDefinition.StepDelayMs default
     steps: List[str] = field(default_factory=list)
 
     @property
