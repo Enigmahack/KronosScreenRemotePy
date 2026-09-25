@@ -130,6 +130,18 @@ class AppSettings:
     zoom_window_size:   float = 1.0
     scaling_quality:    str   = "HighQuality"   # "Sharp" | "Smooth" | "HighQuality"
 
+    # Window size/position — mirrors C#'s AppSettings.DefaultWindowSize
+    # (DefaultWindowSizeMode: "LastUsed" | "Small" | "Medium" | "Large" | "Maximized")
+    # applied at launch instead of the saved geometry below. window_left/top/width/
+    # height/maximized are only meaningful (and only restored) when the mode is
+    # "LastUsed" — mirrors MainWindow.Input.cs's OnLoaded restore block.
+    default_window_size: str   = "LastUsed"
+    window_left:         int   = -1
+    window_top:          int   = -1
+    window_width:        int   = -1
+    window_height:       int   = -1
+    window_maximized:    bool  = False
+
     # Image adjustments (applied to the streamed frame) — mirrors AppSettings.cs
     image_brightness: int   = 0     # -100..100  (0 = none)
     image_contrast:   int   = 0     # -100..100  (0 = none)
@@ -214,6 +226,8 @@ REBINDABLE_DEFS: list[tuple[str, str, str]] = [
     ("Calibrate",     "Toggle Calibration Mode", "C"),
     ("HideDataInput",  "Hide/Show Data Input",    ""),
     ("HideValueInput", "Hide/Show Value Input",   ""),
+    ("Sample Editor",  "Sample Editor",           ""),
+    ("Librarian",      "Librarian",               ""),
     ("Mode Setlist",  "Mode: Setlist",           "F2"),
     ("Mode Combi",    "Mode: Combi",             "F3"),
     ("Mode Program",  "Mode: Program",           "F4"),

@@ -23,6 +23,7 @@ from Models.app_settings import AppSettings, MacroDef, RawKeyMap, get_rebindable
 from Models.models import Keybind
 import Utils.key_map as key_map
 import Utils.theme as T
+from Views.revealable_password_edit import RevealablePasswordEdit
 
 _DIM  = T.TEXT_DIM
 _HEAD = T.ACCENT
@@ -43,6 +44,27 @@ def _hint(text: str) -> QLabel:
     lbl.setStyleSheet(f"color: {_DIM}; font-size: 10px;")
     lbl.setWordWrap(True)
     return lbl
+
+
+class _ResettableSlider(QSlider):
+    """QSlider that resets to `default_value` on double-click.
+
+    Port of SettingsWindow.xaml.cs's OnSliderPreviewMouseLeftButtonDown,
+    which is wired once via an implicit Slider style so every slider in the
+    C# window gets this for free. Qt has no equivalent implicit-style hook,
+    so this is a drop-in QSlider subclass instead — same effect, one call
+    site per slider (`.default_value = ...`) rather than a per-slider
+    handler.
+    """
+
+    default_value: Optional[int] = None
+
+    def mouseDoubleClickEvent(self, event):
+        if self.default_value is not None:
+            self.setValue(self.default_value)
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
 
 
 class SettingsWindow(QDialog):
@@ -190,8 +212,7 @@ class SettingsWindow(QDialog):
 
         form.addRow(_section("FTP Credentials"))
         self._ftp_user = QLineEdit()
-        self._ftp_pass = QLineEdit()
-        self._ftp_pass.setEchoMode(QLineEdit.EchoMode.Password)
+        self._ftp_pass = RevealablePasswordEdit()
         self._ftp_port_spin = QSpinBox(); self._ftp_port_spin.setRange(1, 65535)
         form.addRow("FTP Username:", self._ftp_user)
         form.addRow("FTP Password:", self._ftp_pass)
@@ -223,7 +244,8 @@ class SettingsWindow(QDialog):
         vb.addSpacing(12)
         vb.addWidget(_section("Max frame rate"))
         fps_row = QHBoxLayout()
-        self._fps_slider = QSlider(Qt.Horizontal)
+        self._fps_slider = _ResettableSlider(Qt.Horizontal)
+        self._fps_slider.default_value = AppSettings().max_fps
         self._fps_slider.setRange(1, 15)
         self._fps_slider.setTickInterval(1)
         self._fps_slider.setSingleStep(1)
@@ -274,10 +296,28 @@ class SettingsWindow(QDialog):
         vb = QVBoxLayout(w)
         vb.setSpacing(6)
 
+        vb.addWidget(_section("Window"))
+        win_size_row = QHBoxLayout()
+        win_size_row.addWidget(QLabel("Default window size:"))
+        self._default_window_size = QComboBox()
+        self._default_window_size.setToolTip(
+            "Last Used keeps remembering the size/position you leave the window at.")
+        self._default_window_size.addItem("Last Used", "LastUsed")
+        self._default_window_size.addItem("Small", "Small")
+        self._default_window_size.addItem("Medium", "Medium")
+        self._default_window_size.addItem("Large", "Large")
+        self._default_window_size.addItem("Maximized", "Maximized")
+        win_size_row.addWidget(self._default_window_size, 1)
+        vb.addLayout(win_size_row)
+        vb.addWidget(_hint("Size applied to the main window at launch. Last Used remembers "
+                           "the size and position you leave it at."))
+
+        vb.addSpacing(12)
         vb.addWidget(_section("Zoom"))
         zoom_row = QHBoxLayout()
         zoom_row.addWidget(QLabel("Default zoom level (×):"))
-        self._zoom_level_slider = QSlider(Qt.Horizontal)
+        self._zoom_level_slider = _ResettableSlider(Qt.Horizontal)
+        self._zoom_level_slider.default_value = round(AppSettings().zoom_default_level * 10)
         self._zoom_level_slider.setRange(25, 50)  # 2.5–5.0 in tenths
         self._zoom_level_slider.setSingleStep(5)
         self._zoom_level_slider.setTickInterval(5)
@@ -295,7 +335,8 @@ class SettingsWindow(QDialog):
         vb.addWidget(_section("Zoom Tool"))
         win_row = QHBoxLayout()
         win_row.addWidget(QLabel("Tool size:"))
-        self._zoom_win_slider = QSlider(Qt.Horizontal)
+        self._zoom_win_slider = _ResettableSlider(Qt.Horizontal)
+        self._zoom_win_slider.default_value = round(AppSettings().zoom_window_size * 10)
         self._zoom_win_slider.setRange(10, 35)  # 1.0–3.5 in tenths
         self._zoom_win_slider.setSingleStep(5)
         self._zoom_win_slider.setTickInterval(5)
@@ -323,11 +364,12 @@ class SettingsWindow(QDialog):
                            "These affect only what you see here — not the Kronos itself."))
         vb.addSpacing(6)
 
-        def _adj_row(name: str, lo: int, hi: int, fmt) -> QSlider:
+        def _adj_row(name: str, lo: int, hi: int, fmt, default: int) -> QSlider:
             row = QHBoxLayout()
             name_lbl = QLabel(name)
             name_lbl.setFixedWidth(84)
-            sl = QSlider(Qt.Horizontal)
+            sl = _ResettableSlider(Qt.Horizontal)
+            sl.default_value = default
             sl.setRange(lo, hi)
             val = QLabel("")
             val.setFixedWidth(48)
@@ -340,11 +382,17 @@ class SettingsWindow(QDialog):
             vb.addLayout(row)
             return sl
 
-        self._img_bri_slider = _adj_row("Brightness", -100, 100, lambda v: str(v))
-        self._img_con_slider = _adj_row("Contrast",   -100, 100, lambda v: str(v))
-        self._img_gam_slider = _adj_row("Gamma",        40, 250, lambda v: f"{v/100:.2f}")
-        self._img_sat_slider = _adj_row("Saturation", -100, 100, lambda v: str(v))
-        self._img_shp_slider = _adj_row("Sharpen",       0, 100, lambda v: str(v))
+        _img_defaults = AppSettings()
+        self._img_bri_slider = _adj_row("Brightness", -100, 100, lambda v: str(v),
+                                         _img_defaults.image_brightness)
+        self._img_con_slider = _adj_row("Contrast",   -100, 100, lambda v: str(v),
+                                         _img_defaults.image_contrast)
+        self._img_gam_slider = _adj_row("Gamma",        40, 250, lambda v: f"{v/100:.2f}",
+                                         round(_img_defaults.image_gamma * 100))
+        self._img_sat_slider = _adj_row("Saturation", -100, 100, lambda v: str(v),
+                                         _img_defaults.image_saturation)
+        self._img_shp_slider = _adj_row("Sharpen",       0, 100, lambda v: str(v),
+                                         _img_defaults.image_sharpen)
         # Live preview: any slider change re-renders the frame immediately.
         for sl in (self._img_bri_slider, self._img_con_slider, self._img_gam_slider,
                    self._img_sat_slider, self._img_shp_slider):
@@ -453,7 +501,8 @@ class SettingsWindow(QDialog):
         ef.addRow("Trigger:", self._macro_trigger_btn)
 
         delay_row = QHBoxLayout()
-        self._macro_delay_slider = QSlider(Qt.Horizontal)
+        self._macro_delay_slider = _ResettableSlider(Qt.Horizontal)
+        self._macro_delay_slider.default_value = MacroDef().step_delay_ms
         self._macro_delay_slider.setRange(10, 500)
         self._macro_delay_slider.setSingleStep(10)
         self._macro_delay_slider.setTickInterval(50)
@@ -663,6 +712,8 @@ class SettingsWindow(QDialog):
         self._boot_thresh_lbl.setText(f"{s.boot_screen_threshold}%")
 
         # View
+        idx = self._default_window_size.findData(s.default_window_size)
+        self._default_window_size.setCurrentIndex(idx if idx >= 0 else 0)
         self._zoom_level_slider.setValue(int(s.zoom_default_level * 10))
         self._zoom_level_lbl.setText(f"{s.zoom_default_level:.1f}×")
         self._zoom_win_slider.setValue(int(s.zoom_window_size * 10))
@@ -723,6 +774,7 @@ class SettingsWindow(QDialog):
         s.boot_screen_threshold  = self._boot_thresh_slider.value()
 
         # View
+        s.default_window_size = self._default_window_size.currentData()
         s.zoom_default_level = self._zoom_level_slider.value() / 10.0
         s.zoom_window_size   = self._zoom_win_slider.value()   / 10.0
 
@@ -1133,6 +1185,7 @@ class SettingsWindow(QDialog):
         s.max_fps                = self._fps_slider.value()
         s.disable_boot_screen    = self._disable_boot.isChecked()
         s.boot_screen_threshold  = self._boot_thresh_slider.value()
+        s.default_window_size    = self._default_window_size.currentData()
         s.zoom_default_level     = self._zoom_level_slider.value() / 10.0
         s.zoom_window_size       = self._zoom_win_slider.value()   / 10.0
         s.image_brightness       = self._img_bri_slider.value()

@@ -420,6 +420,12 @@ def load_settings() -> AppSettings:
         s.zoom_default_level     = float(root.get("zoom_default_level", s.zoom_default_level))
         s.zoom_window_size       = float(root.get("zoom_window_size",   s.zoom_window_size))
         s.scaling_quality        = root.get("scaling_quality",         s.scaling_quality)
+        s.default_window_size    = root.get("default_window_size",    s.default_window_size)
+        s.window_left            = int(root.get("window_left",         s.window_left))
+        s.window_top             = int(root.get("window_top",          s.window_top))
+        s.window_width           = int(root.get("window_width",        s.window_width))
+        s.window_height          = int(root.get("window_height",       s.window_height))
+        s.window_maximized       = root.get("window_maximized",       s.window_maximized)
         s.image_brightness       = int(root.get("image_brightness",    s.image_brightness))
         s.image_contrast         = int(root.get("image_contrast",      s.image_contrast))
         s.image_gamma            = float(root.get("image_gamma",       s.image_gamma))
@@ -494,6 +500,12 @@ def save_settings(s: AppSettings):
             "zoom_default_level":     s.zoom_default_level,
             "zoom_window_size":       s.zoom_window_size,
             "scaling_quality":        s.scaling_quality,
+            "default_window_size":    s.default_window_size,
+            "window_left":            s.window_left,
+            "window_top":             s.window_top,
+            "window_width":           s.window_width,
+            "window_height":          s.window_height,
+            "window_maximized":       s.window_maximized,
             "image_brightness":       s.image_brightness,
             "image_contrast":         s.image_contrast,
             "image_gamma":            s.image_gamma,

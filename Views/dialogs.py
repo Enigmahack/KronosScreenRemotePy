@@ -18,26 +18,18 @@ from Views.dialog_base import (
 # Connection dialogs
 from Views.connection_dialogs import (
     ConnectionFailedDialog,
-    LoginDialog,
 )
 
 # Property and info dialogs
 from Views.property_dialogs import (
     ObjectInfoDialog,
     FtpPropertiesDialog,
-    UnresolvedDependenciesDialog,
 )
 
 # Testing dialogs
 from Views.testing_dialogs import (
     InputTesterWindow,
     ButtonInjectorWindow,
-)
-
-# File dialogs
-from Views.file_dialogs import (
-    RemoteFilePickerDialog,
-    RemoteSampleBrowserDialog,
 )
 
 __all__ = [
@@ -49,15 +41,10 @@ __all__ = [
     'DialogResult',
     # Connection dialogs
     'ConnectionFailedDialog',
-    'LoginDialog',
     # Property dialogs
     'ObjectInfoDialog',
     'FtpPropertiesDialog',
-    'UnresolvedDependenciesDialog',
     # Testing dialogs
     'InputTesterWindow',
     'ButtonInjectorWindow',
-    # File dialogs
-    'RemoteFilePickerDialog',
-    'RemoteSampleBrowserDialog',
 ]

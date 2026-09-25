@@ -5,12 +5,12 @@ from typing import Optional
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTextEdit,
-    QGroupBox, QLineEdit, QSpinBox,
+    QGroupBox,
 )
 from PySide6.QtGui import QFont, QIcon, QPixmap
 
 import Utils.theme as T
-from Views.dialog_base import BaseDialog, MessageBox
+from Views.dialog_base import BaseDialog
 
 
 class ConnectionFailedDialog(BaseDialog):
@@ -22,6 +22,7 @@ class ConnectionFailedDialog(BaseDialog):
         self.port = port
         self.error = error
         self.retry = False
+        self.open_settings = False   # mirrors C#'s ConnectionFailedDialog.OpenSettings
         self._setup_ui()
         self.resize(500, 300)
 
@@ -119,117 +120,12 @@ class ConnectionFailedDialog(BaseDialog):
         self.accept()
 
     def _on_settings(self):
-        # This will be connected to open settings window
-        from Views.settings_window import SettingsWindow
-        dlg = SettingsWindow(None, parent=self, initial_tab="Connection")
-        dlg.exec()
+        # Port of C#'s ConnectionFailedDialog.OnSettings: this dialog only sets
+        # the flag and closes — the caller (whoever owns the real AppSettings
+        # instance) is responsible for actually opening Settings, same as
+        # C#'s OnSessionConnectionFailed checking dlg.OpenSettings afterward.
+        self.open_settings = True
+        self.accept()
 
     def should_retry(self) -> bool:
         return self.retry
-
-
-class LoginDialog(BaseDialog):
-    """Enhanced login dialog for authentication."""
-
-    def __init__(self, host: str = "", parent=None):
-        super().__init__("Kronos Remote - Login", parent)
-        self.host = host
-        self.username = ""
-        self.password = ""
-        self.remember_password = False
-        self._setup_ui()
-        self.resize(400, 280)
-
-    def _setup_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setSpacing(12)
-        layout.setContentsMargins(20, 20, 20, 20)
-
-        # Title
-        title = QLabel("Connect to Kronos")
-        title_font = QFont()
-        title_font.setPointSize(12)
-        title_font.setBold(True)
-        title.setFont(title_font)
-        title.setStyleSheet(f"color: {T.ACCENT};")
-        layout.addWidget(title)
-
-        # Host
-        host_layout = QHBoxLayout()
-        host_label = QLabel("Host:")
-        host_label.setMinimumWidth(80)
-        host_layout.addWidget(host_label)
-        self.host_input = QLineEdit()
-        self.host_input.setText(self.host)
-        self.host_input.setPlaceholderText("192.168.100.15")
-        host_layout.addWidget(self.host_input)
-        layout.addLayout(host_layout)
-
-        # Port
-        port_layout = QHBoxLayout()
-        port_label = QLabel("Port:")
-        port_label.setMinimumWidth(80)
-        port_layout.addWidget(port_label)
-        self.port_input = QSpinBox()
-        self.port_input.setMinimum(1)
-        self.port_input.setMaximum(65535)
-        self.port_input.setValue(7373)
-        port_layout.addWidget(self.port_input)
-        port_layout.addStretch()
-        layout.addLayout(port_layout)
-
-        # Separator
-        layout.addSpacing(12)
-
-        # Username
-        user_layout = QHBoxLayout()
-        user_label = QLabel("Username:")
-        user_label.setMinimumWidth(80)
-        user_layout.addWidget(user_label)
-        self.username_input = QLineEdit()
-        self.username_input.setPlaceholderText("(optional)")
-        user_layout.addWidget(self.username_input)
-        layout.addLayout(user_layout)
-
-        # Password
-        pass_layout = QHBoxLayout()
-        pass_label = QLabel("Password:")
-        pass_label.setMinimumWidth(80)
-        pass_layout.addWidget(pass_label)
-        self.password_input = QLineEdit()
-        self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
-        self.password_input.setPlaceholderText("(optional)")
-        pass_layout.addWidget(self.password_input)
-        layout.addLayout(pass_layout)
-
-        layout.addStretch()
-
-        # Buttons
-        button_layout = QHBoxLayout()
-        button_layout.addStretch()
-
-        ok_btn = QPushButton("Connect")
-        ok_btn.setDefault(True)
-        ok_btn.clicked.connect(self._on_ok)
-        button_layout.addWidget(ok_btn)
-
-        cancel_btn = QPushButton("Cancel")
-        cancel_btn.clicked.connect(self.reject)
-        button_layout.addWidget(cancel_btn)
-
-        layout.addLayout(button_layout)
-
-        self.host_input.setFocus()
-
-    def _on_ok(self):
-        if not self.host_input.text().strip():
-            MessageBox.warning(self, "Input Error", "Please enter a host address.")
-            return
-        self.username = self.username_input.text().strip()
-        self.password = self.password_input.text()
-        self.host = self.host_input.text().strip()
-        self.accept()
-
-    def get_credentials(self) -> tuple[str, str, str, int]:
-        """Return (host, username, password, port)."""
-        return (self.host, self.username, self.password, self.port_input.value())

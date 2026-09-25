@@ -59,6 +59,7 @@ from Rendering.overlay_renderer import OverlayRenderer
 from Core.stream_receiver import StreamReceiver
 from Core.sysex_service import SysExService
 from Views.main_window_dialogs import MainWindowDialogMixin, add_testing_menu_items
+from Views.revealable_password_edit import RevealablePasswordEdit
 
 
 # ── ICMP ping (matches C# System.Net.NetworkInformation.Ping) ─────────────────
@@ -1356,8 +1357,8 @@ class _FtpLoginDialog(QDialog):
         form = QFormLayout()
         self._user_edit = QLineEdit(existing_user)
         self._user_edit.setPlaceholderText("root")
-        self._pass_edit = QLineEdit(existing_pass)
-        self._pass_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self._pass_edit = RevealablePasswordEdit()
+        self._pass_edit.setText(existing_pass)
         form.addRow("Username:", self._user_edit)
         form.addRow("Password:", self._pass_edit)
         layout.addLayout(form)
@@ -1540,6 +1541,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         self._librarian_shell_win = None
         self._sysex_service = SysExService(self)
         self._shutting_down = False
+        self._geometry_restored = False   # first-showEvent one-shot guard
         self._tray_icon = None   # QSystemTrayIcon, set up in _init_tray_icon
 
         # Ping
@@ -2281,8 +2283,24 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             msg = str(e)
             QTimer.singleShot(0, self, lambda m=msg: self._set_conn_state(
                 "disconnected", f"Connection failed: {m}"))
+            QTimer.singleShot(0, self, lambda m=msg: self._show_connection_failed_dialog(m))
             return
         QTimer.singleShot(0, self, lambda: self._apply_new_receiver(rx))
+
+    def _show_connection_failed_dialog(self, error_msg: str):
+        """Port of C#'s OnSessionConnectionFailed dialog step: a single "can't
+        reach the device" popup with a way straight to Settings > Connection
+        (Views/ConnectionFailedDialog.xaml.cs). Only wired into the initial,
+        user-triggered connect path (_connect_bg) — the background auto-
+        reconnect loop (_reconnect_bg/_schedule_reconnect) has no C# equivalent
+        at all (C#'s own Help text: "The app does not auto-reconnect after a
+        network interruption") and popping a modal on every unattended retry
+        would be disruptive, so it stays silent-status-only there."""
+        from Views.connection_dialogs import ConnectionFailedDialog
+        dlg = ConnectionFailedDialog(self._host, self._ctrl_port, error_msg, parent=self)
+        dlg.exec()
+        if dlg.open_settings:
+            self._open_settings("Connection")
 
     def _disconnect(self, quiet: bool = False):
         if not quiet:
@@ -3042,6 +3060,10 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
                 self._toggle_hide_data_input(not self._settings.hide_data_input); return
             if self._matches_keybind(event, "HideValueInput"):
                 self._toggle_hide_value_input(not self._settings.hide_value_input); return
+            if self._matches_keybind(event, "Sample Editor"):
+                self.show_sample_editor(); return
+            if self._matches_keybind(event, "Librarian"):
+                self._open_librarian_shell(); return
 
         # Mode select keybinds
         for i in range(1, 8):
@@ -3348,6 +3370,33 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         self._settings.recent_hosts.clear()
         Models.storage.save_settings(self._settings)
         self._rebuild_recent_menu()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not self._geometry_restored:
+            self._geometry_restored = True
+            QTimer.singleShot(0, self._restore_window_geometry)
+
+    def _restore_window_geometry(self):
+        """Applies Settings > View > "Default window size" at launch — port of
+        C#'s MainWindow.Input.cs OnLoaded restore block / ApplyDefaultWindowSize.
+        "Last Used" restores the saved position/size/maximized state (if any);
+        the fixed sizes apply a content scale via _set_window_size, matching
+        C#'s Small=0.75/Medium=1.0/Large=1.25."""
+        s = self._settings
+        mode = s.default_window_size
+        if mode == "LastUsed":
+            if s.window_left >= 0 and s.window_top >= 0:
+                self.move(s.window_left, s.window_top)
+                if s.window_width > 200 and s.window_height > 100:
+                    self.resize(s.window_width, s.window_height)
+            if s.window_maximized:
+                self.showMaximized()
+        elif mode == "Maximized":
+            self.showMaximized()
+        else:
+            scale = {"Small": 0.75, "Medium": 1.0, "Large": 1.25}.get(mode, 1.0)
+            self._set_window_size(scale)
 
     def _set_window_size(self, scale: float):
         controls_visible = self._ctrl_surface.isVisible()
@@ -4288,6 +4337,12 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             self._audio_capture = None
 
         self._ctrl.stop_persistent()
+        self._settings.window_maximized = self.isMaximized()
+        if not self.isMaximized():
+            self._settings.window_left   = self.x()
+            self._settings.window_top    = self.y()
+            self._settings.window_width  = self.width()
+            self._settings.window_height = self.height()
         Models.storage.save_settings(self._settings)
         if self._frame_w._cal_dirty:
             # Belt-and-suspenders only: closeEvent's Save branch already handles
