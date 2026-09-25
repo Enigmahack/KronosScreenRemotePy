@@ -31,7 +31,14 @@ _WHEEL_IDLE_MS     = 400
 
 
 def _res(name: str) -> pathlib.Path:
-    return pathlib.Path(__file__).parent / "Resources" / "Images" / name
+    # Repo-root Resources/Images/, not Rendering/Resources/Images/ (which doesn't
+    # exist) — this file lives one directory below the repo root, so it takes
+    # TWO .parent hops to reach it. This was wrong (one hop) until 2026-09-25,
+    # silently loading zero images the whole time — every .exists() guard below
+    # made the miss invisible instead of erroring. See Views/main_window.py's
+    # ValueSliderControl._load_images and Models/storage.py's cal_data.json
+    # fallback for the same bug, fixed alongside this one.
+    return pathlib.Path(__file__).parent.parent / "Resources" / "Images" / name
 
 
 # ── Button descriptor ──────────────────────────────────────────────────────────

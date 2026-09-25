@@ -55,8 +55,11 @@ _FONT_SMALL = QFont("Segoe UI", 9) if True else QFont("sans-serif", 9)
 class OverlayRenderer:
     def __init__(self):
         self._boot_splash: Optional[QPixmap] = None
+        # Repo-root Resources/Images/ — this file is one directory below the repo
+        # root, so it takes TWO .parent hops (see Rendering/control_surface.py's
+        # _res() for the fuller writeup of this bug, fixed alongside this one).
         self._boot_splash_path = (
-            pathlib.Path(__file__).parent / "Resources" / "Images" / "BootSplash.png"
+            pathlib.Path(__file__).parent.parent / "Resources" / "Images" / "BootSplash.png"
         )
         self._boot_splash_loaded = False
 

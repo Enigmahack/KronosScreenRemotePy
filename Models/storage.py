@@ -623,8 +623,11 @@ def load_cal() -> Tuple[CalMesh, List[CalBiasDot]]:
     dots: list[CalBiasDot] = []
     p = _path("cal_data.json")
 
-    # Fall back to embedded default bundled with the Python project
-    embedded = pathlib.Path(__file__).parent / "Resources" / "cal_data.json"
+    # Fall back to embedded default bundled with the Python project. Repo-root
+    # Resources/ — this file is one directory below the repo root (see
+    # Rendering/control_surface.py's _res() for the fuller writeup of this
+    # off-by-one bug, fixed alongside this one).
+    embedded = pathlib.Path(__file__).parent.parent / "Resources" / "cal_data.json"
     if not p.exists() and embedded.exists():
         p = embedded
 

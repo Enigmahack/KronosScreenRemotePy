@@ -1135,7 +1135,10 @@ class KronosValueSliderPanel(QWidget):
         self._load_images()
 
     def _load_images(self):
-        res = pathlib.Path(__file__).parent / "Resources" / "Images"
+        # Repo-root Resources/Images/ — this file is one directory below the repo
+        # root (see Rendering/control_surface.py's _res() for the fuller writeup
+        # of this off-by-one bug, fixed alongside this one).
+        res = pathlib.Path(__file__).parent.parent / "Resources" / "Images"
         bg = res / "KronosLeftSide2EMPTY.png"
         if bg.exists():
             self._bg_pixmap = QPixmap(str(bg))
