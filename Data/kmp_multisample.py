@@ -12,11 +12,13 @@ from __future__ import annotations
 
 import pathlib
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import Data.korg_riff_chunk as riff
 import Data.sample_path_guard as path_guard
 from Models.storage import atomic_write_bytes
+
+_STEREO_PARTNER_SUFFIX = {"-L": "-R", "-R": "-L"}
 
 
 @dataclass
@@ -216,3 +218,22 @@ class KmpMultisample:
         name_width, index_width = (5, 3) if mno1 <= 999 else (4, 4)
         prefix = sanitized[:name_width] if len(sanitized) >= name_width else sanitized.ljust(name_width, "_")
         return f"{prefix}{mno1:0{index_width}d}.KMP"
+
+
+def find_stereo_sibling(
+        kmp_cache: Dict[str, "KmpMultisample"],
+        m: "KmpMultisample") -> Optional[Tuple[str, "KmpMultisample"]]:
+    """The other half of `m`'s stereo pair among the collection's already-
+    loaded multisamples, or None — a mono multisample (empty suffix) has no
+    sibling. No stored pairing relationship exists on disk in either the C#
+    or Python data model (§2 of the format doc: stereo pairing is resolved
+    dynamically); matched here the same way C# does it throughout
+    SampleEditorViewModel.cs — same Name, opposite -L/-R Suffix, among
+    multisamples already known to the caller (never a fresh disk scan)."""
+    partner_suffix = _STEREO_PARTNER_SUFFIX.get(m.suffix)
+    if partner_suffix is None:
+        return None
+    for path, other in kmp_cache.items():
+        if other is not m and other.name == m.name and other.suffix == partner_suffix:
+            return path, other
+    return None
