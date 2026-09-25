@@ -96,16 +96,25 @@ class _RemoteKscBrowserDialog(QDialog):
 
     Not the full dual-pane File Manager (Tools/file_manager.py) — this only
     needs drill-down navigation and a single-file pick, so it's a much
-    smaller, purpose-built tree rather than reusing that window's much larger
-    surface (drag-drop, cut/copy/paste, rename, delete — none of which apply
-    here)."""
+    smaller, purpose-built tree. It DOES reuse that module's folder-
+    management actions (New Folder/Rename/Delete/Refresh) and — critically
+    — its top-level-FTP-path safety guards (_is_top_level_ftp_path,
+    FtpTopLevelPathError/FtpPathTooLongError, all enforced inside
+    _FtpWorker itself, not just here) — port of C#'s addition of the same
+    actions to SampleRemoteBrowserDialog.xaml.cs (776334a). "Properties" is
+    NOT ported: Python's own Views/property_dialogs.py's
+    FtpPropertiesDialog is an FTP-connection-settings dialog (host/port/
+    user), not an item-properties viewer like C#'s same-named class — a
+    real naming collision, not something to reuse for this — and a
+    dedicated size/date viewer isn't worth writing from scratch for this
+    pass."""
 
     def __init__(self, ftp, parent=None):
         super().__init__(parent)
         self._ftp = ftp
         self.selected_path: Optional[str] = None
         self.setWindowTitle("Load Sample Collection from Kronos")
-        self.resize(480, 520)
+        self.resize(480, 560)
 
         layout = QVBoxLayout(self)
         info = QLabel("Select a .KSC file on the Kronos's SSD.")
@@ -117,6 +126,24 @@ class _RemoteKscBrowserDialog(QDialog):
         self._tree.itemExpanded.connect(self._on_expand)
         self._tree.itemDoubleClicked.connect(self._on_double_click)
         layout.addWidget(self._tree, 1)
+
+        folder_row = QHBoxLayout()
+        self._new_folder_btn = QPushButton("New Folder…")
+        self._new_folder_btn.clicked.connect(self._on_new_folder)
+        folder_row.addWidget(self._new_folder_btn)
+        self._rename_btn = QPushButton("Rename…")
+        self._rename_btn.setEnabled(False)
+        self._rename_btn.clicked.connect(self._on_rename)
+        folder_row.addWidget(self._rename_btn)
+        self._delete_btn = QPushButton("Delete")
+        self._delete_btn.setEnabled(False)
+        self._delete_btn.clicked.connect(self._on_delete)
+        folder_row.addWidget(self._delete_btn)
+        self._refresh_btn = QPushButton("Refresh")
+        self._refresh_btn.clicked.connect(self._on_refresh)
+        folder_row.addWidget(self._refresh_btn)
+        folder_row.addStretch()
+        layout.addLayout(folder_row)
 
         btn_row = QHBoxLayout()
         btn_row.addStretch()
@@ -167,17 +194,98 @@ class _RemoteKscBrowserDialog(QDialog):
         items = self._tree.selectedItems()
         if not items:
             self._ok_btn.setEnabled(False)
+            self._rename_btn.setEnabled(False)
+            self._delete_btn.setEnabled(False)
             return
         kind, path = items[0].data(0, Qt.UserRole)
         self._ok_btn.setEnabled(kind == "ksc")
         if kind == "ksc":
             self.selected_path = path
+        # Top-level Kronos storage volumes (SSD1/SSD2/...) can never be
+        # renamed/deleted — same defense-in-depth as FileManagerWindow's own
+        # context menu, ahead of _FtpWorker's own guard rather than relying
+        # on it alone.
+        from Tools.file_manager import _is_top_level_ftp_path
+        top_level = _is_top_level_ftp_path(path)
+        self._rename_btn.setEnabled(not top_level)
+        self._delete_btn.setEnabled(not top_level)
 
     def _on_double_click(self, item: QTreeWidgetItem, _col: int):
         kind, path = item.data(0, Qt.UserRole)
         if kind == "ksc":
             self.selected_path = path
             self.accept()
+
+    def _selected_dir_for_new_folder(self) -> str:
+        """The directory a New Folder should be created inside: the
+        selected directory itself, or its parent if a .ksc file (or
+        nothing) is selected."""
+        items = self._tree.selectedItems()
+        if not items:
+            return "/"
+        kind, path = items[0].data(0, Qt.UserRole)
+        if kind == "dir":
+            return path
+        return path.rsplit("/", 1)[0] or "/"
+
+    def _on_new_folder(self):
+        from PySide6.QtWidgets import QInputDialog
+        parent_dir = self._selected_dir_for_new_folder()
+        name, ok = QInputDialog.getText(self, "New Folder", "Folder name:", text="NewFolder")
+        if not ok or not name.strip():
+            return
+        new_path = f"{parent_dir.rstrip('/')}/{name.strip()}"
+        try:
+            self._ftp.mkdir(new_path)
+        except Exception as e:
+            QMessageBox.warning(self, "Sample Editor", f"Could not create folder: {e}")
+            return
+        self._on_refresh()
+
+    def _on_rename(self):
+        items = self._tree.selectedItems()
+        if not items:
+            return
+        kind, path = items[0].data(0, Qt.UserRole)
+        current_name = path.rsplit("/", 1)[-1]
+        from PySide6.QtWidgets import QInputDialog
+        new_name, ok = QInputDialog.getText(self, "Rename", "New name:", text=current_name)
+        if not ok or not new_name.strip() or new_name.strip() == current_name:
+            return
+        new_path = f"{path.rsplit('/', 1)[0]}/{new_name.strip()}"
+        try:
+            self._ftp.rename(path, new_path)
+        except Exception as e:
+            QMessageBox.warning(self, "Sample Editor", f"Rename failed: {e}")
+            return
+        self._on_refresh()
+
+    def _on_delete(self):
+        items = self._tree.selectedItems()
+        if not items:
+            return
+        kind, path = items[0].data(0, Qt.UserRole)
+        name = path.rsplit("/", 1)[-1]
+        r = QMessageBox.question(
+            self, "Delete",
+            f"Delete '{name}'{' and everything inside it' if kind == 'dir' else ''}?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if r != QMessageBox.Yes:
+            return
+        try:
+            if kind == "dir":
+                self._ftp.delete_dir(path)
+            else:
+                self._ftp.delete_file(path)
+        except Exception as e:
+            QMessageBox.warning(self, "Sample Editor", f"Delete failed: {e}")
+            return
+        self._on_refresh()
+
+    def _on_refresh(self):
+        self._tree.clear()
+        self.selected_path = None
+        self._populate_dir(None, "/")
 
 
 class SampleEditorWindow(QMainWindow):
