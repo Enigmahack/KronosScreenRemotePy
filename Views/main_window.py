@@ -2709,6 +2709,29 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         for lbl in (self._seq_rew, self._seq_ff):
             lbl.setStyleSheet(f"color: {ff_rew_color}; padding: 0 3px;")
 
+        # Re-fit the window at the current scale on every connect/family
+        # resolution — Kronos has a left value pane and a 600px screen,
+        # Nautilus has neither (this method already just resized the panel
+        # geometry above), so retaining the prior window size would leave
+        # blank space. Matches C#'s OnSessionConnected calling
+        # SetWindowSize(_currentScale) unconditionally. Only re-fits when
+        # the window is currently at one of the known preset scales — C#
+        # tracks _currentScale continuously (every resize re-derives it, so
+        # even a restored "Last Used" geometry ends up reflected there
+        # before the first connect completes); Python has no such
+        # continuous tracking, only the checkable Window Size menu actions,
+        # so a custom/"Last Used" size that doesn't match any preset is
+        # left alone rather than guessed at and clobbered back to 100%.
+        current_scale = self._current_window_scale()
+        if current_scale is not None:
+            self._set_window_size(current_scale)
+
+    def _current_window_scale(self) -> Optional[float]:
+        for scale, action in self._act_sz.items():
+            if action.isChecked():
+                return scale
+        return None
+
     def _set_pending_mode(self, mode: int):
         """Record a user-requested mode without lighting the button immediately.
         Detection (daemon STATE, or pixel fallback) is authoritative; this falls back
