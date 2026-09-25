@@ -804,6 +804,22 @@ class FrameWidget(QWidget):
                     nx, ny = self._apply_cal(fp.x(), fp.y())
                     self.touch_up.emit(nx, ny)
 
+    def cancel_drag(self) -> bool:
+        """Cancel a pending/active touch drag (Escape precedence — mirrors C#
+        MainWindow.Input.cs's drag-cancel block). Sends a bare TOUCH_UP at the
+        cancel position even for a pending-only drag with no prior TOUCH_DOWN,
+        matching C#. Returns True if a drag was in progress and got cancelled."""
+        if not (self._drag_pending or self._drag_active):
+            return False
+        cancel_pos = self._drag_last if self._drag_active else self._drag_pending_pos
+        self._drag_pending = False
+        self._drag_active  = False
+        if cancel_pos is not None and self._is_connected:
+            nx, ny = self._apply_cal(cancel_pos.x(), cancel_pos.y())
+            self.touch_up.emit(nx, ny)
+        self.update()
+        return True
+
     def wheelEvent(self, event: QWheelEvent):
         # Pass to parent (main window handles wheel → WHEEL CW/CCW)
         event.ignore()
@@ -3148,12 +3164,10 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             self._handle_cal_key(event)
             return
 
-        # Escape: exit fullscreen → send BUTTON EXIT
+        # Escape: full precedence chain (fullscreen-exit / drag-cancel /
+        # zoom-off / BUTTON EXIT) — see _handle_escape.
         if key == Qt.Key_Escape:
-            if self._is_fullscreen:
-                self._toggle_fullscreen()
-                return
-            self._ctrl_send("BUTTON EXIT")
+            self._handle_escape()
             return
 
         # Ctrl shortcuts
@@ -3415,6 +3429,31 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         else:
             self.showFullScreen()
         self._is_fullscreen = not self._is_fullscreen
+
+    def _handle_escape(self, is_repeat: bool = False):
+        """Full Escape precedence chain, mirrors C# MainWindow.Input.cs:389-408
+        (BUTTON EXIT case) — fullscreen-exit / drag-cancel / zoom-off each take
+        priority over sending front-panel EXIT, and are naturally idempotent on
+        key-repeat since the state they check is cleared after firing once, so
+        only the final BUTTON EXIT branch needs an explicit repeat guard.
+        Palette-editor precedence (C#'s _edOpen/_edTyped/_ovlBitmapSrc steps)
+        is deliberately not ported — that feature is retired in C# itself
+        (EffectiveOverrides always empty, menu item unconditionally hidden).
+        Called both from the normal (uncaptured) key path and from the
+        captured-on-Kronos path, where Escape is the front-panel EXIT button
+        rather than a keystroke and was previously swallowed with no effect.
+        """
+        if self._is_fullscreen:
+            self._toggle_fullscreen()
+            return
+        if self._frame_w.cancel_drag():
+            return
+        if self._zoom_on:
+            self._act_zoom.setChecked(False)
+            return
+        if is_repeat:
+            return
+        self._ctrl_send("BUTTON EXIT")
 
     def _toggle_hide_data_input(self, checked: bool):
         if self._layout_preset != "Full":
@@ -4573,14 +4612,17 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
                     if (t == QEvent.Type.KeyPress and (event.modifiers() & Qt.ControlModifier)
                             and event.key() in (Qt.Key_V, Qt.Key_A)):
                         return False
-                    # Escape is front-panel EXIT injection on Kronos (see
-                    # keyPressEvent's dedicated handler — only reachable
-                    # when NOT captured, a known separate gap, see
-                    # CLAUDE.md), never a raw keystroke there; C# excludes
-                    # it from this same forward-while-captured path only
-                    # when NOT Nautilus (MainWindow.Input.cs:337-339) — on
-                    # Nautilus it IS a real keystroke and forwards normally.
+                    # Escape is front-panel EXIT injection on Kronos, never a
+                    # raw keystroke there — runs the same precedence chain as
+                    # keyPressEvent's uncaptured handler (_handle_escape) on
+                    # KeyPress only; KeyRelease is just swallowed, since no
+                    # KEY-down was ever forwarded for it to pair with. C#
+                    # excludes it from this same forward-while-captured path
+                    # only when NOT Nautilus (MainWindow.Input.cs:337-339) —
+                    # on Nautilus it IS a real keystroke and forwards normally.
                     if (event.key() == Qt.Key_Escape and not self._is_nautilus):
+                        if t == QEvent.Type.KeyPress:
+                            self._handle_escape(is_repeat=event.isAutoRepeat())
                         return True   # consumed, but not forwarded as a raw key
                     if not event.isAutoRepeat():
                         if self._kbd_send_en:
