@@ -289,7 +289,7 @@ is partially done, across six more commits:
   the real `SysExDumpCollector.collect()`/`collect_per_object_names()`
   against both codecs (no real hardware reachable from this environment —
   see "Testing without real hardware" below).
-- **Right-panel swap** (`<pending commit>`): the last big Phase 3 item,
+- **Right-panel swap** (`6385ed5`, resource-path bug fix `4e0c4c6`): the last big Phase 3 item,
   unblocked once the user pointed at the actual asset directory
   (`../KronosScreenRemote/Resources/Images/`) and `Views/NautilusRightPanel.xaml`
   for layout — no more "no visual reference" excuse. `Rendering/control_surface.py`
