@@ -22,58 +22,7 @@ from PySide6.QtGui import QFont, QColor
 import Utils.theme as T
 from Views.dialog_base import BaseDialog
 
-# Complete catalog of every button the daemon's BUTTON command accepts
-# (docs/api.md §9 "Button name reference"), ported verbatim from the C#
-# reference's Core/ButtonReference.cs — keep in sync if that table changes.
-# (category, token, code, description)
-BUTTON_REFERENCE: list[tuple[str, str, int, str]] = [
-    ("Navigation", "EXIT", 8, "Exit button"),
-    ("Navigation", "ENTER", 23, "Enter / confirm button"),
-    ("Value control", "INC", 51, "Increment the currently selected value"),
-    ("Value control", "DEC", 52, "Decrement the currently selected value"),
-    ("Mode select", "SETLIST", 7, "Setlist mode"),
-    ("Mode select", "COMBI", 1, "Combi mode"),
-    ("Mode select", "PROGRAM", 2, "Program mode"),
-    ("Mode select", "SEQUENCE", 3, "Sequence mode"),
-    ("Mode select", "SAMPLING", 4, "Sampling mode"),
-    ("Mode select", "GLOBAL", 5, "Global mode"),
-    ("Mode select", "DISK", 6, "Disk mode"),
-    ("Utility", "HELP", 9, "Help button"),
-    ("Utility", "COMPARE", 10, "Compare button"),
-    ("Utility", "RESET", 75, "Reset Controls button"),
-    *[("Numeric pad", f"NUM{d}", 11 + d, f"Numeric key {d}") for d in range(10)],
-    ("Numeric pad", "NUM_DASH", 21, "Numeric dash / minus"),
-    ("Numeric pad", "NUM_DOT", 22, "Numeric dot / decimal"),
-    *[("Mix Play", f"MP{i + 1}", 58 + i, f"Mix Play {i + 1}") for i in range(8)],
-    *[("Mix Select", f"MS{i + 1}", 66 + i, f"Mix Select {i + 1}") for i in range(8)],
-    *[("Bank", f"BANK_I{chr(ord('A') + i)}", 24 + i, f"Internal bank {chr(ord('A') + i)}")
-      for i in range(7)],
-    *[("Bank", f"BANK_U{chr(ord('A') + i)}", 31 + i, f"User bank {chr(ord('A') + i)}")
-      for i in range(7)],
-    ("Sequencer", "SEQ_PAUSE", 38, "Pause"),
-    ("Sequencer", "SEQ_REW", 39, "Rewind"),
-    ("Sequencer", "SEQ_FF", 40, "Fast forward"),
-    ("Sequencer", "SEQ_LOCATE", 41, "Locate / return to start"),
-    ("Sequencer", "SEQ_REC", 42, "Sequencer record"),
-    ("Sequencer", "SEQ_START", 43, "Sequencer start / stop"),
-    ("Sequencer", "TAP_TEMPO", 44, "Tap tempo"),
-    ("Sampling", "SMPL_REC", 45, "Sampling record"),
-    ("Sampling", "SMPL_START", 46, "Sampling start"),
-    ("Channel strip", "MIX_KNOBS", 74, "Mixer Knobs selector"),
-    ("Channel strip", "SOLO", 76, "Solo (fires on release)"),
-    ("Channel strip", "MODULE_CONTROL", 47, "Module Control"),
-    ("Channel strip", "KARMA_ONOFF", 48, "Karma On/Off"),
-    ("Channel strip", "KARMA_LATCH", 49, "Karma Latch"),
-    ("Channel strip", "DRUM_TRACK", 50, "Drum Track select"),
-    ("Channel strip", "TIMBRE_TRACK", 53, "Timbre/Track select"),
-    ("Channel strip", "AUDIO_TRACK", 54, "Audio select"),
-    ("Channel strip", "EXT_TRACK", 55, "Ext select"),
-    ("Channel strip", "RTKNOBS_KARMA", 56, "RT Knobs/Karma page select"),
-    ("Channel strip", "TONE_ADJUST", 57, "Tone Adjust"),
-    ("Channel strip", "SW1", 77, "Front-panel switch 1"),
-    ("Channel strip", "SW2", 78, "Front-panel switch 2"),
-]
-BUTTON_REFERENCE.sort(key=lambda b: b[2])
+from Core.button_codes import BUTTON_REFERENCE, btn
 _BUTTON_TOKENS = [b[1] for b in BUTTON_REFERENCE]
 
 
@@ -217,7 +166,7 @@ class InputTesterWindow(BaseDialog):
             self.touch_x.setText(kv["X"])
             self.touch_y.setText(kv["Y"])
 
-    # ── Button tab: real BUTTON <token> injection ───────────────────────────────
+    # ── Button tab: real BTN <code> injection ───────────────────────────────
 
     def _create_button_tab(self) -> QWidget:
         widget = QWidget()
@@ -249,8 +198,8 @@ class InputTesterWindow(BaseDialog):
     def _inject_button(self):
         token = self.button_select.currentText()
         if token:
-            self._mw._ctrl_send(f"BUTTON {token}")
-            self._log(f"[BTN] BUTTON {token}")
+            self._mw._ctrl_send(btn(token))
+            self._log(f"[BTN] {btn(token)} ({token})")
 
     # ── Controls tab: real SLIDER/KNOB/VSLIDER/WHEEL injection ─────────────────
 
@@ -353,7 +302,7 @@ class ButtonInjectorWindow(BaseDialog):
         layout.setSpacing(12)
 
         info = QLabel(
-            "Sends BUTTON <token> to the connected unit (docs/api.md §7/§9).\n"
+            "Sends BTN <code> for the chosen button to the connected unit (docs/api.md §7/§9).\n"
             "Watch the mirrored screen to confirm which physical button fires."
         )
         info.setStyleSheet(f"color: {T.TEXT_DIM};")
@@ -405,8 +354,8 @@ class ButtonInjectorWindow(BaseDialog):
 
     def _inject_button(self, token: str):
         import time
-        self._mw._ctrl_send(f"BUTTON {token}")
-        self.status_label.setText(f"Sent BUTTON {token}  ({time.strftime('%H:%M:%S')})")
+        self._mw._ctrl_send(btn(token))
+        self.status_label.setText(f"Sent {btn(token)} ({token})  ({time.strftime('%H:%M:%S')})")
 
     def _inject_custom(self):
         token = self.button_input.text().strip()

@@ -35,6 +35,30 @@ _MODE_CHANGE = 0x02
 _MAX_DIMENSION = 8192
 
 
+_STATUS_FORMAT_NEEDS_NEWER_VERSION = 0x03
+_STATUS_VERSION_MISMATCH = 0x04
+_HELLO_VERSION = 0x03
+
+
+class StreamVersionError(ConnectionError):
+    """Handshake status 0x03 / 0x04: the daemon and this client don't share a stream protocol version."""
+
+    def __init__(self, status: int, ver_min: Optional[int], ver_max: Optional[int]):
+        self.status, self.ver_min, self.ver_max = status, ver_min, ver_max
+        super().__init__(version_failure_message(status, ver_min, ver_max))
+
+
+def version_failure_message(status: int, ver_min: Optional[int], ver_max: Optional[int]) -> str:
+    rng = "" if ver_min is None or ver_max is None else f" (the daemon accepts stream versions {ver_min}-{ver_max}; this client speaks {_HELLO_VERSION})"
+    if ver_max is not None and ver_max < _HELLO_VERSION:
+        return f"The Kronos daemon is too old for this client - update the ScreenRemote daemon{rng}."
+    if ver_min is not None and ver_min > _HELLO_VERSION:
+        return f"This client is too old for the Kronos daemon - update the client{rng}."
+    if status == _STATUS_FORMAT_NEEDS_NEWER_VERSION:
+        return f"This unit's display format needs a newer stream version than this client sent{rng}."
+    return f"The daemon rejected this client's stream protocol version{rng}."
+
+
 class StreamReceiver(QThread):
     frame_received = Signal(bytes)   # raw 8bpp frame bytes
     disconnected   = Signal()
@@ -91,7 +115,7 @@ class StreamReceiver(QThread):
             u_bytes = self._username.encode('ascii', errors='replace')[:64]
             p_bytes = self._password.encode('ascii', errors='replace')[:128]
             hello = (_MAGIC
-                     + bytes([0x03, self._mode, self._fps,
+                     + bytes([_HELLO_VERSION, self._mode, self._fps,
                                len(u_bytes), len(p_bytes)])
                      + u_bytes + p_bytes)
             # Never log `hello` itself — it carries the FTP username and
@@ -106,9 +130,14 @@ class StreamReceiver(QThread):
                 raise ConnectionError("Invalid response from daemon")
             status = hdr[4]
             if status == 0x01:
-                raise PermissionError("FTP authentication rejected by Kronos daemon.")
+                raise PermissionError("FTP authentication rejected by Kronos daemon (bad credentials or locked "
+                                      "account; a daemon older than 3.0.2 also answers a v3 hello this way).")
             if status == 0x02:
                 raise ConnectionError("Kronos could not look up credentials — user not found.")
+            if status in (_STATUS_FORMAT_NEEDS_NEWER_VERSION, _STATUS_VERSION_MISMATCH):
+                # Both are followed by ver_min/ver_max (docs/api.md 3.4) so the client can say which side is too old.
+                vers = _recv_all(s, 2)
+                raise StreamVersionError(status, vers[0] if vers else None, vers[1] if vers else None)
             if status != 0x00:
                 raise ConnectionError(f"Handshake rejected by daemon (status 0x{status:02X})")
 

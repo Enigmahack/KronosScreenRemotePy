@@ -463,6 +463,19 @@ is `nautilus`/`nautilus`; Kronos 192.168.100.15 uses the repo's `settings.json` 
 
 Note: `Core/sample_editor.py` (legacy fake workstation) shadows nothing now because the model package is `Core/sample_editor_model/`.
 
+**Daemon 3.1.2 API accuracy (2026-10-02).** Front-panel presses go out as `BTN <code>` and chords as `BTN_DOWN`/`BTN_UP`
+(`Core/button_codes.py` holds the section-9 name->code table; `CtrlClient.send_chord` queues down, hold, up-reversed so the GUI and
+daemon never block) - the deprecated `BUTTON`/`CHORD` are no longer sent anywhere. C# still sends them; Python is ahead there on
+purpose (the API outranks both apps). The stream handshake reads statuses `0x03`/`0x04` with `ver_min`/`ver_max`
+(`StreamVersionError`, says whether the client or daemon is too old). `MODEL` is parsed whole (`ModelInfo`: board, panel HW version,
+CPU topology, stream format/geometry; Device Info dialog shows them). The Performance window uses the display-ready `TEMP_CPU`/
+`TEMP_ACPI`/`FAN_RPM` (falling back to `TEMP1`/`FAN1_RPM` on pre-3.0.2 daemons) and shows unit/board/CPU-mask rows. Tests:
+`python -m Core.button_codes | Core.device_family`, `tests/test_button_wire.py`, `test_button_actions.py`, `test_handshake_status.py`;
+`tests/live_api_check.py <host>` is a read-only live check (`BTN 999` must come back `ERR`). Not done, deliberately: UDP discovery
+(neither app has it), a v2 stream fallback for pre-3.0.2 daemons (a v3 hello gets status `0x01` there, indistinguishable from bad
+credentials, and the existing credential-wipe on `0x01` still applies), and the daemon's SYSEX/MIDI_SEND ctrl-port MIDI path
+(Python uses the 9875 bridge). Kronos-to-Nautilus conversion in C# stays untouched (WIP).
+
 ## What's left
 
 **Nautilus PCG format-conversion (`Core/Pcg/Nautilus/`,

@@ -35,6 +35,25 @@ _BAR_BG    = T.BORDER
 _GRAPH_SAMPLES = 60
 
 
+def unit_summary(kv: dict) -> str:
+    """"KRONOS2 - ASRock N3160TM-ITX-K, BIOS L0.07E": the model plus whatever DMI board identity the daemon reported."""
+    model = kv.get("MODEL", "")
+    vendor, name = kv.get("BOARD_VENDOR", ""), kv.get("BOARD_NAME", "")
+    board = " ".join(p for p in (vendor, name) if p and p != "UNKNOWN")
+    bios = kv.get("BIOS_VERSION", "")
+    parts = [p for p in (board, f"BIOS {bios}" if bios and bios != "UNKNOWN" else "") if p]
+    return " - ".join(p for p in (model, ", ".join(parts)) if p) or "—"
+
+
+def cpu_summary(kv: dict) -> str:
+    """"4 CPUs / 2 cores / 2 threads, daemon on 0x3, RT on 0xf" from the 3.0.2+ CPU_* fields."""
+    if "CPU_COUNT" not in kv:
+        return "—"
+    out = f"{kv['CPU_COUNT']} CPUs / {kv.get('CPU_CORES', '?')} cores / {kv.get('CPU_THREADS_PER_CORE', '?')} per core"
+    extras = [f"{lbl} {kv[k]}" for lbl, k in (("daemon on", "CPU_DAEMON_MASK"), ("RT on", "CPU_RT_MASK")) if k in kv]
+    return out + (", " + ", ".join(extras) if extras else "")
+
+
 class _CpuGraph(QWidget):
     """Rolling CPU usage graph (area + line)."""
 
@@ -282,11 +301,12 @@ class PerformanceWindow(QDialog):
         self._lbl_uptime = stat_row(0, "Uptime")
         self._lbl_mode   = stat_row(1, "Mode")
         self._lbl_load   = stat_row(2, "Load avg")
-        self._lbl_temp1  = stat_row(3, "Temp 1")
-        self._lbl_temp2  = stat_row(4, "Temp 2")
-        self._lbl_temp3  = stat_row(5, "Temp 3")
-        self._lbl_fan    = stat_row(6, "Fan 1")
-        self._lbl_audio  = stat_row(7, "Audio")
+        self._lbl_temp_cpu  = stat_row(3, "CPU temp")
+        self._lbl_temp_acpi = stat_row(4, "ACPI temp")
+        self._lbl_fan    = stat_row(5, "Fan")
+        self._lbl_audio  = stat_row(6, "Audio")
+        self._lbl_unit   = stat_row(7, "Unit")
+        self._lbl_cpus   = stat_row(8, "CPUs")
 
         root.addWidget(stats_group)
 
@@ -452,11 +472,10 @@ class PerformanceWindow(QDialog):
         # Load
         self._lbl_load.setText(kv.get("LOAD", "—"))
 
-        # Temps (color coded)
-        for lbl, key in ((self._lbl_temp1, "TEMP1"),
-                         (self._lbl_temp2, "TEMP2"),
-                         (self._lbl_temp3, "TEMP3")):
-            raw = kv.get(key, "")
+        # Temps (color coded). TEMP_CPU / TEMP_ACPI / FAN_RPM are the display-ready fields (docs/api.md section 11); the
+        # raw TEMP<n>/FAN1_RPM only stand in for a daemon older than 3.0.2, where those are the only ones there are.
+        for lbl, raw in ((self._lbl_temp_cpu, kv.get("TEMP_CPU", kv.get("TEMP1", ""))),
+                         (self._lbl_temp_acpi, kv.get("TEMP_ACPI", ""))):
             if raw:
                 try:
                     temp = float(raw)
@@ -472,8 +491,12 @@ class PerformanceWindow(QDialog):
                 lbl.setText("—")
 
         # Fan
-        fan = kv.get("FAN1_RPM", "")
+        fan = kv.get("FAN_RPM", kv.get("FAN1_RPM", ""))
         self._lbl_fan.setText(f"{fan} RPM" if fan else "—")
+
+        # Unit identity + CPU topology (3.0.2+; absent on older daemons)
+        self._lbl_unit.setText(unit_summary(kv))
+        self._lbl_cpus.setText(cpu_summary(kv))
 
         # Audio
         sr       = kv.get("AUDIO_SR", "")

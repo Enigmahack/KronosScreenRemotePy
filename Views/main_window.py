@@ -56,9 +56,10 @@ from Rendering.control_surface import KronosControlSurface
 from Tools.mode_detector import CombiProgramEditDetector, ModeDetector, frame_black_fraction
 from Models.models import CalBiasDot, CalHistEntry, CalHistKind, CalMesh, HistEntry, PaletteEntry
 from Rendering.overlay_renderer import OverlayRenderer
+from Core.button_codes import btn
 from Core.stream_receiver import StreamReceiver
 from Core.sysex_service import SysExService
-from Core.device_family import DeviceFamily
+from Core.device_family import DeviceFamily, ModelInfo
 from Views.main_window_dialogs import MainWindowDialogMixin
 from Views.revealable_password_edit import RevealablePasswordEdit
 
@@ -210,19 +211,19 @@ _WINDOW_SIZE_CTRL_KEYS = {
 
 # "Bank <suffix>" rebindable-action names -> daemon command, matching the handlers
 # wired in _build_bank_menu (Internal I-A..I-G, User U-A..U-G, double-press U-AA..U-GG).
-def _bank_action_cmd(action: str) -> str | None:
+def _bank_action_cmd(action: str) -> str | tuple | None:
     if not action.startswith("Bank "):
         return None
     suffix = action[len("Bank "):]
     if suffix.startswith("I-") and len(suffix) == 3:
-        return f"BUTTON BANK_I{suffix[2]}"
+        return btn(f"BANK_I{suffix[2]}")
     if suffix.startswith("U-"):
         letters = suffix[2:]
         if len(letters) == 1:
-            return f"BUTTON BANK_U{letters}"
+            return btn(f"BANK_U{letters}")
         if len(letters) == 2 and letters[0] == letters[1]:
             l = letters[0]
-            return f"CHORD BANK_U{l} BANK_I{l}"
+            return (f"BANK_U{l}", f"BANK_I{l}")
     return None
 
 
@@ -242,29 +243,29 @@ _REPEATABLE_KEYS = frozenset(
 
 # Control-surface button name → (daemon command, mode index or 0)
 _CTRL_BTN_CMD: dict[str, tuple[str, int]] = {
-    "Setlist":  ("BUTTON SETLIST",  1),
-    "Combi":    ("BUTTON COMBI",    2),
-    "Program":  ("BUTTON PROGRAM",  3),
-    "Sequence": ("BUTTON SEQUENCE", 4),
-    "Sampling": ("BUTTON SAMPLING", 5),
-    "Global":   ("BUTTON GLOBAL",   6),
-    "Disk":     ("BUTTON DISK",     7),
-    "Help":     ("BUTTON HELP",     0),
-    "Compare":  ("BUTTON COMPARE",  0),
-    "EXIT":     ("BUTTON EXIT",     0),
-    "ENTER":    ("BUTTON ENTER",    0),
-    "NUM0":     ("BUTTON NUM0",     0),
-    "NUM1":     ("BUTTON NUM1",     0),
-    "NUM2":     ("BUTTON NUM2",     0),
-    "NUM3":     ("BUTTON NUM3",     0),
-    "NUM4":     ("BUTTON NUM4",     0),
-    "NUM5":     ("BUTTON NUM5",     0),
-    "NUM6":     ("BUTTON NUM6",     0),
-    "NUM7":     ("BUTTON NUM7",     0),
-    "NUM8":     ("BUTTON NUM8",     0),
-    "NUM9":     ("BUTTON NUM9",     0),
-    "NUM_DASH": ("BUTTON NUM_DASH", 0),
-    "NUM_DOT":  ("BUTTON NUM_DOT",  0),
+    "Setlist":  (btn("SETLIST"),  1),
+    "Combi":    (btn("COMBI"),    2),
+    "Program":  (btn("PROGRAM"),  3),
+    "Sequence": (btn("SEQUENCE"), 4),
+    "Sampling": (btn("SAMPLING"), 5),
+    "Global":   (btn("GLOBAL"),   6),
+    "Disk":     (btn("DISK"),     7),
+    "Help":     (btn("HELP"),     0),
+    "Compare":  (btn("COMPARE"),  0),
+    "EXIT":     (btn("EXIT"),     0),
+    "ENTER":    (btn("ENTER"),    0),
+    "NUM0":     (btn("NUM0"),     0),
+    "NUM1":     (btn("NUM1"),     0),
+    "NUM2":     (btn("NUM2"),     0),
+    "NUM3":     (btn("NUM3"),     0),
+    "NUM4":     (btn("NUM4"),     0),
+    "NUM5":     (btn("NUM5"),     0),
+    "NUM6":     (btn("NUM6"),     0),
+    "NUM7":     (btn("NUM7"),     0),
+    "NUM8":     (btn("NUM8"),     0),
+    "NUM9":     (btn("NUM9"),     0),
+    "NUM_DASH": (btn("NUM_DASH"), 0),
+    "NUM_DOT":  (btn("NUM_DOT"),  0),
 
     # ── Nautilus front panel (Views/NautilusRightPanel.xaml's port — see
     # Rendering/control_surface.py's _NAUT_BUTTON_DEFS for the layout) ──────
@@ -278,25 +279,25 @@ _CTRL_BTN_CMD: dict[str, tuple[str, int]] = {
     # Kronos's radio-group buttons) — it's driven exclusively by the STATE
     # poll's MODE_LIT/PAGE_LIT fields via _apply_nautilus_lamps, matching
     # C#'s ApplyNautilusLamps.
-    "NAUT_MODE":  ("BUTTON COMBI",      2),
-    "NAUT_PAGE":  ("BUTTON PROGRAM",    3),
+    "NAUT_MODE":  (btn("COMBI"),      2),
+    "NAUT_PAGE":  (btn("PROGRAM"),    3),
     # A-F: momentary quick-access shortcuts sent directly, mode=0 — C#
     # explicitly skips SetPendingMode's bookkeeping for these (comment on
     # WireButtons's A-F block: "don't reflect/track a confirmed mode").
     # Wire tokens are the fixed NKS4 scan codes for these QA positions.
-    "NAUT_A":     ("BUTTON SEQUENCE",   0),
-    "NAUT_B":     ("BUTTON SAMPLING",   0),
-    "NAUT_C":     ("BUTTON GLOBAL",     0),
-    "NAUT_D":     ("BUTTON DISK",       0),
-    "NAUT_E":     ("BUTTON SETLIST",    0),
-    "NAUT_F":     ("BUTTON EXIT",       0),   # QA slot F = Write/Save shortcut
+    "NAUT_A":     (btn("SEQUENCE"),   0),
+    "NAUT_B":     (btn("SAMPLING"),   0),
+    "NAUT_C":     (btn("GLOBAL"),     0),
+    "NAUT_D":     (btn("DISK"),       0),
+    "NAUT_E":     (btn("SETLIST"),    0),
+    "NAUT_F":     (btn("EXIT"),       0),   # QA slot F = Write/Save shortcut
     # Exit/Enter, Data Inc/Dec — no lit version, direct sends. Exit=NUM1,
     # Enter=KARMA_ONOFF (confirmed NOT Octave -/+, despite reusing Kronos's
     # Exit/Enter button graphics as placeholder art).
-    "NAUT_EXIT":  ("BUTTON NUM1",       0),
-    "NAUT_ENTER": ("BUTTON KARMA_ONOFF", 0),
-    "NAUT_INC":   ("BUTTON HELP",       0),
-    "NAUT_DEC":   ("BUTTON COMPARE",    0),
+    "NAUT_EXIT":  (btn("NUM1"),       0),
+    "NAUT_ENTER": (btn("KARMA_ONOFF"), 0),
+    "NAUT_INC":   (btn("HELP"),       0),
+    "NAUT_DEC":   (btn("COMPARE"),    0),
 }
 
 
@@ -1632,6 +1633,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         # Nautilus has no display behind the panel to mirror to).
         self._is_nautilus  = False
         self._device_family = DeviceFamily.UNKNOWN
+        self._model_info = ModelInfo()
         self._perf_window  = None   # PerformanceWindow singleton (lazy)
         self._file_manager_win = None
         self._sysex_tool_win = None
@@ -1895,7 +1897,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             # since device family can change across a reconnect.
             lbl.mousePressEvent = lambda ev, a=action, na=nautilus_action, l=lbl, ko=kronos_only: (
                 None if ev.button() != Qt.MouseButton.LeftButton or (ko and self._is_nautilus)
-                else (self._ctrl_send(f"BUTTON {self._nautilus_token(a, na) if na else a}"),
+                else (self._ctrl_send(btn(self._nautilus_token(a, na) if na else a)),
                       l.setStyleSheet(f"color: {T.ACCENT}; padding: 0 3px;"),
                       QTimer.singleShot(180, lambda: l.setStyleSheet(
                           f"color: {T.TEXT_DIM}; padding: 0 3px;"))))
@@ -1916,7 +1918,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             lbl.setCursor(Qt.CursorShape.PointingHandCursor)
             lbl.mousePressEvent = lambda ev, a=action, na=nautilus_action, l=lbl, k=kind, sz=size: (
                 None if ev.button() != Qt.MouseButton.LeftButton
-                else (self._ctrl_send(f"BUTTON {self._nautilus_token(a, na) if na else a}"),
+                else (self._ctrl_send(btn(self._nautilus_token(a, na) if na else a)),
                       l.setPixmap(_paint_seq_icon(k, T.ACCENT, sz)),
                       QTimer.singleShot(180, lambda: l.setPixmap(_paint_seq_icon(k, T.TEXT_DIM, sz)))))
             return lbl
@@ -2127,15 +2129,15 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         internal_menu = menu.addMenu("&Internal (A-G)")
         for letter in letters:
             a = internal_menu.addAction(letter)
-            a.triggered.connect(lambda checked, l=letter: self._ctrl_send_bank(f"BUTTON BANK_I{l}"))
+            a.triggered.connect(lambda checked, l=letter: self._ctrl_send_bank(btn(f"BANK_I{l}")))
         user_menu = menu.addMenu("&User (A-G)")
         for letter in letters:
             a = user_menu.addAction(letter)
-            a.triggered.connect(lambda checked, l=letter: self._ctrl_send_bank(f"BUTTON BANK_U{l}"))
+            a.triggered.connect(lambda checked, l=letter: self._ctrl_send_bank(btn(f"BANK_U{l}")))
         uuser_menu = menu.addMenu("Us&er (AA–GG)")
         for letter in letters:
             a = uuser_menu.addAction(f"{letter}{letter}")
-            a.triggered.connect(lambda checked, l=letter: self._ctrl_send_bank(f"CHORD BANK_U{l} BANK_I{l}"))
+            a.triggered.connect(lambda checked, l=letter: self._ctrl_send_bank((f"BANK_U{l}", f"BANK_I{l}")))
 
     # ── Action wiring ──────────────────────────────────────────────────────────
 
@@ -2217,14 +2219,14 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         # Mode buttons
         for i, (act, cmd) in enumerate(zip(self._act_modes, _MODE_CMDS[1:]), 1):
             act.triggered.connect(lambda checked, c=cmd, m=i:
-                                  (self._ctrl_send(f"BUTTON {c}"), self._set_pending_mode(m)))
+                                  (self._ctrl_send(btn(c)), self._set_pending_mode(m)))
         for act in self._act_naut_modes:
             m = act.data()
             if m:
                 act.triggered.connect(lambda checked, c=_MODE_CMDS[m], m=m:
-                                      (self._ctrl_send(f"BUTTON {c}"), self._set_pending_mode(m)))
+                                      (self._ctrl_send(btn(c)), self._set_pending_mode(m)))
             else:   # F: Save — front-panel EXIT on Nautilus
-                act.triggered.connect(lambda checked: self._ctrl_send("BUTTON EXIT"))
+                act.triggered.connect(lambda checked: self._ctrl_send(btn("EXIT")))
 
         self._act_settings_dlg.triggered.connect(self._open_settings)
         self._act_show_help.triggered.connect(self._toggle_help)
@@ -2748,12 +2750,10 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             # the stream_fmt-derived _is_nautilus from _apply_new_receiver
             # already stands, so there's nothing to correct.
             return
-        kv = {}
-        for part in model_resp.split():
-            if "=" in part:
-                k, _, v = part.partition("=")
-                kv[k] = v
-        self._device_family = DeviceFamily.parse(kv.get("FAMILY"))
+        info = ModelInfo.parse(model_resp)
+        self._model_info = info
+        kv = {"FAMILY": info.family_raw}
+        self._device_family = info.family
         if self._device_family != DeviceFamily.UNKNOWN:
             resolved_nautilus = self._device_family == DeviceFamily.NAUTILUS
             if resolved_nautilus != self._is_nautilus:
@@ -3179,6 +3179,10 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         if self._host:
             self._ctrl.send(self._host, self._ctrl_port, cmd)
 
+    def _ctrl_send_chord(self, names, hold_ms: int = 0):
+        if self._host:
+            self._ctrl.send_chord(self._host, self._ctrl_port, list(names), hold_ms)
+
     def _send_numpad_key(self, name: str, qt_key: int, pressed: bool):
         """Numpad digit/operator dispatch — see _NUMPAD_LINUX_MAP's docstring.
         On Kronos, the front panel always intercepts these first regardless
@@ -3194,7 +3198,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
                 self._ctrl_send(f"KEY {code} {1 if pressed else 0}")
             return
         if pressed:
-            self._ctrl_send(f"BUTTON {name}")
+            self._ctrl_send(btn(name))
             self._ctrl_surface.press_button(name)
         else:
             self._ctrl_surface.release_button(name)
@@ -3252,7 +3256,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
     # ── Left panel (value slider) ─────────────────────────────────────────────
 
     def _on_left_panel_button(self, name: str):
-        self._ctrl_send(f"BUTTON {name}")
+        self._ctrl_send(btn(name))
 
     def _on_vslider_changed(self, value: int):
         self._ctrl_send(f"VSLIDER {value}")
@@ -3348,7 +3352,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
 
         # Enter → BUTTON ENTER (main-keyboard Enter, not numpad)
         if key in (Qt.Key_Return, Qt.Key_Enter) and not (mods & Qt.KeypadModifier):
-            self._ctrl_send("BUTTON ENTER")
+            self._ctrl_send(btn("ENTER"))
             return
 
         # ~ (tilde/backtick) — show/hide the menu bar while fullscreen. Hardcoded,
@@ -3388,7 +3392,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         # Mode select keybinds
         for i in range(1, 8):
             if self._matches_keybind(event, f"Mode {_MODE_NAMES[i]}"):
-                self._ctrl_send(f"BUTTON {_MODE_CMDS[i]}")
+                self._ctrl_send(btn(_MODE_CMDS[i]))
                 self._set_pending_mode(i)
                 return
 
@@ -3420,10 +3424,10 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
                "Seq Save":    self._nautilus_token("SEQ_REC", "EXIT")}
         for action, token in seq.items():
             if self._matches_keybind(event, action):
-                self._ctrl_send(f"BUTTON {token}")
+                self._ctrl_send(btn(token))
                 return
         if self._matches_keybind(event, "Tap Tempo"):
-            self._ctrl_send(f"BUTTON {self._nautilus_token('TAP_TEMPO', 'NUM9')}")
+            self._ctrl_send(btn(self._nautilus_token('TAP_TEMPO', 'NUM9')))
             self._flash_tap_tempo()
             return
 
@@ -3607,7 +3611,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         if not self._is_nautilus:
             self._ctrl_surface.press_button("EXIT")
             QTimer.singleShot(_BTN_DEPRESS_MS, lambda: self._ctrl_surface.release_button("EXIT"))
-        self._ctrl_send("BUTTON EXIT")
+        self._ctrl_send(btn("EXIT"))
 
     def _toggle_hide_data_input(self, checked: bool):
         if self._layout_preset != "Full":
@@ -4011,9 +4015,8 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         if result != QMessageBox.StandardButton.Yes:
             return
         self._set_kbd_capture()
-        self._ctrl_send("BUTTON PROGRAM")
-        QTimer.singleShot(500, lambda: self._ctrl_send(
-            "CHORD 250 MIX_KNOBS RESET ENTER NUM5"))
+        self._ctrl_send(btn("PROGRAM"))
+        QTimer.singleShot(500, lambda: self._ctrl_send_chord(["MIX_KNOBS", "RESET", "ENTER", "NUM5"], 250))
 
     def _save_screenshot(self):
         if not self._frame_w._frame_pixmap:
@@ -4239,7 +4242,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         dlg = CommandPalette(entries, self)
         dlg.show()
 
-    def _ctrl_send_bank(self, cmd: str):
+    def _ctrl_send_bank(self, cmd):
         """Bank Select sends Kronos front-panel scan codes with no confirmed
         Nautilus equivalent (only ~3 of 28 tokens known) — disabled rather
         than guessed, matching C#'s BuildCommandRegistry bank-command wrapper
@@ -4249,7 +4252,10 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         if self._is_nautilus:
             logging.debug("[cmd] '%s' disabled on Nautilus - no confirmed wire token yet", cmd)
             return
-        self._ctrl_send(cmd)
+        if isinstance(cmd, tuple):
+            self._ctrl_send_chord(cmd)
+        else:
+            self._ctrl_send(cmd)
 
     def _run_action(self, action: str):
         bank_cmd = _bank_action_cmd(action)
@@ -4258,7 +4264,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             return
         cmds: dict = {
             f"Mode {_MODE_NAMES[i]}": (
-                lambda c=_MODE_CMDS[i], m=i: (self._ctrl_send(f"BUTTON {c}"), self._set_pending_mode(m))
+                lambda c=_MODE_CMDS[i], m=i: (self._ctrl_send(btn(c)), self._set_pending_mode(m))
             )
             for i in range(1, 8)
         }
@@ -4277,14 +4283,14 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             # All six remap to Nautilus's own scan codes — see keyPressEvent's
             # matching seq dict for the Record/Start/Save source (C#'s
             # SeqTransportViewModel).
-            "Seq Locate":  lambda: self._ctrl_send(f"BUTTON {self._nautilus_token('SEQ_LOCATE', 'MS1')}"),
-            "Seq Rewind":  lambda: self._ctrl_send(f"BUTTON {self._nautilus_token('SEQ_REW', 'MP7')}"),
-            "Seq Forward": lambda: self._ctrl_send(f"BUTTON {self._nautilus_token('SEQ_FF', 'MP8')}"),
-            "Seq Pause":   lambda: self._ctrl_send(f"BUTTON {self._nautilus_token('SEQ_PAUSE', 'MS3')}"),
-            "Seq Record":  lambda: self._ctrl_send(f"BUTTON {self._nautilus_token('SEQ_REC', 'MS2')}"),
-            "Seq Start":   lambda: self._ctrl_send(f"BUTTON {self._nautilus_token('SEQ_START', 'MP6')}"),
-            "Seq Save":    lambda: self._ctrl_send(f"BUTTON {self._nautilus_token('SEQ_REC', 'EXIT')}"),
-            "Tap Tempo":   lambda: (self._ctrl_send(f"BUTTON {self._nautilus_token('TAP_TEMPO', 'NUM9')}"),
+            "Seq Locate":  lambda: self._ctrl_send(btn(self._nautilus_token('SEQ_LOCATE', 'MS1'))),
+            "Seq Rewind":  lambda: self._ctrl_send(btn(self._nautilus_token('SEQ_REW', 'MP7'))),
+            "Seq Forward": lambda: self._ctrl_send(btn(self._nautilus_token('SEQ_FF', 'MP8'))),
+            "Seq Pause":   lambda: self._ctrl_send(btn(self._nautilus_token('SEQ_PAUSE', 'MS3'))),
+            "Seq Record":  lambda: self._ctrl_send(btn(self._nautilus_token('SEQ_REC', 'MS2'))),
+            "Seq Start":   lambda: self._ctrl_send(btn(self._nautilus_token('SEQ_START', 'MP6'))),
+            "Seq Save":    lambda: self._ctrl_send(btn(self._nautilus_token('SEQ_REC', 'EXIT'))),
+            "Tap Tempo":   lambda: (self._ctrl_send(btn(self._nautilus_token('TAP_TEMPO', 'NUM9'))),
                                      self._flash_tap_tempo()),
         })
         fn = cmds.get(action)
@@ -4533,7 +4539,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             a.setEnabled(not self._is_nautilus)   # Kronos-only, as C#'s CTX_Mode_*
             a.triggered.connect(
                 lambda checked, c=_MODE_CMDS[i], m=i:
-                    (self._ctrl_send(f"BUTTON {c}"), self._set_pending_mode(m)))
+                    (self._ctrl_send(btn(c)), self._set_pending_mode(m)))
         menu.exec(self._mode_label.mapToGlobal(local_pos))
 
     # ── Connection state ───────────────────────────────────────────────────────

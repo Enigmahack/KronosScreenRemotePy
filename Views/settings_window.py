@@ -782,7 +782,7 @@ class SettingsWindow(QDialog):
         # Shown only while debug logging is ticked (C# SettingsWindow.OnDebugLoggingChanged).
         self._btn_button_injector = QPushButton("Button Injector…")
         self._btn_button_injector.setToolTip(
-            "Send any daemon-recognized front-panel BUTTON by name and watch what happens on "
+            "Send any front-panel button by name (sent as BTN <code>) and watch what happens on "
             "the mirrored screen - for mapping Nautilus's relabeled buttons.")
         self._btn_button_injector.setVisible(False)
         self._btn_button_injector.setEnabled(self._on_button_injector is not None)

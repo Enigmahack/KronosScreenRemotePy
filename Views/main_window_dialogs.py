@@ -92,21 +92,22 @@ class MainWindowDialogMixin:
         threading.Thread(target=fetch, daemon=True, name="ModelQuery").start()
 
     def _show_device_info(self, properties: dict, model_resp: Optional[str]):
-        kv = {}
-        if model_resp:
-            for part in model_resp.split():
-                if "=" in part:
-                    k, _, v = part.partition("=")
-                    kv[k] = v
-        family = kv.get("FAMILY", "unknown")
-        model  = kv.get("MODEL", "")
-        if kv:
+        from Core.device_family import ModelInfo
+        info = ModelInfo.parse(model_resp)
+        family = info.family_raw or "unknown"
+        model = info.model
+        if model_resp and (info.family_raw or info.model):
+            def n(v) -> str:
+                return "?" if v is None else str(v)
             properties.update({
                 "Family": family,
                 "Model": model,
-                "Framebuffer BPP": kv.get("FB_BPP", ""),
-                "CPUs / Cores / Threads":
-                    f"{kv.get('CPUS','?')} / {kv.get('CORES','?')} / {kv.get('THREADS','?')}",
+                "Board": info.board or "unknown",
+                "Panel Hardware Version": n(info.panel_hwver),
+                "Framebuffer BPP": n(info.fb_bpp),
+                "CPUs / Cores / Threads": f"{n(info.cpus)} / {n(info.cores)} / {n(info.threads)}",
+                "Daemon Stream": (f"{info.stream_fmt} {info.stream_geom[0]}x{info.stream_geom[1]}"
+                                  if info.stream_fmt and info.stream_geom else "unknown"),
             })
         else:
             properties["Model Query"] = "No response from daemon (older than 3.0.2?)"

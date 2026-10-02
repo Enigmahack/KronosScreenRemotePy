@@ -40,6 +40,8 @@ import threading
 import time
 from typing import Callable, List, Optional
 
+from Core.button_codes import chord_commands
+
 log = logging.getLogger(__name__)
 
 CTRL_PORT = 7374
@@ -60,6 +62,9 @@ _SEND_TIMEOUT_S = 10.0
 
 # Sentinel for "flush the pending TOUCH_MOVE"
 _FLUSH_MOVE = object()
+
+# Queued as (_SLEEP, seconds): a pause between two commands that must not be reordered around it (a chord's hold).
+_SLEEP = object()
 
 # Marker for a queued command that must NOT establish a connection — see
 # send_existing_only. Queued as (_ONLY_IF_CONNECTED, cmd).
@@ -182,6 +187,27 @@ class CtrlClient:
             if pm is not None:
                 self._queue.put(pm)
             self._queue.put(cmd)
+
+    def send_chord(self, host: str, port: int, names: List[str], hold_ms: int = 0) -> None:
+        """BTN_DOWN each button in order, hold, BTN_UP in reverse (docs/api.md BTN / BTN_DOWN / BTN_UP). The hold is a
+        pause in this client's own send queue, so the GUI thread never blocks and the daemon is never stalled the way
+        the deprecated CHORD's server-side sleep stalled it. 5 s matches CHORD's own cap and the daemon's 15 s
+        auto-release leaves ample margin."""
+        cmds = chord_commands(names)
+        half = len(names)
+        hold = max(0, min(5000, int(hold_ms)))
+        self._host = host
+        self._port = port
+        with self._pending_move_lock:
+            pm, self._pending_move = self._pending_move, None
+        if pm is not None:
+            self._queue.put(pm)
+        for c in cmds[:half]:
+            self._queue.put(c)
+        if hold:
+            self._queue.put((_SLEEP, hold / 1000.0))
+        for c in cmds[half:]:
+            self._queue.put(c)
 
     def send_existing_only(self, host: str, port: int, cmd: str) -> bool:
         """Queue `cmd` to be sent only if a persistent session is established.
@@ -341,6 +367,8 @@ class CtrlClient:
                 if cmd is None:
                     continue
                 self._send_one(cmd)
+            elif isinstance(item, tuple) and item[0] is _SLEEP:
+                time.sleep(item[1])
             elif isinstance(item, tuple) and item[0] is _ONLY_IF_CONNECTED:
                 self._send_one(item[1], allow_connect=False)
             else:
