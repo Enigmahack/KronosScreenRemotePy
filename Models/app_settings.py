@@ -3,7 +3,7 @@ Application settings — mirrors AppSettings.cs.
 """
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 from Models.models import Keybind
 
 
@@ -29,7 +29,7 @@ class MacroDef:
     description: str = ""
     trigger_key: int = 0
     trigger_mods: int = 0
-    step_delay_ms: int = 100
+    step_delay_ms: int = 50   # matches C#'s MacroDefinition.StepDelayMs default
     steps: List[str] = field(default_factory=list)
 
     @property
@@ -130,6 +130,18 @@ class AppSettings:
     zoom_window_size:   float = 1.0
     scaling_quality:    str   = "HighQuality"   # "Sharp" | "Smooth" | "HighQuality"
 
+    # Window size/position — mirrors C#'s AppSettings.DefaultWindowSize
+    # (DefaultWindowSizeMode: "LastUsed" | "Small" | "Medium" | "Large" | "Maximized")
+    # applied at launch instead of the saved geometry below. window_left/top/width/
+    # height/maximized are only meaningful (and only restored) when the mode is
+    # "LastUsed" — mirrors MainWindow.Input.cs's OnLoaded restore block.
+    default_window_size: str   = "LastUsed"
+    window_left:         int   = -1
+    window_top:          int   = -1
+    window_width:        int   = -1
+    window_height:       int   = -1
+    window_maximized:    bool  = False
+
     # Image adjustments (applied to the streamed frame) — mirrors AppSettings.cs
     image_brightness: int   = 0     # -100..100  (0 = none)
     image_contrast:   int   = 0     # -100..100  (0 = none)
@@ -148,6 +160,46 @@ class AppSettings:
 
     # Always on top
     always_on_top: bool = False
+
+    # Login last used successfully for each recent host: host -> {"username", "password"}.
+    # Kept in step with recent_hosts (pruned and cleared with it); plain text like ftp_password.
+    host_credentials: Dict[str, Dict[str, str]] = field(default_factory=dict)
+
+    # Geometry for every window other than the main one, keyed by class name:
+    # {"left", "top", "width", "height", "maximized"} (C# WindowPlacements).
+    window_placements: Dict[str, Dict[str, float]] = field(default_factory=dict)
+
+    # Librarian (Settings > Librarian)
+    # Full Pull of every bank as soon as the Librarian opens — pull only, never writes.
+    librarian_full_sync_on_launch: bool = False
+    # Treat the Local Library as the source of truth: skip the conflict pre-scan on push.
+    # Does NOT bypass the staleness gate or the missing-reference / bank-type REFUSE gates.
+    librarian_force_destructive_write: bool = False
+    # Which direction the Sync button's plain click runs: "TwoWay" | "PullOnly" | "PushOnly"
+    librarian_sync_mode: str = "TwoWay"
+
+    # MIDI / SysEx (Settings > MIDI/SysEx)
+    proactive_sysex_polling: bool = False
+    sysex_poll_interval_sec: int  = 60
+    sysex_poll_on_changes:   bool = True
+    midi_output_channel:     int  = 1
+    value_slider_cc:         int  = 18
+    pull_names_on_change:    bool = False
+
+    # Audio device ids ("" / None = system default)
+    vu_device_id: Optional[str] = None
+    sample_editor_output_device_id: str = ""
+
+    # File Manager's local pane starting folder ("" = Desktop)
+    file_manager_default_local_folder: str = ""
+
+    # Sample Editor
+    sample_undo_byte_cap_mb: int = 256
+    sample_workspace_root:   str = ""
+    sample_recent_files: List[str] = field(default_factory=list)
+    sample_zone_create_position: str = "Right"          # "Right" | "Left"
+    sample_zone_create_range:    int = 12               # 1..127
+    sample_zone_original_key_position: str = "Bottom"   # "Bottom" | "Center" | "Top"
 
     # Recent connections (most-recent-first, capped at 10)
     recent_hosts: List[str] = field(default_factory=list)
@@ -214,6 +266,8 @@ REBINDABLE_DEFS: list[tuple[str, str, str]] = [
     ("Calibrate",     "Toggle Calibration Mode", "C"),
     ("HideDataInput",  "Hide/Show Data Input",    ""),
     ("HideValueInput", "Hide/Show Value Input",   ""),
+    ("Sample Editor",  "Sample Editor",           ""),
+    ("Librarian",      "Librarian",               ""),
     ("Mode Setlist",  "Mode: Setlist",           "F2"),
     ("Mode Combi",    "Mode: Combi",             "F3"),
     ("Mode Program",  "Mode: Program",           "F4"),

@@ -7,12 +7,16 @@ Select + Program Change identity — all zero extra SysEx traffic), persists a
 program/combi name cache + a per-bank "already dumped" ledger, and exposes the
 user-triggered bulk operations (Sync Names, Set List dump / sweep).
 
-Simplification vs the C# version: this port skips the continuous func-0x33
-polling loop and the PullNamesOnChange per-change debounce — the live-stream
-decode (mode-change 0x4E, Bank-Select+PC) already gives a flash-free identity
-the instant it changes, which covers the common case. `refresh_now()` does a
-single on-demand func 0x32 + 0x74 query for callers that want to force a
-resync (e.g. right after connecting, before any stream event has arrived).
+Live-stream decode (mode-change 0x4E, Bank-Select+PC) gives a flash-free identity the
+instant it changes. On top of that, as in C#, a perf-metadata loop re-queries the current
+performance (func 0x32 -> 0x33) whenever it is woken — by `refresh_now()` / a bank-storage push /
+(optionally) an undecodable Program Change, all coalesced behind a 300 ms debounce — and, when
+"Proactive SysEx Polling" is on, on a fixed interval regardless of MIDI activity. The optional
+per-change name pull (`pull_names_on_change`) fetches just the current object's name (func 0x72),
+debounced so a wheel scroll pulls only where it lands.
+
+Not ported: USB-direct transport (no daemon link), and the storage-change counters
+(`StorageChangeCountFor`) the C# Librarian's post-write step 3b reads — tracked in CLAUDE.md.
 """
 from __future__ import annotations
 
@@ -24,11 +28,22 @@ from PySide6.QtCore import QObject, Signal
 
 import Core.kronos_sysex as ksx
 import Data.librarian_sysex as lsx
+import Data.nautilus_sysex as nsx
 import Models.storage
-from Data.librarian_sysex import ObjectDump, parse_bank_digest, parse_object_dump
+from Data.librarian_sysex import ObjectDump
 from Core.midi_bridge import MidiBridgeClient
 from Tools.setlist_data import SetListData, SetListSyncResult, MAX_COUNT
 from Tools.sysex_dump_collector import SysExDumpCollector
+
+
+# Coalescing window for the perf-metadata refresh after a Program/Bank change: a Bank Select is
+# CC0 + CC32 + PC in a burst; the debounce collapses them into one query.
+PERF_REFRESH_DEBOUNCE_S = 0.300
+# Settle window for the optional per-change name pull: a wheel/INC scroll fires many program
+# changes; only the one it lands on is pulled.
+NAME_PULL_DEBOUNCE_S = 0.150
+# Query timeout for the perf-id request (C# PerfMetadataLoop uses 1200 ms).
+PERF_QUERY_TIMEOUT_S = 1.2
 
 
 class DumpGate:
@@ -117,6 +132,7 @@ class SysExService(QObject):
     rx_activity = Signal()              # a MIDI message was received
     tx_activity = Signal()              # a MIDI message was sent
     link_changed = Signal(bool)         # bridge TCP connection state
+    value_slider_changed = Signal(int)  # incoming CC# == value_slider_cc (0-127)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -124,6 +140,12 @@ class SysExService(QObject):
         self._dump: Optional[SysExDumpCollector] = None
         self._cache_key = ""
         self._dump_gate = DumpGate()
+        # Kronos (4-byte Exclusive Header) framing until told otherwise — see
+        # set_device_family(). Reset to this default on every start()/stop(),
+        # matching C#'s SysExService.SetDeviceFamily/Start/Stop: a reconnect
+        # may be to a genuinely different instrument, so a stale family guess
+        # is never carried over.
+        self._codec = lsx
 
         self._state_mode = 0
         self._bank_msb = 0
@@ -140,6 +162,31 @@ class SysExService(QObject):
         self._performance_display = ""
         self._is_available = False
 
+        # Settings (apply_midi_settings / properties). Defaults match AppSettings.
+        self.value_slider_cc = 18
+        self.pull_names_on_change = False
+        self._proactive_poll = False
+        self._poll_interval_s = 60
+        self._poll_on_changes = True
+        # Perf loop: woken by _wake; _loop_gen invalidates a loop from a previous start();
+        # epochs implement non-throwing debounces (a later call supersedes an earlier one).
+        self._wake = threading.Event()
+        self._loop_gen = 0
+        self._refresh_epoch = 0
+        self._name_pull_epoch = 0
+        self._epoch_lock = threading.Lock()
+
+    # ── Settings ─────────────────────────────────────────────────────────────
+
+    def apply_midi_settings(self, proactive_poll: bool, poll_interval_s: int, poll_on_changes: bool) -> None:
+        """Port of ApplyMidiSettings (the Monitor-MIDI on/off half lives in the caller, which
+        starts/stops this service). Wakes the loop if proactive polling was just enabled."""
+        self._proactive_poll = bool(proactive_poll)
+        self._poll_interval_s = max(1, int(poll_interval_s))
+        self._poll_on_changes = bool(poll_on_changes)
+        if self._proactive_poll:
+            self._wake.set()
+
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
     def start(self, host: str, port: int = 9875):
@@ -155,24 +202,35 @@ class SysExService(QObject):
 
         with self._names_lock:
             self._stream_names = {
-                (n.type, n.bank, n.number): n.name for n in storage.load_names(host)
+                (n.type, n.bank, n.number): n.name for n in Models.storage.load_names(host)
             }
-            self._dumped_banks = storage.load_dumped_banks(host)
+            self._dumped_banks = Models.storage.load_dumped_banks(host)
 
         self._bridge = MidiBridgeClient(host, port)
         self._bridge.add_raw_listener(self._on_raw_message)
         self._bridge.connection_changed.connect(self._on_connection_changed)
         self._bridge.message_sent.connect(lambda _n: self.tx_activity.emit())
         self._bridge.start()
-        self._dump = SysExDumpCollector(self._bridge)
+        self._dump = SysExDumpCollector(self._bridge, self._codec)
 
         threading.Thread(target=self._probe, daemon=True, name="SysExProbe").start()
+        self._loop_gen += 1
+        self._wake.clear()
+        threading.Thread(target=self._perf_loop, args=(self._loop_gen,), daemon=True,
+                         name="SysExPerfLoop").start()
 
     def stop(self):
         # New transport generation: any dump/write still in flight against the
         # outgoing bridge is now orphaned — its later end() must be a no-op so it
         # can't un-pause the next connection's refresh_now() (see DumpGate).
         self._dump_gate.new_generation()
+        # Retire the perf loop and supersede any debounced refresh / name pull from the outgoing
+        # connection (an already-waiting timer then no-ops when it fires).
+        self._loop_gen += 1
+        with self._epoch_lock:
+            self._refresh_epoch += 1
+            self._name_pull_epoch += 1
+        self._wake.set()
         if self._persist_timer is not None:
             self._persist_timer.cancel()
             self._persist_timer = None
@@ -183,8 +241,39 @@ class SysExService(QObject):
             self._bridge.dispose()
             self._bridge = None
         self._dump = None
+        # A reconnect may be to a genuinely different instrument (host change,
+        # or the same host now running a different family) — don't carry over
+        # a stale family guess. set_device_family() re-asserts the real one
+        # once the daemon's MODEL reply is back.
+        self._codec = lsx
         self._is_available = False
         self._performance_display = ""
+
+    def set_device_family(self, is_nautilus: bool) -> None:
+        """Selects Kronos (4-byte Exclusive Header) vs Nautilus (6-byte) SysEx
+        wire framing for the hardware round-trip-verified primitive slice this
+        service is codec-aware for (object dump request/write/parse, store
+        bank, dump bank, bank digest request/parse, reply parse — see
+        Data/nautilus_sysex.py's own docstring for the exact list). Port of
+        C#'s SysExService.SetDeviceFamily; called from
+        Views/main_window.py's _apply_device_family_ui() — the same single
+        hook every other device-family-gated UI branch runs through — with
+        the same `_is_nautilus` bool already used everywhere else there,
+        rather than importing Core.device_family's enum into this module for
+        one caller.
+
+        A no-op if the family hasn't actually changed (the common case: this
+        gets called on every connect, most of which just reconfirm what's
+        already set). Live-stream mode/performance/name decode (
+        _on_raw_message) stays Kronos-only regardless of this setting — a
+        real, documented gap on Nautilus matching C#'s own scoping decision
+        (see that method's own comment)."""
+        codec = nsx if is_nautilus else lsx
+        if codec is self._codec:
+            return
+        self._codec = codec
+        if self._bridge is not None:
+            self._dump = SysExDumpCollector(self._bridge, self._codec)
 
     @property
     def bridge(self) -> Optional[MidiBridgeClient]:
@@ -249,16 +338,41 @@ class SysExService(QObject):
             self._is_available = False
             self.available_changed.emit(False)
 
-    # ── Manual refresh (func 0x32 + 0x74) ───────────────────────────────────
+    # ── Perf-metadata refresh (func 0x32 -> 0x33) ───────────────────────────
 
     def refresh_now(self):
-        threading.Thread(target=self._refresh_worker, daemon=True, name="SysExRefresh").start()
+        """Ask for a fresh performance identity: debounced (300 ms) so a burst collapses into one
+        query, then handled by the perf loop. Port of RefreshNow / DeferredRefreshAsync."""
+        with self._epoch_lock:
+            self._refresh_epoch += 1
+            epoch = self._refresh_epoch
 
-    def _refresh_worker(self):
-        # Never inject a probe query into a bulk dump's 0x73/0x24 reply stream.
-        if self._dump_gate.active:
-            return
-        resp = self._query(ksx.perf_id_request_hex(), 0x33, timeout_s=3.0)
+        def fire():
+            if epoch == self._refresh_epoch:     # a later call superseded this one
+                self._wake.set()
+
+        t = threading.Timer(PERF_REFRESH_DEBOUNCE_S, fire)
+        t.daemon = True
+        t.start()
+
+    def _perf_loop(self, gen: int) -> None:
+        """Port of PerfMetadataLoop. Parks until the capability probe says SysEx works, then runs
+        one query per wake-up; between queries it sleeps for the proactive interval, or (proactive
+        off) indefinitely until refresh_now()/apply_midi_settings() wakes it."""
+        while gen == self._loop_gen and not self._is_available:
+            time.sleep(0.5)
+        while gen == self._loop_gen:
+            self._wake.clear()          # a wake arriving DURING the query re-triggers, not lost
+            if self._is_available and not self._dump_gate.active:
+                try:
+                    self._refresh_once()
+                except Exception:       # a poll error must never kill the loop
+                    pass
+            timeout = self._poll_interval_s if self._proactive_poll else None
+            self._wake.wait(timeout)
+
+    def _refresh_once(self) -> None:
+        resp = self._query(ksx.perf_id_request_hex(), 0x33, timeout_s=PERF_QUERY_TIMEOUT_S)
         if resp is None:
             self._set_performance_display("")
             return
@@ -308,8 +422,9 @@ class SysExService(QObject):
                     was_dumped = (t, dig_bank) in self._dumped_banks
                     self._dumped_banks.discard((t, dig_bank))
                 if was_dumped:
-                    storage.save_dumped_banks(self._cache_key, self._snapshot_dumped())
+                    Models.storage.save_dumped_banks(self._cache_key, self._snapshot_dumped())
                 self._persist_names()
+            self.refresh_now()
             return
 
         # Object Dump (func 0x73): passively capture program/combi names.
@@ -349,10 +464,14 @@ class SysExService(QObject):
         # Control Change: Bank Select MSB/LSB feeds the next Program Change decode.
         if hi == 0xB0 and len(raw) >= 3:
             cc, val = raw[1] & 0x7F, raw[2] & 0x7F
+            # Bank Select (MSB/LSB) always takes priority — a misconfigured value_slider_cc must
+            # never shadow program-change follow.
             if cc == 0:
                 self._bank_msb, self._have_bank_context = val, True
             elif cc == 32:
                 self._bank_lsb, self._have_bank_context = val, True
+            elif cc == self.value_slider_cc:
+                self.value_slider_changed.emit(val)
             return
 
         # Program Change: resolve identity from Bank Select + PC, zero extra SysEx.
@@ -371,7 +490,36 @@ class SysExService(QObject):
                 with self._names_lock:
                     name = self._stream_names.get((bid.type, bid.obj_bank, bid.number))
                 self._set_stream_perf_display(bid, name)
+                # Optional per-change name pull: fetch just this object's name when we don't have it.
+                if self.pull_names_on_change and not (name or "").strip():
+                    self._schedule_name_pull(bid)
+                return
+            if self._poll_on_changes:
+                self.refresh_now()
             return
+
+    def _schedule_name_pull(self, bid: ksx.BankId) -> None:
+        with self._epoch_lock:
+            self._name_pull_epoch += 1
+            epoch = self._name_pull_epoch
+        t = threading.Timer(NAME_PULL_DEBOUNCE_S, self._name_pull_after_settle, args=(bid, epoch))
+        t.daemon = True
+        t.start()
+
+    def _name_pull_after_settle(self, bid: ksx.BankId, epoch: int) -> None:
+        if epoch != self._name_pull_epoch:          # a later call superseded this one
+            return
+        if self._dump_gate.active:                  # never inject into a bulk sweep's 0x73 stream
+            return
+        bridge, dump = self._bridge, self._dump
+        if bridge is None or dump is None or not bridge.is_connected:
+            return
+        with self._names_lock:                      # a passive dump may have filled it meanwhile
+            if (bid.type, bid.obj_bank, bid.number) in self._stream_names:
+                return
+        req = ksx.hex_to_bytes(dump.object_dump_request(ksx.name_object(bid.type), bid.obj_bank, bid.number))
+        if req is not None:
+            bridge.send_bytes(req)                  # the 0x73 reply is captured passively by _on_raw_message
 
     def _set_stream_perf_display(self, bid: ksx.BankId, name: Optional[str]):
         display = bid.display if not name else f"{bid.display} {name}"
@@ -384,7 +532,7 @@ class SysExService(QObject):
             snapshot = [
                 ksx.CachedName(t, b, n, name) for (t, b, n), name in self._stream_names.items()
             ]
-        storage.save_names(self._cache_key, snapshot)
+        Models.storage.save_names(self._cache_key, snapshot)
 
     def _schedule_persist(self, delay_s: float = 2.0):
         if self._persist_timer is not None:
@@ -439,7 +587,7 @@ class SysExService(QObject):
                 done_ok = False
 
                 if obj_bank < 0x40:
-                    req = ksx.dump_bank_request(name_obj, obj_bank)
+                    req = dump.dump_bank_request(name_obj, obj_bank)
                     msgs = dump.collect(req, name_obj, expected_count=None,
                                         idle_ms=600, no_response_ms=1200,
                                         stall_ms=3000, overall_ms=30000)
@@ -467,7 +615,7 @@ class SysExService(QObject):
         finally:
             self._dump_gate.end(gate_epoch)
             if ledger_dirty:
-                storage.save_dumped_banks(self._cache_key, self._snapshot_dumped())
+                Models.storage.save_dumped_banks(self._cache_key, self._snapshot_dumped())
             self._persist_names()
         return self.current_name_count()
 
@@ -519,7 +667,7 @@ class SysExService(QObject):
         return SetListSyncResult(found, empty, attempted, cancel_event.is_set())
 
     def _dump_one_set_list(self, dump: SysExDumpCollector, number: int) -> Optional[SetListData]:
-        req = ksx.object_dump_request(0x0D, 0, number)
+        req = dump.object_dump_request(0x0D, 0, number)
         msgs = dump.collect(req, 0x0D, expected_count=1, no_response_ms=10000)
         if not msgs:
             return None
@@ -543,14 +691,14 @@ class SysExService(QObject):
         dump = self._dump
         if dump is None or not self.can_dump:
             return None
-        req = ksx.object_dump_request(obj, bank, index)
+        req = dump.object_dump_request(obj, bank, index)
         msgs = dump.collect(req, obj, expected_count=1, no_response_ms=no_response_ms)
         return msgs[0] if msgs else None
 
     def dump_object_parsed(self, obj: int, bank: int, index: int,
                            **kw) -> Optional[ObjectDump]:
         raw = self.dump_object(obj, bank, index, **kw)
-        return parse_object_dump(raw) if raw else None
+        return self._codec.parse_object_dump(raw) if raw else None
 
     def _send_expect_reply(self, data: bytes, timeout_s: float) -> Optional[int]:
         """Send raw bytes, wait for the next func-0x24 Reply, return its code
@@ -559,10 +707,7 @@ class SysExService(QObject):
         bridge = self._bridge
 
         def match(m: bytes) -> Optional[int]:
-            if (len(m) >= 6 and m[0] == 0xF0 and m[1] == 0x42 and (m[2] & 0xF0) == 0x30
-                    and m[3] == 0x68 and m[4] == 0x24):
-                return m[5]
-            return None
+            return self._codec.parse_reply(m)
 
         result = _await_reply(bridge, lambda: bridge is not None and bridge.send_bytes(data),
                                match, timeout_s)
@@ -571,14 +716,14 @@ class SysExService(QObject):
     def write_object(self, op, timeout_s: float = 6.0) -> int:
         """Send a re-addressed func-0x73 Object Dump (volatile). Returns the
         Reply code (0 OK); -1 on timeout."""
-        msg = lsx.object_dump_write(op.obj, op.bank, op.index, op.version, op.body)
+        msg = self._codec.object_dump_write(op.obj, op.bank, op.index, op.version, op.body)
         code = self._send_expect_reply(msg, timeout_s)
         return -1 if code is None else code
 
     def store_bank(self, obj: int, bank: int, timeout_s: float = 20.0) -> int:
         """Commit a bank to non-volatile storage (func 0x76). Returns Reply code
         (0 OK); -1 on timeout. Longer timeout — flash commit can be slow."""
-        msg = lsx.store_bank_request(obj, bank)
+        msg = self._codec.store_bank_request(obj, bank)
         code = self._send_expect_reply(msg, timeout_s)
         return -1 if code is None else code
 
@@ -599,13 +744,13 @@ class SysExService(QObject):
         bridge = self._bridge
 
         def match(m: bytes) -> Optional[bytes]:
-            bd = parse_bank_digest(m)
+            bd = self._codec.parse_bank_digest(m)
             if bd is not None and bd.obj == obj and bd.bank == bank:
                 return bd.sha1
             return None
 
         result = _await_reply(
-            bridge, lambda: bridge is not None and bridge.send_bytes(lsx.bank_digest_request(obj, bank)),
+            bridge, lambda: bridge is not None and bridge.send_bytes(self._codec.bank_digest_request(obj, bank)),
             match, timeout_s)
         return None if result is _NO_REPLY else result
 
@@ -615,8 +760,8 @@ class SysExService(QObject):
         affected banks."""
         with open(path, "wb") as f:
             for op in ops:
-                f.write(lsx.object_dump_write(op.obj, op.bank, op.index,
-                                              op.version, op.body))
+                f.write(self._codec.object_dump_write(op.obj, op.bank, op.index,
+                                                       op.version, op.body))
 
     def backup_bank_to_syx(self, obj: int, bank: int, path: str,
                            slot_count: int = 128,

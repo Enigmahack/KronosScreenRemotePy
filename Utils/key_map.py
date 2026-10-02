@@ -44,8 +44,14 @@ def _init():
         Qt.Key_Left:   105, Qt.Key_Right: 106,
         Qt.Key_Home:   102, Qt.Key_End:   107,
         Qt.Key_PageUp: 104, Qt.Key_PageDown: 109,
-        # Modifiers
-        Qt.Key_Shift:   42,   # left shift; right handled via extended flag
+        # Modifiers — sends the Left keycode for either Left or Right physically
+        # pressed. Qt.Key_Shift/Control/Alt don't distinguish which side was
+        # pressed (unlike WPF's Key.LeftShift/RightShift etc., which C#'s
+        # KeyMap.cs maps to distinct codes 42/54, 29/97, 56/100) — telling them
+        # apart in Qt needs a native scan-code check, not implemented here.
+        # Low practical impact: Kronos text-field shift behavior is symmetric
+        # either way.
+        Qt.Key_Shift:   42,
         Qt.Key_Control: 29,
         Qt.Key_Alt:     56,
         Qt.Key_CapsLock: 58,
@@ -98,14 +104,3 @@ def to_linux_shifted(qt_key: int) -> Optional[Tuple[int, bool]]:
     """
     _init()
     return _SHIFTED.get(qt_key)
-
-
-# Keys that are numpad digits and should route to BUTTON NUM0..9 instead of KEY.
-# Also includes numpad Enter, numpad dot, numpad subtract.
-def is_numpad_button(qt_key: int) -> bool:
-    _init()
-    from PySide6.QtCore import Qt
-    return qt_key in (
-        Qt.Key_0, Qt.Key_1, Qt.Key_2, Qt.Key_3, Qt.Key_4,
-        Qt.Key_5, Qt.Key_6, Qt.Key_7, Qt.Key_8, Qt.Key_9,
-    )

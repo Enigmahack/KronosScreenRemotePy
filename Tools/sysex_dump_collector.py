@@ -11,6 +11,16 @@ thread. The timing constants (idle/no_response/stall/batch pacing) are copied
 verbatim from the Windows client — they were empirically tuned against real
 hardware and are load-bearing (a tighter batch pacing corrupts a request on the
 Kronos MIDI-in and pops a "MIDI Receiving Error" dialog on the unit).
+
+`codec` selects Kronos (4-byte Exclusive Header) vs Nautilus (6-byte) wire
+framing — port of C#'s IKorgSysExCodec pairing (SysExDumpCollector(transport,
+codec)). Python has no interface type, so a "codec" is just a module (or
+anything duck-typed the same way) exposing object_dump_request/
+dump_bank_request/parse_object_dump/parse_reply with matching signatures —
+Data.librarian_sysex (default, Kronos) and Data.nautilus_sysex are the two
+that exist. Defaulting the constructor arg to the Kronos module keeps every
+pre-existing caller (there were none passing a codec before device-family
+awareness existed) unchanged.
 """
 from __future__ import annotations
 
@@ -18,14 +28,24 @@ import threading
 import time
 from typing import Callable, List, Optional, Set, Tuple
 
-from Core.kronos_sysex import hex_to_bytes, object_dump_request
+import Data.librarian_sysex as _kronos_codec
+from Core.kronos_sysex import bytes_to_hex, hex_to_bytes
 from Core.midi_bridge import MidiBridgeClient
 
 
 class SysExDumpCollector:
-    def __init__(self, bridge: MidiBridgeClient):
+    def __init__(self, bridge: MidiBridgeClient, codec=_kronos_codec):
         self._bridge = bridge
+        self._codec = codec
         self._gate = threading.Lock()
+
+    def object_dump_request(self, obj: int, bank: int, index: int) -> str:
+        """Codec-aware 0x72 Object Dump Request, hex-string form (for collect())."""
+        return bytes_to_hex(self._codec.object_dump_request(obj, bank, index))
+
+    def dump_bank_request(self, obj: int, bank: int) -> str:
+        """Codec-aware 0x77 Dump Bank Request, hex-string form (for collect())."""
+        return bytes_to_hex(self._codec.dump_bank_request(obj, bank))
 
     def collect(self, request_hex: str, expect_obj: int, expected_count: Optional[int],
                 idle_ms: int = 600, no_response_ms: int = 4000,
@@ -39,16 +59,17 @@ class SysExDumpCollector:
             reject_code = [-1]
 
             def on_msg(m: bytes):
-                if (len(m) >= 6 and m[0] == 0xF0 and m[1] == 0x42 and (m[2] & 0xF0) == 0x30
-                        and m[3] == 0x68 and m[4] == 0x73 and m[5] == expect_obj):
+                dump0 = self._codec.parse_object_dump(m)
+                if dump0 is not None and dump0.obj == expect_obj:
                     with results_lock:
                         results.append(m)
                     now = time.monotonic()
                     last_match[0] = now
                     last_activity[0] = now
-                elif (len(m) >= 6 and m[0] == 0xF0 and m[1] == 0x42 and (m[2] & 0xF0) == 0x30
-                      and m[3] == 0x68 and m[4] == 0x24):
-                    reject_code[0] = m[5] & 0x7F  # Reply: 4 = "target object not found"
+                    return
+                rc = self._codec.parse_reply(m)
+                if rc is not None:
+                    reject_code[0] = rc  # 4 = "target object not found"
 
             def on_activity():
                 activity[0] = True
@@ -107,9 +128,9 @@ class SysExDumpCollector:
             last_reply = [0.0]
 
             def on_msg(m: bytes):
-                if (len(m) >= 9 and m[0] == 0xF0 and m[1] == 0x42 and (m[2] & 0xF0) == 0x30
-                        and m[3] == 0x68 and m[4] == 0x73 and m[5] == obj and m[6] == bank):
-                    idx = (m[7] << 7) | (m[8] & 0x7F)
+                dump0 = self._codec.parse_object_dump(m)
+                if dump0 is not None and dump0.obj == obj and dump0.bank == bank:
+                    idx = dump0.index
                     with replied_lock:
                         added = idx not in replied
                         replied.add(idx)
@@ -139,10 +160,10 @@ class SysExDumpCollector:
                         if cancel_event.is_set():
                             break
                         end = min(start + batch_size, len(missing))
-                        batch_hex = " ".join(
-                            object_dump_request(obj, bank, missing[j]) for j in range(start, end))
-                        batch_bytes = hex_to_bytes(batch_hex)
-                        if batch_bytes is not None:
+                        batch_bytes = b"".join(
+                            self._codec.object_dump_request(obj, bank, missing[j])
+                            for j in range(start, end))
+                        if batch_bytes:
                             self._bridge.send_bytes(batch_bytes)
 
                         last_reply[0] = 0.0

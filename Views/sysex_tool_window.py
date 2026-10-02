@@ -1,5 +1,5 @@
 """
-SysEx Tool window — port of Views/SysExToolWindow.xaml + .xaml.cs.
+SysEx / MIDI Monitor window — port of Views/SysExToolWindow.xaml + .xaml.cs.
 
 Layout (top to bottom, matching the XAML's DockPanel exactly):
   Filter bar, Column header (Time/Dir/Message), unified traffic list (fills),
@@ -15,7 +15,7 @@ import collections
 import datetime
 from typing import Deque, Dict, List, Optional, Tuple
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QHBoxLayout, QLabel,
@@ -64,8 +64,10 @@ def _style(bg: str, border: str, fg: str) -> str:
 
 
 class SysExToolWindow(QDialog):
+    closing = Signal(int)   # the selected OUT CH (1-16) when the window closes — persisted by the caller
+
     def __init__(self, host: str, bridge: Optional[MidiBridgeClient],
-                 sysex_service: Optional[SysExService], parent=None):
+                 sysex_service: Optional[SysExService], parent=None, initial_channel: int = 1):
         super().__init__(parent)
         self.setWindowTitle("SysEx / MIDI Monitor")
         self.resize(1600, 600)
@@ -188,6 +190,7 @@ class SysExToolWindow(QDialog):
         self._chan_combo.addItems([f"CH {i + 1}" for i in range(16)])
         self._chan_combo.setStyleSheet("font-family: Consolas; font-size: 11px;")
         self._chan_combo.currentIndexChanged.connect(lambda i: setattr(self, "_out_channel", i))
+        self._chan_combo.setCurrentIndex(max(0, min(15, int(initial_channel) - 1)))
         side.addWidget(self._chan_combo)
         side.addStretch(1)
         piano_row.addWidget(side_w)
@@ -347,7 +350,13 @@ class SysExToolWindow(QDialog):
         self._midi_count = 0
         self._update_counts()
 
+    @property
+    def selected_channel(self) -> int:
+        """OUT CH as 1-16 (C# SelectedChannel)."""
+        return self._chan_combo.currentIndex() + 1 if self._chan_combo.currentIndex() >= 0 else 1
+
     def closeEvent(self, ev):
+        self.closing.emit(self.selected_channel)
         self._flush_timer.stop()
         if self._bridge is not None:
             try:

@@ -12,16 +12,18 @@ from typing import List, Optional
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
+    QAbstractItemView, QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
     QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
-    QListWidget, QMessageBox, QPushButton, QScrollArea,
+    QListWidget, QMessageBox, QPushButton, QRadioButton, QScrollArea,
     QSlider, QSpinBox, QTabWidget, QTextEdit, QVBoxLayout, QWidget,
 )
 
 import Models.storage
 from Models.app_settings import AppSettings, MacroDef, RawKeyMap, get_rebindable
 from Models.models import Keybind
+import Utils.key_map as key_map
 import Utils.theme as T
+from Views.revealable_password_edit import RevealablePasswordEdit
 
 _DIM  = T.TEXT_DIM
 _HEAD = T.ACCENT
@@ -37,6 +39,19 @@ def _section(text: str) -> QLabel:
     return lbl
 
 
+_POLL_INTERVALS = (30, 45, 60, 120)
+
+
+def _parse_value_slider_cc(text: str) -> int:
+    """A valid MIDI controller (0-119), excluding 0 and 32 (Bank Select MSB/LSB, which drive
+    program-change follow). Falls back to the Kronos default (18) on unparseable/out-of-range input."""
+    try:
+        v = int(text.strip())
+    except ValueError:
+        return 18
+    return v if 0 <= v <= 119 and v not in (0, 32) else 18
+
+
 def _hint(text: str) -> QLabel:
     lbl = QLabel(text)
     lbl.setStyleSheet(f"color: {_DIM}; font-size: 10px;")
@@ -44,9 +59,30 @@ def _hint(text: str) -> QLabel:
     return lbl
 
 
+class _ResettableSlider(QSlider):
+    """QSlider that resets to `default_value` on double-click.
+
+    Port of SettingsWindow.xaml.cs's OnSliderPreviewMouseLeftButtonDown,
+    which is wired once via an implicit Slider style so every slider in the
+    C# window gets this for free. Qt has no equivalent implicit-style hook,
+    so this is a drop-in QSlider subclass instead — same effect, one call
+    site per slider (`.default_value = ...`) rather than a per-slider
+    handler.
+    """
+
+    default_value: Optional[int] = None
+
+    def mouseDoubleClickEvent(self, event):
+        if self.default_value is not None:
+            self.setValue(self.default_value)
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
+
+
 class SettingsWindow(QDialog):
     def __init__(self, settings: AppSettings, parent=None, initial_tab: str = "",
-                 on_image_preview=None):
+                 on_image_preview=None, on_button_injector=None):
         super().__init__(parent)
         self.setWindowTitle("Settings")
         self.setMinimumSize(540, 580)
@@ -55,6 +91,7 @@ class SettingsWindow(QDialog):
         # Live preview callback for the Image tab (writes to the frame widget
         # only, never to settings — so Cancel can cleanly revert).
         self._on_image_preview = on_image_preview
+        self._on_button_injector = on_button_injector
         self._recording_macro_idx: Optional[int] = None
         self._recording_steps: List[str] = []
         self._editing_raw_idx: Optional[int] = None
@@ -86,9 +123,12 @@ class SettingsWindow(QDialog):
         self._tabs.addTab(self._build_view_tab(),       "View")
         self._tabs.addTab(self._build_image_tab(),      "Image")
         self._tabs.addTab(self._build_keybinds_tab(),   "Key Bindings")
+        self._tabs.addTab(self._build_input_mapping_tab(), "Input Mapping")
         self._tabs.addTab(self._build_macros_tab(),     "Macros")
-        self._tabs.addTab(self._build_librarian_tab(),  "Librarian")
         self._tabs.addTab(self._build_debug_tab(),      "Debug")
+        self._tabs.addTab(self._build_midi_tab(),       "MIDI/SysEx")
+        self._tabs.addTab(self._build_librarian_tab(),  "Librarian")
+        self._tabs.addTab(self._build_sample_editor_tab(), "Sample Editor")
 
         # Bottom row: Import/Export left; OK/Cancel right
         foot = QHBoxLayout()
@@ -189,16 +229,11 @@ class SettingsWindow(QDialog):
 
         form.addRow(_section("FTP Credentials"))
         self._ftp_user = QLineEdit()
-        self._ftp_pass = QLineEdit()
-        self._ftp_pass.setEchoMode(QLineEdit.EchoMode.Password)
+        self._ftp_pass = RevealablePasswordEdit()
         self._ftp_port_spin = QSpinBox(); self._ftp_port_spin.setRange(1, 65535)
         form.addRow("FTP Username:", self._ftp_user)
         form.addRow("FTP Password:", self._ftp_pass)
         form.addRow("FTP Port:",     self._ftp_port_spin)
-
-        form.addRow(_section("MIDI"))
-        self._midi_monitor = QCheckBox("Enable MIDI bridge (SysEx Tool, name caching)")
-        form.addRow(self._midi_monitor)
         return w
 
     # ── Streaming tab ──────────────────────────────────────────────────────────
@@ -222,7 +257,8 @@ class SettingsWindow(QDialog):
         vb.addSpacing(12)
         vb.addWidget(_section("Max frame rate"))
         fps_row = QHBoxLayout()
-        self._fps_slider = QSlider(Qt.Horizontal)
+        self._fps_slider = _ResettableSlider(Qt.Horizontal)
+        self._fps_slider.default_value = AppSettings().max_fps
         self._fps_slider.setRange(1, 15)
         self._fps_slider.setTickInterval(1)
         self._fps_slider.setSingleStep(1)
@@ -273,10 +309,28 @@ class SettingsWindow(QDialog):
         vb = QVBoxLayout(w)
         vb.setSpacing(6)
 
+        vb.addWidget(_section("Window"))
+        win_size_row = QHBoxLayout()
+        win_size_row.addWidget(QLabel("Default window size:"))
+        self._default_window_size = QComboBox()
+        self._default_window_size.setToolTip(
+            "Last Used keeps remembering the size/position you leave the window at.")
+        self._default_window_size.addItem("Last Used", "LastUsed")
+        self._default_window_size.addItem("Small", "Small")
+        self._default_window_size.addItem("Medium", "Medium")
+        self._default_window_size.addItem("Large", "Large")
+        self._default_window_size.addItem("Maximized", "Maximized")
+        win_size_row.addWidget(self._default_window_size, 1)
+        vb.addLayout(win_size_row)
+        vb.addWidget(_hint("Size applied to the main window at launch. Last Used remembers "
+                           "the size and position you leave it at."))
+
+        vb.addSpacing(12)
         vb.addWidget(_section("Zoom"))
         zoom_row = QHBoxLayout()
         zoom_row.addWidget(QLabel("Default zoom level (×):"))
-        self._zoom_level_slider = QSlider(Qt.Horizontal)
+        self._zoom_level_slider = _ResettableSlider(Qt.Horizontal)
+        self._zoom_level_slider.default_value = round(AppSettings().zoom_default_level * 10)
         self._zoom_level_slider.setRange(25, 50)  # 2.5–5.0 in tenths
         self._zoom_level_slider.setSingleStep(5)
         self._zoom_level_slider.setTickInterval(5)
@@ -294,7 +348,8 @@ class SettingsWindow(QDialog):
         vb.addWidget(_section("Zoom Tool"))
         win_row = QHBoxLayout()
         win_row.addWidget(QLabel("Tool size:"))
-        self._zoom_win_slider = QSlider(Qt.Horizontal)
+        self._zoom_win_slider = _ResettableSlider(Qt.Horizontal)
+        self._zoom_win_slider.default_value = round(AppSettings().zoom_window_size * 10)
         self._zoom_win_slider.setRange(10, 35)  # 1.0–3.5 in tenths
         self._zoom_win_slider.setSingleStep(5)
         self._zoom_win_slider.setTickInterval(5)
@@ -322,11 +377,12 @@ class SettingsWindow(QDialog):
                            "These affect only what you see here — not the Kronos itself."))
         vb.addSpacing(6)
 
-        def _adj_row(name: str, lo: int, hi: int, fmt) -> QSlider:
+        def _adj_row(name: str, lo: int, hi: int, fmt, default: int) -> QSlider:
             row = QHBoxLayout()
             name_lbl = QLabel(name)
             name_lbl.setFixedWidth(84)
-            sl = QSlider(Qt.Horizontal)
+            sl = _ResettableSlider(Qt.Horizontal)
+            sl.default_value = default
             sl.setRange(lo, hi)
             val = QLabel("")
             val.setFixedWidth(48)
@@ -339,11 +395,17 @@ class SettingsWindow(QDialog):
             vb.addLayout(row)
             return sl
 
-        self._img_bri_slider = _adj_row("Brightness", -100, 100, lambda v: str(v))
-        self._img_con_slider = _adj_row("Contrast",   -100, 100, lambda v: str(v))
-        self._img_gam_slider = _adj_row("Gamma",        40, 250, lambda v: f"{v/100:.2f}")
-        self._img_sat_slider = _adj_row("Saturation", -100, 100, lambda v: str(v))
-        self._img_shp_slider = _adj_row("Sharpen",       0, 100, lambda v: str(v))
+        _img_defaults = AppSettings()
+        self._img_bri_slider = _adj_row("Brightness", -100, 100, lambda v: str(v),
+                                         _img_defaults.image_brightness)
+        self._img_con_slider = _adj_row("Contrast",   -100, 100, lambda v: str(v),
+                                         _img_defaults.image_contrast)
+        self._img_gam_slider = _adj_row("Gamma",        40, 250, lambda v: f"{v/100:.2f}",
+                                         round(_img_defaults.image_gamma * 100))
+        self._img_sat_slider = _adj_row("Saturation", -100, 100, lambda v: str(v),
+                                         _img_defaults.image_saturation)
+        self._img_shp_slider = _adj_row("Sharpen",       0, 100, lambda v: str(v),
+                                         _img_defaults.image_sharpen)
         # Live preview: any slider change re-renders the frame immediately.
         for sl in (self._img_bri_slider, self._img_con_slider, self._img_gam_slider,
                    self._img_sat_slider, self._img_shp_slider):
@@ -452,7 +514,8 @@ class SettingsWindow(QDialog):
         ef.addRow("Trigger:", self._macro_trigger_btn)
 
         delay_row = QHBoxLayout()
-        self._macro_delay_slider = QSlider(Qt.Horizontal)
+        self._macro_delay_slider = _ResettableSlider(Qt.Horizontal)
+        self._macro_delay_slider.default_value = MacroDef().step_delay_ms
         self._macro_delay_slider.setRange(10, 500)
         self._macro_delay_slider.setSingleStep(10)
         self._macro_delay_slider.setTickInterval(50)
@@ -503,6 +566,73 @@ class SettingsWindow(QDialog):
     # Port of SettingsWindow.xaml's Librarian tab: the Merge Window's persistence
     # behavior plus the per-type preserve-duplication policy for Merge->Local placement.
 
+    def _build_midi_tab(self) -> QWidget:
+        w = QWidget()
+        vb = QVBoxLayout(w)
+        vb.setSpacing(6)
+
+        self._midi_monitor = QCheckBox("Monitor MIDI")
+        self._midi_monitor.setToolTip(
+            "When disabled, all incoming MIDI and SysEx messages are ignored and the MIDI Monitor "
+            "window is unavailable.")
+        vb.addWidget(self._midi_monitor)
+        vb.addWidget(_hint("When disabled, the MIDI Monitor option is faded in the menu and no incoming "
+                           "MIDI data is processed (the Librarian cannot sync without it)."))
+
+        vb.addSpacing(10)
+        self._poll_on_changes = QCheckBox("SysEx Poll on Changes")
+        self._poll_on_changes.setToolTip(
+            "Triggers a SysEx check-in when the Kronos sends a Program Change or Bank Select message. "
+            "Requires Monitor MIDI to be enabled.")
+        vb.addWidget(self._poll_on_changes)
+        vb.addWidget(_hint("Automatically updates the current performance display when a Program Change "
+                           "or Bank Select is received from the Kronos."))
+
+        vb.addSpacing(10)
+        self._pull_names = QCheckBox("Pull Names on Program Change")
+        self._pull_names.setToolTip(
+            "When you select a program/combi whose name isn't cached yet, fetch just that name over "
+            "MIDI. Requires Monitor MIDI.")
+        vb.addWidget(self._pull_names)
+        vb.addWidget(_hint("Fills the performance name as you navigate, without a full Sync Names sweep. "
+                           "Over the daemon/DIN path this can be slow and briefly flash the Kronos display."))
+
+        vb.addSpacing(10)
+        self._proactive_poll = QCheckBox("Proactive SysEx Polling")
+        self._proactive_poll.setToolTip(
+            "Enabling this can cause the Kronos to slow down during the check-in. Only enable if you "
+            "require it.")
+        vb.addWidget(self._proactive_poll)
+        vb.addWidget(_hint("Periodically queries the Kronos for the current performance name on a fixed "
+                           "schedule, regardless of MIDI activity."))
+        poll_row = QHBoxLayout()
+        poll_row.addWidget(_hint("Poll interval"))
+        self._poll_interval = QComboBox()
+        for sec in _POLL_INTERVALS:
+            self._poll_interval.addItem(f"{sec} seconds", sec)
+        poll_row.addWidget(self._poll_interval)
+        poll_row.addStretch(1)
+        vb.addLayout(poll_row)
+        self._poll_interval.setEnabled(False)
+        self._proactive_poll.toggled.connect(self._poll_interval.setEnabled)
+
+        vb.addSpacing(10)
+        cc_row = QHBoxLayout()
+        cc_row.addWidget(_hint("Value slider CC#"))
+        self._slider_cc = QLineEdit()
+        self._slider_cc.setMaxLength(3)
+        self._slider_cc.setFixedWidth(60)
+        self._slider_cc.setToolTip(
+            "MIDI CC# the Kronos VALUE slider transmits (default 18). The on-screen value slider "
+            "follows this controller. Change it if your Kronos assigns the value slider to a different CC.")
+        cc_row.addWidget(self._slider_cc)
+        cc_row.addStretch(1)
+        vb.addLayout(cc_row)
+        vb.addWidget(_hint("Keeps the on-screen value slider in sync with physical VALUE slider moves on "
+                           "the Kronos. Requires Monitor MIDI and SysEx transmit enabled on the Kronos."))
+        vb.addStretch()
+        return w
+
     def _build_librarian_tab(self) -> QWidget:
         w = QWidget()
         vb = QVBoxLayout(w)
@@ -514,7 +644,7 @@ class SettingsWindow(QDialog):
         self._merge_behavior.addItem("Local Storage", "local_storage")
         self._merge_behavior.setToolTip(
             "Controls whether the Librarian's Merge Window (a staging area for objects "
-            "pulled from loaded PCG files, before they're placed into your Local Library) "
+            "pulled from loaded PCG files, before they're placed into your Keyboard Library) "
             "survives an app restart or crash.")
         vb.addWidget(self._merge_behavior)
         vb.addWidget(_hint("Temporary Memory: cleared on restart, never touches disk. "
@@ -525,7 +655,7 @@ class SettingsWindow(QDialog):
         self._preserve_dup_progs = QCheckBox("Programs: preserve duplication")
         self._preserve_dup_progs.setToolTip(
             "Checked: placing a Program from the Merge Window always copies it as-is into a "
-            "fresh slot, even if byte-identical content already exists in your Local Library. "
+            "fresh slot, even if byte-identical content already exists in your Keyboard Library. "
             "Unchecked (default): duplicates are detected and the existing copy is reused.")
         self._preserve_dup_combis = QCheckBox("Combis: preserve duplication")
         self._preserve_dup_combis.setToolTip(
@@ -535,10 +665,104 @@ class SettingsWindow(QDialog):
             "PCG still matches.")
         vb.addWidget(self._preserve_dup_progs)
         vb.addWidget(self._preserve_dup_combis)
-        vb.addWidget(_hint("When placing from the Merge Window into Local Library, choose per "
+        vb.addWidget(_hint("When placing from the Merge Window into Keyboard Library, choose per "
                            "object type whether duplicates are preserved (copied as-is) or "
                            "detected and reused."))
 
+        vb.addSpacing(10)
+        self._lib_sync_on_launch = QCheckBox("Full sync on launch")
+        self._lib_sync_on_launch.setToolTip(
+            "Pull every bank from the Kronos as soon as the Librarian opens. Never writes to the Kronos.")
+        vb.addWidget(self._lib_sync_on_launch)
+        vb.addWidget(_hint("Reads every program, combi, set list, drum kit, and wave sequence instead of "
+                           "only the banks whose digest changed. Slow on a full library and is a pull "
+                           "only: nothing is pushed to the Kronos without user intervention."))
+
+        vb.addSpacing(10)
+        self._lib_force_destructive = QCheckBox("Force destructive write")
+        self._lib_force_destructive.setToolTip(
+            "2-Way Sync overwrites the Kronos even where it changed since the last pull, without asking.")
+        vb.addWidget(self._lib_force_destructive)
+        warn = _hint("With this on, the keyboard library is treated as the source of truth and 2-Way "
+                     "Sync overwrites the Kronos to match it, without asking.")
+        warn.setStyleSheet("color: #CC8888; font-size: 10px;")
+        vb.addWidget(warn)
+
+        vb.addStretch()
+        return w
+
+    def _build_sample_editor_tab(self) -> QWidget:
+        from Core.sample_playback import list_playback_devices
+        w = QWidget()
+        vb = QVBoxLayout(w)
+        vb.setSpacing(6)
+
+        vb.addWidget(_section("Playback"))
+        row = QHBoxLayout()
+        lbl = QLabel("Output device")
+        lbl.setStyleSheet(f"color: {_DIM}; font-size: 11px;")
+        lbl.setFixedWidth(110)
+        self._se_device = QComboBox()
+        self._se_device.setMinimumWidth(220)
+        self._se_device.addItem("(System Default)", "")
+        for dev_id, name in list_playback_devices():
+            self._se_device.addItem(name, dev_id)
+        self._se_device.setToolTip("Which audio output the Sample Editor plays samples through.")
+        row.addWidget(lbl)
+        row.addWidget(self._se_device)
+        row.addStretch()
+        vb.addLayout(row)
+        vb.addWidget(_hint("Takes effect the next time the Sample Editor window is opened."))
+
+        vb.addSpacing(10)
+        vb.addWidget(_section("Create Zone Preferences"))
+        pos_lbl = QLabel("Position")
+        pos_lbl.setStyleSheet(f"color: {_DIM}; font-size: 11px;")
+        vb.addWidget(pos_lbl)
+        self._se_pos_right = QRadioButton("Right")
+        self._se_pos_right.setToolTip("A new zone is appended above the current top zone's Top Key without changing "
+                                      "it. Falls back to shrinking the top zone only when it is already at 127.")
+        self._se_pos_left = QRadioButton("Left")
+        self._se_pos_left.setToolTip("A new zone takes the lower-key portion of the current last zone's range; "
+                                     "the existing last zone keeps its Top Key.")
+        # Separate groups: radios under one parent widget are otherwise ONE exclusive group.
+        self._se_pos_group = QButtonGroup(w)
+        self._se_pos_group.addButton(self._se_pos_right)
+        self._se_pos_group.addButton(self._se_pos_left)
+        pos_row = QHBoxLayout()
+        pos_row.addWidget(self._se_pos_right)
+        pos_row.addWidget(self._se_pos_left)
+        pos_row.addStretch()
+        vb.addLayout(pos_row)
+
+        rng_row = QHBoxLayout()
+        rng_lbl = QLabel("Zone Range")
+        rng_lbl.setStyleSheet(f"color: {_DIM}; font-size: 11px;")
+        rng_lbl.setFixedWidth(110)
+        self._se_range = QLineEdit()
+        self._se_range.setFixedWidth(50)
+        self._se_range.setToolTip("How many keys (1-127) a new zone claims.")
+        rng_row.addWidget(rng_lbl)
+        rng_row.addWidget(self._se_range)
+        rng_row.addWidget(_hint("keys  (1 to 127)"))
+        rng_row.addStretch()
+        vb.addLayout(rng_row)
+
+        key_lbl = QLabel("Original Key Position")
+        key_lbl.setStyleSheet(f"color: {_DIM}; font-size: 11px;")
+        vb.addWidget(key_lbl)
+        self._se_key_bottom = QRadioButton("Bottom")
+        self._se_key_center = QRadioButton("Center")
+        self._se_key_top = QRadioButton("Top")
+        self._se_key_group = QButtonGroup(w)
+        key_row = QHBoxLayout()
+        for rb in (self._se_key_bottom, self._se_key_center, self._se_key_top):
+            self._se_key_group.addButton(rb)
+            key_row.addWidget(rb)
+        key_row.addStretch()
+        vb.addLayout(key_row)
+        vb.addWidget(_hint("Where the Original Key (the root/tracking key, independent of the trigger range) "
+                           "lands within a new zone's key range."))
         vb.addStretch()
         return w
 
@@ -555,11 +779,25 @@ class SettingsWindow(QDialog):
         vb.addWidget(_hint("When enabled, verbose DEBUG entries are written to the log. "
                            "Only Info, Warn, and Error are logged when this is off. Takes effect immediately."))
 
-        vb.addSpacing(8)
-        sep = QWidget(); sep.setFixedHeight(1); sep.setStyleSheet("background: #444;")
-        vb.addWidget(sep)
+        # Shown only while debug logging is ticked (C# SettingsWindow.OnDebugLoggingChanged).
+        self._btn_button_injector = QPushButton("Button Injector…")
+        self._btn_button_injector.setToolTip(
+            "Send any front-panel button by name (sent as BTN <code>) and watch what happens on "
+            "the mirrored screen - for mapping Nautilus's relabeled buttons.")
+        self._btn_button_injector.setVisible(False)
+        self._btn_button_injector.setEnabled(self._on_button_injector is not None)
+        self._btn_button_injector.clicked.connect(lambda: self._on_button_injector())
+        self._debug_logging.toggled.connect(self._btn_button_injector.setVisible)
+        vb.addWidget(self._btn_button_injector, 0, Qt.AlignLeft)
 
-        vb.addSpacing(6)
+        vb.addStretch()
+        return w
+
+    def _build_input_mapping_tab(self) -> QWidget:
+        w = QWidget()
+        vb = QVBoxLayout(w)
+        vb.setSpacing(6)
+
         vb.addWidget(_section("Keyboard Input Mapping"))
 
         raw_tb = QHBoxLayout()
@@ -646,12 +884,29 @@ class SettingsWindow(QDialog):
         self._ftp_pass.setText(s.ftp_password)
         self._ftp_port_spin.setValue(s.ftp_port)
         self._midi_monitor.setChecked(s.midi_monitor_enabled)
+        self._poll_on_changes.setChecked(s.sysex_poll_on_changes)
+        self._pull_names.setChecked(s.pull_names_on_change)
+        self._proactive_poll.setChecked(s.proactive_sysex_polling)
+        idx = self._poll_interval.findData(s.sysex_poll_interval_sec)
+        self._poll_interval.setCurrentIndex(idx if idx >= 0 else _POLL_INTERVALS.index(60))
+        self._poll_interval.setEnabled(s.proactive_sysex_polling)
+        self._slider_cc.setText(str(s.value_slider_cc))
 
         # Librarian
         idx = self._merge_behavior.findData(s.merge_behavior)
         self._merge_behavior.setCurrentIndex(idx if idx >= 0 else 1)
         self._preserve_dup_progs.setChecked(s.merge_preserve_duplicate_programs)
         self._preserve_dup_combis.setChecked(s.merge_preserve_duplicate_combis)
+        self._lib_sync_on_launch.setChecked(s.librarian_full_sync_on_launch)
+        self._lib_force_destructive.setChecked(s.librarian_force_destructive_write)
+
+        # Sample Editor
+        i = self._se_device.findData(s.sample_editor_output_device_id)
+        self._se_device.setCurrentIndex(i if i >= 0 else 0)
+        (self._se_pos_left if s.sample_zone_create_position == "Left" else self._se_pos_right).setChecked(True)
+        self._se_range.setText(str(s.sample_zone_create_range))
+        {"Center": self._se_key_center, "Top": self._se_key_top}.get(
+            s.sample_zone_original_key_position, self._se_key_bottom).setChecked(True)
 
         # Streaming
         self._stream_mode.setCurrentIndex(1 if s.pull_mode else 0)
@@ -662,6 +917,8 @@ class SettingsWindow(QDialog):
         self._boot_thresh_lbl.setText(f"{s.boot_screen_threshold}%")
 
         # View
+        idx = self._default_window_size.findData(s.default_window_size)
+        self._default_window_size.setCurrentIndex(idx if idx >= 0 else 0)
         self._zoom_level_slider.setValue(int(s.zoom_default_level * 10))
         self._zoom_level_lbl.setText(f"{s.zoom_default_level:.1f}×")
         self._zoom_win_slider.setValue(int(s.zoom_window_size * 10))
@@ -686,6 +943,16 @@ class SettingsWindow(QDialog):
         self._debug_logging.setChecked(s.debug_logging)
         self._reload_raw_list()
 
+    def _save_sample_editor_fields(self, s) -> None:
+        s.sample_editor_output_device_id = self._se_device.currentData() or ""
+        s.sample_zone_create_position = "Left" if self._se_pos_left.isChecked() else "Right"
+        try:
+            s.sample_zone_create_range = max(1, min(127, int(self._se_range.text())))
+        except ValueError:
+            pass
+        s.sample_zone_original_key_position = ("Center" if self._se_key_center.isChecked()
+                                               else "Top" if self._se_key_top.isChecked() else "Bottom")
+
     def _save(self):
         s = self._settings
 
@@ -709,11 +976,19 @@ class SettingsWindow(QDialog):
         s.ftp_password = self._ftp_pass.text()
         s.ftp_port     = self._ftp_port_spin.value()
         s.midi_monitor_enabled = self._midi_monitor.isChecked()
+        s.sysex_poll_on_changes   = self._poll_on_changes.isChecked()
+        s.pull_names_on_change    = self._pull_names.isChecked()
+        s.proactive_sysex_polling = self._proactive_poll.isChecked()
+        s.sysex_poll_interval_sec = self._poll_interval.currentData() or 60
+        s.value_slider_cc         = _parse_value_slider_cc(self._slider_cc.text())
 
         # Librarian
         s.merge_behavior                  = self._merge_behavior.currentData()
         s.merge_preserve_duplicate_programs = self._preserve_dup_progs.isChecked()
         s.merge_preserve_duplicate_combis   = self._preserve_dup_combis.isChecked()
+        s.librarian_full_sync_on_launch     = self._lib_sync_on_launch.isChecked()
+        s.librarian_force_destructive_write = self._lib_force_destructive.isChecked()
+        self._save_sample_editor_fields(s)
 
         # Streaming
         s.pull_mode              = self._stream_mode.currentIndex() == 1
@@ -722,6 +997,7 @@ class SettingsWindow(QDialog):
         s.boot_screen_threshold  = self._boot_thresh_slider.value()
 
         # View
+        s.default_window_size = self._default_window_size.currentData()
         s.zoom_default_level = self._zoom_level_slider.value() / 10.0
         s.zoom_window_size   = self._zoom_win_slider.value()   / 10.0
 
@@ -754,7 +1030,7 @@ class SettingsWindow(QDialog):
             QMessageBox.Cancel,
         )
         if r == QMessageBox.Ok:
-            storage.reset_all()
+            Models.storage.reset_all()
             self._settings.__init__()  # reset in-place
             self._load()
             QMessageBox.information(self, "Reset", "Settings have been reset to defaults.")
@@ -923,24 +1199,40 @@ class SettingsWindow(QDialog):
         self._macro_steps_view.setReadOnly(False)
         self._macro_steps_view.setPlaceholderText("Recording… press keys here")
 
-        orig_key = self._macro_steps_view.keyPressEvent
-
-        def capture(event):
+        # Separate press/release hooks, matching C#'s SettingsWindow.xaml.cs
+        # (OnMacroKeyDown/OnMacroKeyUp record a MacroStep{Code, Down} on each
+        # real key event) — a held key or a chord (e.g. Shift held while
+        # another key is pressed and released) needs its down and up as two
+        # independently-timed steps to replay correctly. The previous version
+        # only hooked keyPressEvent and synthesized an instant down+up pair
+        # per keystroke, so a hold/chord could never be captured at all.
+        def capture_press(event):
             from PySide6.QtCore import Qt as _Qt
-            import Utils.key_map
-            key  = event.key()
+            key = event.key()
             if key in (_Qt.Key_Escape,):
                 self._stop_recording()
                 return
+            if event.isAutoRepeat():
+                event.accept()
+                return
             lc = key_map.to_linux(key)
             if lc:
-                step_dn = f"KEY {lc} 1"
-                step_up = f"KEY {lc} 0"
-                self._recording_steps.extend([step_dn, step_up])
+                self._recording_steps.append(f"KEY {lc} 1")
                 self._macro_steps_view.setPlainText("\n".join(self._recording_steps))
             event.accept()
 
-        self._macro_steps_view.keyPressEvent = capture
+        def capture_release(event):
+            if event.isAutoRepeat():
+                event.accept()
+                return
+            lc = key_map.to_linux(event.key())
+            if lc:
+                self._recording_steps.append(f"KEY {lc} 0")
+                self._macro_steps_view.setPlainText("\n".join(self._recording_steps))
+            event.accept()
+
+        self._macro_steps_view.keyPressEvent = capture_press
+        self._macro_steps_view.keyReleaseEvent = capture_release
 
     def _stop_recording(self):
         idx = self._recording_macro_idx
@@ -955,6 +1247,8 @@ class SettingsWindow(QDialog):
         self._macro_steps_view.setReadOnly(True)
         self._macro_steps_view.setPlaceholderText("(no steps recorded)")
         self._macro_steps_view.keyPressEvent = QTextEdit.keyPressEvent.__get__(
+            self._macro_steps_view, type(self._macro_steps_view))
+        self._macro_steps_view.keyReleaseEvent = QTextEdit.keyReleaseEvent.__get__(
             self._macro_steps_view, type(self._macro_steps_view))
         self._reload_macro_list()
 
@@ -1069,7 +1363,7 @@ class SettingsWindow(QDialog):
             self._commit_macro_editor()
             # Copy live settings into AppSettings before exporting
             self._save_to_settings_no_close()
-            storage.export_settings(self._settings, path)
+            Models.storage.export_settings(self._settings, path)
             QMessageBox.information(self, "Export", f"Settings exported to:\n{path}")
 
     def _on_import(self):
@@ -1083,7 +1377,7 @@ class SettingsWindow(QDialog):
             QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel)
         if r != QMessageBox.Yes:
             return
-        new_s = storage.import_settings(path)
+        new_s = Models.storage.import_settings(path)
         # Replace fields in the shared settings object
         for field_name in self._settings.__dataclass_fields__:
             setattr(self._settings, field_name, getattr(new_s, field_name))
@@ -1107,13 +1401,22 @@ class SettingsWindow(QDialog):
         s.ftp_password           = self._ftp_pass.text()
         s.ftp_port               = self._ftp_port_spin.value()
         s.midi_monitor_enabled   = self._midi_monitor.isChecked()
+        s.sysex_poll_on_changes   = self._poll_on_changes.isChecked()
+        s.pull_names_on_change    = self._pull_names.isChecked()
+        s.proactive_sysex_polling = self._proactive_poll.isChecked()
+        s.sysex_poll_interval_sec = self._poll_interval.currentData() or 60
+        s.value_slider_cc         = _parse_value_slider_cc(self._slider_cc.text())
         s.merge_behavior         = self._merge_behavior.currentData()
         s.merge_preserve_duplicate_programs = self._preserve_dup_progs.isChecked()
         s.merge_preserve_duplicate_combis   = self._preserve_dup_combis.isChecked()
+        s.librarian_full_sync_on_launch     = self._lib_sync_on_launch.isChecked()
+        s.librarian_force_destructive_write = self._lib_force_destructive.isChecked()
+        self._save_sample_editor_fields(s)
         s.pull_mode              = self._stream_mode.currentIndex() == 1
         s.max_fps                = self._fps_slider.value()
         s.disable_boot_screen    = self._disable_boot.isChecked()
         s.boot_screen_threshold  = self._boot_thresh_slider.value()
+        s.default_window_size    = self._default_window_size.currentData()
         s.zoom_default_level     = self._zoom_level_slider.value() / 10.0
         s.zoom_window_size       = self._zoom_win_slider.value()   / 10.0
         s.image_brightness       = self._img_bri_slider.value()

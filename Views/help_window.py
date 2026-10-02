@@ -115,6 +115,10 @@ def _build_html() -> str:
             _kb_row("Data wheel",     "Drag up or down to scroll. Mouse scroll wheel also works "
                                       "everywhere."),
         ),
+        _p(_dim("On a Nautilus the panel switches to the Nautilus layout, and the <b>Mode Select</b> "
+                "menu lists the front panel's own Mode, Page and A–F buttons instead of the seven "
+                "Kronos modes (F is the Write/Save quick-access slot). Bank Select and the "
+                "status-bar mode menu are Kronos-only and are greyed out on a Nautilus.")),
 
         _h1("Keyboard Shortcuts"),
         _p("These shortcuts work when the app window is focused and keyboard capture "
@@ -156,7 +160,7 @@ def _build_html() -> str:
             _kb_row(_green("⌨  (green)"),  "Capture active — keystrokes are forwarded to the Kronos."),
             _kb_row(_dim("⌨/ (gray)"),     "Capture inactive — click the screen panel to enable."),
             _kb_row("<span style='color:#FF8888;'>⌨/ (red)</span>",
-                    "Keyboard send disabled (Tools → Disable Keyboard Send)."),
+                    "Keyboard send disabled (Tools → Disable Remote Typing)."),
         ),
         _p("Click outside the screen panel — on the control surface, wheel, or "
            "menu bar — to release keyboard capture."),
@@ -193,20 +197,28 @@ def _build_html() -> str:
         _h1("Touch Calibration"),
         _p("Corrects for touchscreen coordinate offset on the Kronos display. "
            "Use this if tap positions feel consistently shifted relative to the image. "
-           "Enable with " + _key("C") + " or <b>Tools → Calibration</b>."),
+           "Enable with " + _key("C") + " or <b>Tools → Calibration</b>. The calibration is "
+           "<b>stored on the unit</b> (daemon 3.1.2 or later), not on this PC: it is read "
+           "every time you connect and follows the instrument, and it can only be saved while "
+           "connected. The bar at the bottom of the screen shows <b>[SAVED]</b> or "
+           "<b>[UNSAVED]</b>."),
         _kbd_table(
             _kb_row("Click",           "Send a touch tap to the Kronos. Current calibration applies."),
-            _kb_row("Drag blue nodes", "Shift mesh nodes to correct systematic positional offsets."),
-            _kb_row("Right-click",     "Add an indicator dot at that position, or remove the nearest."),
-            _kb_row("S",               "Save the mesh to disk."),
-            _kb_row("R",               "Reset the mesh to identity (no correction)."),
-            _kb_row("X",               "Clear all bias dots."),
-            _kb_row("Ctrl+Z / Ctrl+Y", "Undo / redo a mesh edit."),
+            _kb_row("Drag blue nodes", "Shift mesh nodes to correct systematic positional offsets "
+                                       "(unsaved until you press S)."),
+            _kb_row("Right-click",     "Add an indicator dot at that position, or remove the nearest "
+                                       "one. Dot edits are saved to the unit immediately."),
+            _kb_row("S",               "Save the mesh to the unit."),
+            _kb_row("R",               "Reset the mesh to identity (no correction). Press S to keep it."),
+            _kb_row("X",               "Clear all bias dots (saved immediately)."),
+            _kb_row("Ctrl+Z / Ctrl+Y", "Undo / redo (Ctrl+Shift+Z also redoes)."),
             _kb_row(_key("C"),         "Exit calibration mode."),
         ),
         _p(_dim("Grid size (3×3, 4×4, 5×5) can be changed in "
-                "Tools → Calibration Grid Size. Changing the grid size clears "
-                "existing calibration data.")),
+                "Tools → Calibration Grid Size. Changing the grid size asks first, then clears "
+                "existing calibration data. If a save fails (not connected, unit did not answer, "
+                "too many dots, daemon too old) the reason appears in the status bar and the "
+                "mesh stays [UNSAVED]; quitting with unsaved changes offers to save first.")),
 
         _h1("Test Mode"),
         _p("Access via <b>Tools → Enter Kronos Test Mode</b>. This sends the Kronos "
@@ -264,11 +276,172 @@ def _build_html() -> str:
             _kb_row("Hide Data Input",         "Hide / show the data input panel (Full layout only)."),
             _kb_row("Hide Value Input",        "Hide / show the value input panel (Full layout only)."),
             _kb_row("Screenshot Directory",   "Default folder for Quick Save screenshots."),
-            _kb_row("Debug Logging",          "Write verbose diagnostic output to the console."),
+            _kb_row("Debug Logging",          "Write verbose diagnostic output to the console. While it is "
+                                              "ticked, the Debug tab also shows <b>Button Injector…</b> "
+                                              "(send any named front-panel button; for mapping a Nautilus)."),
+            _kb_row("Input Mapping",          "Map a host key to a raw Kronos keycode (overrides the default "
+                                              "key map immediately)."),
+            _kb_row("Recent Connections",     "<b>Connection → Recent Connections</b> keeps the last five hosts "
+                                              "and the FTP login that last worked for each."),
             _kb_row("Zoom Default Level",     "Initial magnification when the zoom window opens (2.5× – 10×)."),
             _kb_row("Zoom Window Size",       "Size of the zoom inset window as a fraction of the frame area."),
             _kb_row("Keybindings",            "Rebind any shortcut listed in the Keyboard Shortcuts section above."),
+            _kb_row("Librarian tab",          "Merge behavior, duplicate handling, <b>Full sync on launch</b> and "
+                                              "<b>Force destructive write</b> — see the Librarian section below."),
+            _kb_row("Sample Editor tab",      "Playback output device, and where a newly created zone goes."),
         ),
+
+        _h1("MIDI / SysEx  (status bar + Tools → MIDI Monitor…)"),
+        _p("The app listens to the Kronos' live MIDI output through the daemon's MIDI bridge "
+           "(port 9875). It drives the footer performance name, program-change follow, the on-screen "
+           "VALUE slider mirror and the MIDI Monitor. The footer shows <b>TCP</b> when the bridge is "
+           "connected and a pair of RX / TX dots that flash on traffic; click the dots to open the "
+           "Monitor."),
+        _p("<b>Tools → MIDI Monitor…</b> shows live MIDI and SysEx traffic with per-type filters, and a "
+           "virtual piano that sends notes on the chosen <b>OUT CH</b> (remembered between sessions)."),
+        _kbd_table(
+            _kb_row("Monitor MIDI",              "Master switch. Off: nothing incoming is processed, the MIDI "
+                                                 "Monitor and the footer dots are faded, and the Librarian "
+                                                 "cannot sync. Takes effect immediately, while connected."),
+            _kb_row("SysEx Poll on Changes",     "When a Program Change arrives that can't be decoded from the "
+                                                 "stream, ask the Kronos for the current performance (a Bank "
+                                                 "Select / PC burst becomes one query). A bank-storage change "
+                                                 "reported by the Kronos always refreshes."),
+            _kb_row("Pull Names on Program Change", "When you select a program/combi whose name isn't cached, "
+                                                 "fetch just that name. Only where a fast scroll settles. Over "
+                                                 "the daemon this can briefly flash the Kronos display."),
+            _kb_row("Proactive SysEx Polling",   "Re-query the current performance on a fixed interval (30 / 45 "
+                                                 "/ 60 / 120 s) regardless of MIDI activity. Can slow the Kronos "
+                                                 "during the check-in — leave off unless you need it."),
+            _kb_row("Value slider CC#",          "The controller number the Kronos' VALUE slider transmits "
+                                                 "(default 18). The on-screen slider follows it, except while "
+                                                 "you are dragging it. 0 and 32 (Bank Select) are not allowed."),
+        ),
+        _p(_dim("These settings are in <b>Settings → MIDI/SysEx</b>. Current performance, program-change "
+                "follow and the slider mirror read the Kronos' MIDI stream, which is not decoded for a "
+                "Nautilus yet; SysEx must be enabled on the Kronos itself (GLOBAL › MIDI). A direct USB-MIDI "
+                "connection is not supported by this app — only the network bridge.")),
+
+        _h1("Librarian  (Tools → Librarian…)"),
+        _p("Manages programs, combis and set lists: sync a <b>Keyboard Library</b> with the Kronos, "
+           "open .pcg files, stage objects in the <b>Merge Window</b>, and place them back with "
+           "dependency tracking. Browsing, staging and editing work offline; only Sync talks to "
+           "the instrument."),
+        _kbd_table(
+            _kb_row("Keyboard Library", "The on-disk copy of the Kronos' objects. Cut/Copy/Paste, Rename, "
+                                        "Properties and Delete change this library only — the Kronos is "
+                                        "untouched until you sync."),
+            _kb_row("Merge Window",     "A staging area. <b>Auto-Fill to Library</b> places everything staged "
+                                        "into the next free slots of the right type; it sends nothing to the "
+                                        "Kronos. <b>Force Overwrite</b> places onto a slot another Combi or Set "
+                                        "List still references (those referrers then point at the new object)."),
+            _kb_row("Loaded PCG File",  "Open a .pcg (or pull one from the Kronos) and move objects, with "
+                                        "their dependencies, into the Merge Window."),
+            _kb_row("Right-click a tree", "Expand / Collapse Selected or All, in all three panes."),
+        ),
+        _h2("Object Dependencies panel"),
+        _p("Select one or more objects in any pane and the panel lists what they reference, nested "
+           "references included: a Set List's Combis and their Programs, a Combi's Programs, and a "
+           "Program's Drum Track. Sample banks a Program uses are listed too. Double-click a row, or "
+           "right-click it and choose <b>More Info…</b>, to see who referenced it and what it in turn "
+           "references."),
+        _kbd_table(
+            _kb_row("Red, bold rows", "Dependencies the Merge Window needs and nothing staged provides. They "
+                                      "are always listed first, whatever is selected. Right-click one and "
+                                      "choose <b>Search a PCG for this object…</b>: pick a .pcg and everything "
+                                      "it holds of the missing objects is staged in the Merge Window (undo "
+                                      "with Ctrl+Z), so the gap closes before you sync."),
+            _kb_row("ROM rows",       "A reference into a read-only ROM bank (GM, g(1)–g(d)). Shown for "
+                                      "completeness, never as missing: it resolves on the instrument."),
+            _kb_row("INIT placeholder", "The reference is satisfied, but by an INIT Program rather than the "
+                                      "sound the Combi expects."),
+            _kb_row("Sample rows",    "Coloured by type: <span style='color:#D9C23A'>EXs</span>, "
+                                      "<span style='color:#4FA3D8'>User / 3rd-party bank</span>, "
+                                      "<span style='color:#5C7FA3'>Sampling Mode (RAM)</span>, "
+                                      "<span style='color:#E0954A'>EXi external bank</span> (the legend sits "
+                                      "under the panel). Factory ROM samples are not listed."),
+        ),
+        _p(_dim("EXs and 3rd-party bank names come from the EXs product catalog shipped with the app. A name "
+                "identifies the product; it does not prove the pack is installed on your Kronos. To pick up "
+                "packs released later, drop a newer <b>exs_catalog.json</b> in the data folder. Drum Kit "
+                "and Wave Sequence references are not shown yet.")),
+        _h2("Sync button"),
+        _p("One button whose label names what a plain click does; the <b>▾</b> beside it picks the mode, "
+           "and your choice is remembered."),
+        _kbd_table(
+            _kb_row("2-Way Sync", "Pull the library from the Kronos, then push every pending local change. "
+                                  "Tick <b>Force Full Sync</b> to re-read every bank instead of only the banks "
+                                  "whose digest changed."),
+            _kb_row("Pull Only",  "Make the library a mirror of the Kronos. Pending edits <i>and</i> slots "
+                                  "marked for deletion are discarded first — you are asked before anything "
+                                  "is lost, and it cannot be undone."),
+            _kb_row("Push Only",  "Write every pending local change to the Kronos without pulling. If a "
+                                  "bank changed on the Kronos since the last sync, nothing is written and "
+                                  "you are asked whether to overwrite."),
+        ),
+        _h2("Banners"),
+        _kbd_table(
+            _kb_row("Red: Kronos not answering SysEx", "Sync is disabled until it answers. On the Kronos: "
+                                  "GLOBAL › MIDI, and check every MIDI Filter box. Press <b>Re-check</b> "
+                                  "after fixing it."),
+            _kb_row("Amber: conflicts", "Local changes whose banks changed on the Kronos since the last "
+                                  "pull were <b>not</b> pushed. Run a 2-Way or Pull Only sync to take the "
+                                  "Kronos copy, or <b>Resolve Conflicts</b> to push your copy over it."),
+            _kb_row("Red: force destructive write ON", "Shown while that setting is armed."),
+            _kb_row("Amber: warning", "The reason a sync was refused or only partly done. ✕ dismisses it."),
+        ),
+        _h2("Librarian settings  (Settings → Librarian)"),
+        _p("<b>Full sync on launch</b> (off by default) pulls every bank as soon as the Librarian opens — "
+           "a pull only, it never writes to the Kronos. <b>Force destructive write</b> (off by default) "
+           "treats the Keyboard Library as the source of truth: 2-Way Sync overwrites banks that changed "
+           "on the Kronos without asking. Front-panel edits made since the last pull are lost, and the "
+           "pre-write backup does not cover them. It skips only the conflict check; missing-reference "
+           "and bank-type refusals still apply."),
+        _p(_dim("Delete and Clear Changes affect the library only; a fresh pull restores deleted "
+                "objects. Clear History deletes the local audit log alone.")),
+
+        _h1("Sample Editor  (Tools → Sample Editor…)"),
+        _p("View and edit .KSC / .KMP / .KSF sample content: key ranges, loop points, flags and destructive "
+           "waveform edits. Edits happen on a local copy; <b>File → Pull … from Kronos</b> brings content "
+           "over FTP and <b>Push …</b> puts a saved file back where it came from."),
+        _p("Open a .KSC with <b>File → Open</b> or drag a .KSC / .KMP onto the window; dropping an audio file "
+           "imports it as a new zone. The tree on the left lists the open collections; pick a multisample "
+           "from the MS dropdown, then a zone from the keymap, the Index box or the Sample dropdown."),
+        _kbd_table(
+            _kb_row("Keymap",            "Click a piano key to hear that key's zone (held, not latched). Drag a "
+                                         "zone-bar boundary to resize a zone, drag a zone onto another to "
+                                         "reorder, click a zone to select it. Ctrl+Click a key while Orig.Key "
+                                         "or Top Key has focus to type it in."),
+            _kb_row("SAMPLE panel",      "Index / Sample / Orig.Key / Top Key. <b>Create</b> adds an empty zone, "
+                                         "<b>Import Sample…</b> decodes audio files into the collection and "
+                                         "assigns the first, <b>Remove Sample</b> deletes the audio but keeps "
+                                         "the key range. <b>Link</b> shares another sample's audio instead of "
+                                         "copying it."),
+            _kb_row("KRONOS panel",      "Fields written into the .KSF: Reverse, +12dB Boost, Loop Enabled, "
+                                         "Sample Start, Loop Start, Loop End and Loop Tune."),
+            _kb_row("LOCAL EDITS panel", "Select / Move tool, Use Zero, Loop Lock, Split L/R and the destructive "
+                                         "edits: Normalize, Amplify, Soften, Trim Silence, Reverse, Remove DC "
+                                         "Offset, Insert Silence. Each acts on the selection, or the whole "
+                                         "sample when nothing is highlighted. They only touch this app's "
+                                         "in-memory copy and undo stack."),
+        ),
+        _kbd_table(
+            _kb_row("Space",             "Play / stop from the scrub line (or Sample Start)."),
+            _kb_row("Home / End",        "Move the scrub line to the start / end."),
+            _kb_row("Ctrl+Z / Ctrl+Y",   "Undo / redo, in the order edits happened."),
+            _kb_row("Ctrl+X / C / V",    "Cut / copy / paste in the waveform."),
+            _kb_row("Ctrl+A",            "Select the whole sample."),
+            _kb_row("Delete",            "Cut the selection; with none, delete the zone."),
+            _kb_row("Ctrl++ / Ctrl+-",   "Zoom in / out. Ctrl+0 fits; so does a double-click on the waveform."),
+            _kb_row("Ctrl+S",            "Save Changes."),
+            _kb_row("Wheel on waveform", "Zoom around the cursor (turn off with <b>Scroll to Zoom</b>)."),
+        ),
+        _p("A stereo instrument (two multisamples with the same name and opposite -L / -R suffix) shows "
+           "both channels stacked, and an edit to one mirrors onto the other. <b>Split L/R</b> edits only "
+           "the pane you click; the Move tool then offsets one channel against the other."),
+        _p(_dim("Save Changes writes every pending edit across all open collections; it is greyed out until "
+                "something is unsaved. Edit → Revert KSC Changes / Revert ALL Changes discards edits instead. "
+                "Playback device and new-zone defaults are in Settings → Sample Editor.")),
 
         _h1("Command Palette  (Ctrl+K)"),
         _p("A fuzzy-search launcher for all app commands. Start typing to filter; "

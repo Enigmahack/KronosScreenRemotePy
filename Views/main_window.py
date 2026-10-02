@@ -27,6 +27,8 @@ import threading
 import time
 from typing import Dict, List, Optional, Set, Tuple
 
+import numpy as np
+
 from PySide6.QtCore import (
     QEvent, QPoint, QPointF, QRect, QRectF, Qt, QTimer, Signal, Slot,
 )
@@ -41,11 +43,12 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-import Utils.char_map
+import Utils.char_map as char_map
 import Core.ctrl_client as CtrlClient
-import Utils.image_adjust
-import Utils.key_map
+import Utils.image_adjust as image_adjust
+import Utils.key_map as key_map
 import Models.storage
+import Models.cal_text as cal_text
 import Utils.theme as T
 from Models.app_settings import AppSettings, get_rebindable
 from Tools.boot_phase_detector import BootPhaseDetector, Phase as BootPhase
@@ -53,8 +56,12 @@ from Rendering.control_surface import KronosControlSurface
 from Tools.mode_detector import CombiProgramEditDetector, ModeDetector, frame_black_fraction
 from Models.models import CalBiasDot, CalHistEntry, CalHistKind, CalMesh, HistEntry, PaletteEntry
 from Rendering.overlay_renderer import OverlayRenderer
+from Core.button_codes import btn
 from Core.stream_receiver import StreamReceiver
 from Core.sysex_service import SysExService
+from Core.device_family import DeviceFamily, ModelInfo
+from Views.main_window_dialogs import MainWindowDialogMixin
+from Views.revealable_password_edit import RevealablePasswordEdit
 
 
 # ── ICMP ping (matches C# System.Net.NetworkInformation.Ping) ─────────────────
@@ -162,12 +169,38 @@ _NUMPAD_MAP: dict[int, str] = {
     Qt.Key_Enter:  "ENTER",
 }
 
+# Linux evdev keycodes for a real numpad, used only on Nautilus (see
+# _send_numpad_key). Qt has no distinct Key_NumPad0..9 enum values — numpad
+# digits alias the same Qt.Key_0..9 as the top row, told apart only by
+# Qt.KeypadModifier on the event — so this maps the SAME Qt.Key values
+# _NUMPAD_MAP does, just to different codes. Ported from C#'s Core/KeyMap.cs
+# Key.NumPad0..9/Subtract/Decimal entries (KEY_KP0..KEY_KP9/KEY_KPMINUS/
+# KEY_KPDOT): "on Kronos these are UNREACHABLE here... only matter for
+# Nautilus, where [front-panel] interception is skipped so real numpad
+# keystrokes forward here instead, as an actual USB keyboard would."
+# Key_Enter has no C# equivalent to verify against (WPF collapses numpad
+# Enter into plain Key.Return); mapped to the same code as Return (28) as a
+# safe fallback rather than KEY_KPENTER (96), which nothing here confirms.
+_NUMPAD_LINUX_MAP: dict[int, int] = {
+    Qt.Key_0: 82, Qt.Key_1: 79, Qt.Key_2: 80, Qt.Key_3: 81,
+    Qt.Key_4: 75, Qt.Key_5: 76, Qt.Key_6: 77, Qt.Key_7: 71,
+    Qt.Key_8: 72, Qt.Key_9: 73,
+    Qt.Key_Minus: 74,    # KEY_KPMINUS
+    Qt.Key_Period: 83,   # KEY_KPDOT
+    Qt.Key_Enter: 28,    # KEY_ENTER (see docstring — no confirmed KEY_KPENTER path)
+}
+
 # Mode index 0 = none; 1–7 = Setlist…Disk
 _MODE_NAMES = ("", "Setlist", "Combi", "Program", "Sequence", "Sampling", "Global", "Disk")
 _MODE_CMDS  = ("", "SETLIST", "COMBI",  "PROGRAM", "SEQUENCE", "SAMPLING", "GLOBAL", "DISK")
 # Mode-menu display labels carrying the C# accelerator mnemonics (index-aligned to
 # _MODE_NAMES). Kept separate so _MODE_NAMES stays clean for keybind/command lookups.
 _MODE_MENU_LABELS = ("", "&Setlist", "&Combi", "&Program", "S&equence", "S&ampling", "&Global", "&Disk")
+
+# Nautilus Mode Select items (MainWindow.xaml:110-117 / MainWindow.xaml.cs:1092-1099):
+# label -> Kronos mode index whose wire token it sends; 0 = "F: Save" (front-panel EXIT).
+_NAUT_MODE_ITEMS = (("&Mode", 2), ("&Page", 3), ("&A", 4), ("&B", 5),
+                    ("&C", 6), ("&D", 7), ("&E", 1), ("&F", 0))
 
 # Ctrl+1..Ctrl+5 -> Window Size menu scale, matching the C# hardcoded shortcuts
 # (MainWindow.Input.cs) and the View > Window Size menu's own scale values.
@@ -178,19 +211,19 @@ _WINDOW_SIZE_CTRL_KEYS = {
 
 # "Bank <suffix>" rebindable-action names -> daemon command, matching the handlers
 # wired in _build_bank_menu (Internal I-A..I-G, User U-A..U-G, double-press U-AA..U-GG).
-def _bank_action_cmd(action: str) -> str | None:
+def _bank_action_cmd(action: str) -> str | tuple | None:
     if not action.startswith("Bank "):
         return None
     suffix = action[len("Bank "):]
     if suffix.startswith("I-") and len(suffix) == 3:
-        return f"BUTTON BANK_I{suffix[2]}"
+        return btn(f"BANK_I{suffix[2]}")
     if suffix.startswith("U-"):
         letters = suffix[2:]
         if len(letters) == 1:
-            return f"BUTTON BANK_U{letters}"
+            return btn(f"BANK_U{letters}")
         if len(letters) == 2 and letters[0] == letters[1]:
             l = letters[0]
-            return f"CHORD BANK_U{l} BANK_I{l}"
+            return (f"BANK_U{l}", f"BANK_I{l}")
     return None
 
 
@@ -210,29 +243,61 @@ _REPEATABLE_KEYS = frozenset(
 
 # Control-surface button name → (daemon command, mode index or 0)
 _CTRL_BTN_CMD: dict[str, tuple[str, int]] = {
-    "Setlist":  ("BUTTON SETLIST",  1),
-    "Combi":    ("BUTTON COMBI",    2),
-    "Program":  ("BUTTON PROGRAM",  3),
-    "Sequence": ("BUTTON SEQUENCE", 4),
-    "Sampling": ("BUTTON SAMPLING", 5),
-    "Global":   ("BUTTON GLOBAL",   6),
-    "Disk":     ("BUTTON DISK",     7),
-    "Help":     ("BUTTON HELP",     0),
-    "Compare":  ("BUTTON COMPARE",  0),
-    "EXIT":     ("BUTTON EXIT",     0),
-    "ENTER":    ("BUTTON ENTER",    0),
-    "NUM0":     ("BUTTON NUM0",     0),
-    "NUM1":     ("BUTTON NUM1",     0),
-    "NUM2":     ("BUTTON NUM2",     0),
-    "NUM3":     ("BUTTON NUM3",     0),
-    "NUM4":     ("BUTTON NUM4",     0),
-    "NUM5":     ("BUTTON NUM5",     0),
-    "NUM6":     ("BUTTON NUM6",     0),
-    "NUM7":     ("BUTTON NUM7",     0),
-    "NUM8":     ("BUTTON NUM8",     0),
-    "NUM9":     ("BUTTON NUM9",     0),
-    "NUM_DASH": ("BUTTON NUM_DASH", 0),
-    "NUM_DOT":  ("BUTTON NUM_DOT",  0),
+    "Setlist":  (btn("SETLIST"),  1),
+    "Combi":    (btn("COMBI"),    2),
+    "Program":  (btn("PROGRAM"),  3),
+    "Sequence": (btn("SEQUENCE"), 4),
+    "Sampling": (btn("SAMPLING"), 5),
+    "Global":   (btn("GLOBAL"),   6),
+    "Disk":     (btn("DISK"),     7),
+    "Help":     (btn("HELP"),     0),
+    "Compare":  (btn("COMPARE"),  0),
+    "EXIT":     (btn("EXIT"),     0),
+    "ENTER":    (btn("ENTER"),    0),
+    "NUM0":     (btn("NUM0"),     0),
+    "NUM1":     (btn("NUM1"),     0),
+    "NUM2":     (btn("NUM2"),     0),
+    "NUM3":     (btn("NUM3"),     0),
+    "NUM4":     (btn("NUM4"),     0),
+    "NUM5":     (btn("NUM5"),     0),
+    "NUM6":     (btn("NUM6"),     0),
+    "NUM7":     (btn("NUM7"),     0),
+    "NUM8":     (btn("NUM8"),     0),
+    "NUM9":     (btn("NUM9"),     0),
+    "NUM_DASH": (btn("NUM_DASH"), 0),
+    "NUM_DOT":  (btn("NUM_DOT"),  0),
+
+    # ── Nautilus front panel (Views/NautilusRightPanel.xaml's port — see
+    # Rendering/control_surface.py's _NAUT_BUTTON_DEFS for the layout) ──────
+    # MODE/PAGE deliberately reuse Combi's/Program's own (cmd, mode-index)
+    # tuples byte-for-byte: C#'s WireCommand(_nautilusRightPanel.BTN_Mode,
+    # "Mode Combi") / ("Mode Program") sends the identical SendMode(mode)
+    # call Kronos's own Combi/Program buttons use — same boot-gate,
+    # _current_mode/_pending_mode bookkeeping, sysex refresh-on-change — so
+    # reusing the entries is a faithful port, not a shortcut. Their LIT
+    # state never comes from this table's mode>0 press/release flow (unlike
+    # Kronos's radio-group buttons) — it's driven exclusively by the STATE
+    # poll's MODE_LIT/PAGE_LIT fields via _apply_nautilus_lamps, matching
+    # C#'s ApplyNautilusLamps.
+    "NAUT_MODE":  (btn("COMBI"),      2),
+    "NAUT_PAGE":  (btn("PROGRAM"),    3),
+    # A-F: momentary quick-access shortcuts sent directly, mode=0 — C#
+    # explicitly skips SetPendingMode's bookkeeping for these (comment on
+    # WireButtons's A-F block: "don't reflect/track a confirmed mode").
+    # Wire tokens are the fixed NKS4 scan codes for these QA positions.
+    "NAUT_A":     (btn("SEQUENCE"),   0),
+    "NAUT_B":     (btn("SAMPLING"),   0),
+    "NAUT_C":     (btn("GLOBAL"),     0),
+    "NAUT_D":     (btn("DISK"),       0),
+    "NAUT_E":     (btn("SETLIST"),    0),
+    "NAUT_F":     (btn("EXIT"),       0),   # QA slot F = Write/Save shortcut
+    # Exit/Enter, Data Inc/Dec — no lit version, direct sends. Exit=NUM1,
+    # Enter=KARMA_ONOFF (confirmed NOT Octave -/+, despite reusing Kronos's
+    # Exit/Enter button graphics as placeholder art).
+    "NAUT_EXIT":  (btn("NUM1"),       0),
+    "NAUT_ENTER": (btn("KARMA_ONOFF"), 0),
+    "NAUT_INC":   (btn("HELP"),       0),
+    "NAUT_DEC":   (btn("COMPARE"),    0),
 }
 
 
@@ -249,9 +314,17 @@ _FRAME_H    = 600
 _DRAG_START = 8    # px manhattan to start drag
 _DRAG_MOVE  = 3    # px to send TOUCH_MOVE after drag starts
 _CAL_NODE_R = 18.0
+_CAL_DOT_R  = 12.0
+_CAL_PAD    = 20   # CalPad: margin kept around the frame in cal mode
 _CAL_MARGIN = 20
 _TOUCH_FADE = 0.6  # seconds for touch marker fade
 _MODE_POLL_INTERVAL_MS = 1000
+_CAL_NOT_CONNECTED   = "Calibration not saved: it is stored on the unit, so connect to it first."
+_CAL_NO_ANSWER       = "Calibration not saved: the unit did not answer."
+_CAL_TOO_LARGE       = "Calibration not saved: too many bias dots to store on the unit."
+_CAL_DAEMON_TOO_OLD  = ("Calibration not saved: the ScreenRemote daemon on this unit is too old "
+                        "to store it (needs 3.1.2 or later).")
+_BTN_DEPRESS_MS = 150   # KronosButton.DepressMs
 
 
 def _paint_seq_icon(kind: str, color: str, size: int) -> QPixmap:
@@ -292,6 +365,7 @@ class FrameWidget(QWidget):
     touch_move   = Signal(int, int)
     touch_up     = Signal(int, int)
     frame_clicked_for_kbd    = Signal()
+    cal_save_requested       = Signal()   # bias-dot edits save immediately (C# SaveCalibration)
     context_menu_requested   = Signal(QPoint)  # global position
 
     def __init__(self, parent=None):
@@ -311,7 +385,13 @@ class FrameWidget(QWidget):
         self._lut: list[int] = [0] * 256               # packed 0xRRGGBB — UNADJUSTED (detection/editor)
         self._cached_ct: list[int] = []                # base (unadjusted) QImage color table
         self._display_ct: list[int] = []               # tone/saturation-adjusted table (display only)
-        self._ct_dirty = True                          # rebuild color table on next frame
+        self._ct_dirty = True                          # rebuild color table/lut16 on next frame
+        # RGB565LE (Nautilus) path: no palette, so pixels are tone-adjusted via a
+        # precomputed 65536-entry word->0xFFRRGGBB LUT instead of an indexed color
+        # table (mirrors C# MainWindow.Streaming.cs's RebuildLut Rgb565Le branch).
+        self._stream_fmt = 0        # 0 = INDEX8 (palette), 1 = RGB565LE
+        self._lut16: Optional[np.ndarray] = None
+        self._raw_frame_bytes: Optional[bytes] = None  # last RGB565 frame, for live adjust re-apply
         # Image adjustments applied to the *displayed* frame. The detection LUT
         # (_lut) stays unadjusted so boot black-detection isn't skewed by them.
         self._img_bri   = 0
@@ -413,18 +493,62 @@ class FrameWidget(QWidget):
             for c in self._cached_ct
         ]
 
+    def _rebuild_lut16(self):
+        """Precompute RGB565LE word → packed 0xFFRRGGBB for the Nautilus path.
+        Nautilus reports no palette (docs/api.md §4.5), so there is nothing to
+        override — just decode + tone-adjust, replicating high bits when
+        expanding 5/6-bit channels to 8-bit (mirrors C# RebuildLut's Rgb565Le
+        branch and MainWindow.Streaming.cs's decode note)."""
+        curve = np.frombuffer(
+            image_adjust.build_tone_curve(self._img_bri, self._img_con, self._img_gam),
+            dtype=np.uint8)
+        sat = image_adjust.saturation_factor(self._img_sat)
+        v  = np.arange(65536, dtype=np.uint32)
+        r5 = (v >> 11) & 0x1F
+        g6 = (v >> 5) & 0x3F
+        b5 = v & 0x1F
+        r = ((r5 << 3) | (r5 >> 2)).astype(np.uint8)
+        g = ((g6 << 2) | (g6 >> 4)).astype(np.uint8)
+        b = ((b5 << 3) | (b5 >> 2)).astype(np.uint8)
+        rr, gg, bb = curve[r], curve[g], curve[b]
+        if sat != 1.0:
+            rf = rr.astype(np.float32); gf = gg.astype(np.float32); bf = bb.astype(np.float32)
+            luma = 0.299 * rf + 0.587 * gf + 0.114 * bf
+            rr = np.clip(luma + (rf - luma) * sat + 0.5, 0, 255).astype(np.uint32)
+            gg = np.clip(luma + (gf - luma) * sat + 0.5, 0, 255).astype(np.uint32)
+            bb = np.clip(luma + (bf - luma) * sat + 0.5, 0, 255).astype(np.uint32)
+        else:
+            rr = rr.astype(np.uint32); gg = gg.astype(np.uint32); bb = bb.astype(np.uint32)
+        self._lut16 = np.uint32(0xFF000000) | (rr << 16) | (gg << 8) | bb
+
+    def _apply_rgb565(self, raw: bytes):
+        """Build the pixmap for a raw RGB565LE frame using the current lut16."""
+        arr16 = np.frombuffer(raw, dtype="<u2", count=self._fw * self._fh)
+        rgb32 = self._lut16[arr16]
+        img = QImage(rgb32.tobytes(), self._fw, self._fh, self._fw * 4, QImage.Format_RGB32)
+        self._frame_image  = img
+        self._frame_pixmap = self._sharpen_and_pixmap(img)
+
+    def _sharpen_and_pixmap(self, rgb_img: QImage) -> QPixmap:
+        """Optional unsharp-mask (spatial, once per frame) on an RGB32 image."""
+        if self._img_sharp > 0:
+            rgb_img = image_adjust.sharpen_rgb32(
+                rgb_img, self._img_sharp / 100.0 * image_adjust.MAX_SHARPEN)
+        return QPixmap.fromImage(rgb_img)
+
     def _make_pixmap(self, indexed_img: QImage) -> QPixmap:
         """Indexed8 → RGB32, then optional unsharp-mask (spatial, once per frame)."""
-        rgb = indexed_img.convertToFormat(QImage.Format_RGB32)
-        if self._img_sharp > 0:
-            rgb = image_adjust.sharpen_rgb32(
-                rgb, self._img_sharp / 100.0 * image_adjust.MAX_SHARPEN)
-        return QPixmap.fromImage(rgb)
+        return self._sharpen_and_pixmap(indexed_img.convertToFormat(QImage.Format_RGB32))
 
-    def set_frame_size(self, width: int, height: int):
-        """Adopt the dimensions the stream handshake negotiated. Anything
-        non-positive keeps the current size — QImage would read out of bounds
-        on a zero-size buffer, and a bad handshake shouldn't reshape the UI."""
+    def set_frame_size(self, width: int, height: int, stream_fmt: int = 0):
+        """Adopt the dimensions/pixel format the stream handshake negotiated.
+        Non-positive dimensions keep the current size — QImage would read out
+        of bounds on a zero-size buffer, and a bad handshake shouldn't reshape
+        the UI."""
+        self._stream_fmt = stream_fmt
+        self._ct_dirty = True
+        self._lut16 = None
+        self._raw_frame_bytes = None
         if width <= 0 or height <= 0:
             return
         if (width, height) == (self._fw, self._fh):
@@ -435,27 +559,36 @@ class FrameWidget(QWidget):
 
     def on_frame(self, raw: bytes, palette: list[PaletteEntry],
                  overrides: Dict[int, PaletteEntry], locked: Set[int]):
-        """Called from main thread with a new 8bpp frame and current palette."""
+        """Called from main thread with a new frame: 8bpp indexed (Kronos) or
+        raw RGB565LE pixels (Nautilus; no palette)."""
+        bpp = 2 if self._stream_fmt == 1 else 1
         # QImage does not copy or bounds-check `raw`: a buffer shorter than
-        # _fw*_fh is an out-of-bounds read that segfaults the process the
+        # _fw*_fh*bpp is an out-of-bounds read that segfaults the process the
         # moment Qt paints the last row. Drop the frame instead.
-        if len(raw) < self._fw * self._fh:
+        if len(raw) < self._fw * self._fh * bpp:
             return
         self._overrides = overrides
         self._locked    = locked
-        if self._ct_dirty or not self._cached_ct:
-            self._rebuild_color_tables(palette, overrides)
-            self._ct_dirty = False
-        img = QImage(raw, self._fw, self._fh, self._fw, QImage.Format_Indexed8)
-        img.setColorTable(self._display_ct)
-        self._frame_image  = img
-        self._frame_pixmap = self._make_pixmap(img)
+        if self._stream_fmt == 1:
+            self._raw_frame_bytes = raw
+            if self._ct_dirty or self._lut16 is None:
+                self._rebuild_lut16()
+                self._ct_dirty = False
+            self._apply_rgb565(raw)
+        else:
+            if self._ct_dirty or not self._cached_ct:
+                self._rebuild_color_tables(palette, overrides)
+                self._ct_dirty = False
+            img = QImage(raw, self._fw, self._fh, self._fw, QImage.Format_Indexed8)
+            img.setColorTable(self._display_ct)
+            self._frame_image  = img
+            self._frame_pixmap = self._make_pixmap(img)
         self.update()
 
     def set_palette(self, palette: list[PaletteEntry],
                     overrides: Dict[int, PaletteEntry]):
         """Rebuild LUT after palette or override change without new frame."""
-        if not self._frame_image:
+        if self._stream_fmt == 1 or not self._frame_image:
             return
         self._rebuild_color_tables(palette, overrides)
         self._ct_dirty  = False
@@ -468,11 +601,17 @@ class FrameWidget(QWidget):
         """Update image-adjust params and re-render the current frame (live)."""
         self._img_bri, self._img_con, self._img_gam = brightness, contrast, gamma
         self._img_sat, self._img_sharp = saturation, sharpen
-        self._rebuild_display_ct()
-        if self._frame_image and self._display_ct:
-            self._frame_image.setColorTable(self._display_ct)
-            self._frame_pixmap = self._make_pixmap(self._frame_image)
-            self.update()
+        if self._stream_fmt == 1:
+            self._rebuild_lut16()
+            if self._raw_frame_bytes is not None:
+                self._apply_rgb565(self._raw_frame_bytes)
+                self.update()
+        else:
+            self._rebuild_display_ct()
+            if self._frame_image and self._display_ct:
+                self._frame_image.setColorTable(self._display_ct)
+                self._frame_pixmap = self._make_pixmap(self._frame_image)
+                self.update()
 
     # ── Paint ──────────────────────────────────────────────────────────────────
 
@@ -531,7 +670,8 @@ class FrameWidget(QWidget):
             self._renderer.draw_cal_overlay(
                 p, fr, self._cal_mesh, self._cal_bias_dots,
                 self._cal_hover, self._cal_dragging,
-                self._cal_dirty)
+                self._cal_dirty, self._fw, self._fh,
+                self.width(), self.height())
 
         # Palette editor
         if self._ed_open and self._palette:
@@ -562,16 +702,30 @@ class FrameWidget(QWidget):
     # ── Coordinate mapping ─────────────────────────────────────────────────────
 
     def _widget_to_frame(self, pos: QPointF) -> Optional[QPoint]:
+        """C# ScreenToKronos: native (w-1)/(h-1) mapping, rounded and clamped. Outside the
+        frame (CalHitRect in cal mode, which adds a 20px margin) there is no coordinate."""
         fr = self._frame_rect
         if fr.width() <= 0 or fr.height() <= 0:
             return None
-        fx = int((pos.x() - fr.x()) * self._fw / fr.width())
-        fy = int((pos.y() - fr.y()) * self._fh / fr.height())
-        if self._cal_mode:
-            return QPoint(fx, fy)
-        if fx < 0 or fy < 0 or fx >= self._fw or fy >= self._fh:
+        hit = fr.adjusted(-_CAL_PAD, -_CAL_PAD, _CAL_PAD, _CAL_PAD) if self._cal_mode else fr
+        if not hit.contains(pos):
             return None
-        return QPoint(fx, fy)
+        fx = round((pos.x() - fr.x()) / fr.width()  * (self._fw - 1))
+        fy = round((pos.y() - fr.y()) / fr.height() * (self._fh - 1))
+        return QPoint(max(0, min(self._fw - 1, fx)), max(0, min(self._fh - 1, fy)))
+
+    def _widget_to_frame_node(self, pos: QPointF) -> QPoint:
+        """C# ScreenToKronosNode: unclamped, w/h basis, for dragging nodes past the edge."""
+        fr = self._frame_rect
+        x = max(0.0, min(float(self.width()),  pos.x()))
+        y = max(0.0, min(float(self.height()), pos.y()))
+        return QPoint(int((x - fr.x()) / fr.width() * self._fw),
+                      int((y - fr.y()) / fr.height() * self._fh))
+
+    def _kron_to_screen(self, kx: int, ky: int) -> QPointF:
+        fr = self._frame_rect
+        return QPointF(fr.x() + kx * fr.width()  / (self._fw - 1),
+                       fr.y() + ky * fr.height() / (self._fh - 1))
 
     def _apply_cal(self, fx: int, fy: int) -> Tuple[int, int]:
         """Apply inverse calibration mesh to get Kronos natural coords."""
@@ -582,9 +736,7 @@ class FrameWidget(QWidget):
     def mousePressEvent(self, event: QMouseEvent):
         # Right-click in cal mode: place or remove a bias dot
         if event.button() == Qt.RightButton and self._cal_mode:
-            fp = self._widget_to_frame(event.position())
-            if fp:
-                self._cal_right_click(fp.x(), fp.y())
+            self._cal_right_click(event.position())
             return
 
         # Right-click in normal mode: emit for context menu
@@ -605,7 +757,7 @@ class FrameWidget(QWidget):
 
         # Calibration node drag — hit node starts drag, miss falls through to touch
         if self._cal_mode:
-            node = self._cal_hit_node(fp)
+            node = self._cal_hit_node(pos)
             if node:
                 self._cal_dragging = node
                 ox, oy = self._cal_mesh.get_offset(*node)
@@ -636,17 +788,18 @@ class FrameWidget(QWidget):
             self._ed_hover(pos)
 
         # Cal node drag / hover
-        if self._cal_mode and fp:
+        if self._cal_mode:
+            old_hover = self._cal_hover
+            self._cal_hover = self._cal_hit_node(pos)
             if self._cal_dragging:
                 col, row = self._cal_dragging
-                nat_x = self._cal_mesh.nat_x(col, self._fw)
-                nat_y = self._cal_mesh.nat_y(row, self._fh)
-                self._cal_mesh.set_offset(col, row, fp.x() - nat_x, fp.y() - nat_y)
+                np_ = self._widget_to_frame_node(pos)
+                self._cal_mesh.set_offset(col, row,
+                                          np_.x() - self._cal_mesh.nat_x(col, self._fw),
+                                          np_.y() - self._cal_mesh.nat_y(row, self._fh))
                 self._cal_dirty = True
                 self.update()
                 return
-            old_hover = self._cal_hover
-            self._cal_hover = self._cal_hit_node(fp)
             if self._cal_hover != old_hover:
                 self.update()
 
@@ -712,6 +865,22 @@ class FrameWidget(QWidget):
                     nx, ny = self._apply_cal(fp.x(), fp.y())
                     self.touch_up.emit(nx, ny)
 
+    def cancel_drag(self) -> bool:
+        """Cancel a pending/active touch drag (Escape precedence — mirrors C#
+        MainWindow.Input.cs's drag-cancel block). Sends a bare TOUCH_UP at the
+        cancel position even for a pending-only drag with no prior TOUCH_DOWN,
+        matching C#. Returns True if a drag was in progress and got cancelled."""
+        if not (self._drag_pending or self._drag_active):
+            return False
+        cancel_pos = self._drag_last if self._drag_active else self._drag_pending_pos
+        self._drag_pending = False
+        self._drag_active  = False
+        if cancel_pos is not None and self._is_connected:
+            nx, ny = self._apply_cal(cancel_pos.x(), cancel_pos.y())
+            self.touch_up.emit(nx, ny)
+        self.update()
+        return True
+
     def wheelEvent(self, event: QWheelEvent):
         # Pass to parent (main window handles wheel → WHEEL CW/CCW)
         event.ignore()
@@ -774,20 +943,15 @@ class FrameWidget(QWidget):
 
     # ── Cal helpers ───────────────────────────────────────────────────────────
 
-    def _cal_hit_node(self, fp: Optional[QPoint]) -> Optional[Tuple[int, int]]:
-        if not fp:
-            return None
-        fr = self._frame_rect
-        scale_x = fr.width()  / self._fw if fr.width()  > 0 else 1
-        scale_y = fr.height() / self._fh if fr.height() > 0 else 1
-        best_d, best = 1e9, None
+    def _cal_hit_node(self, pos: QPointF) -> Optional[Tuple[int, int]]:
+        """C# FindNearestCalNode: nearest node within NodeHitRadius, in screen space."""
+        best_d, best = _CAL_NODE_R, None
         for c in range(self._cal_mesh.cols):
             for r in range(self._cal_mesh.rows):
-                nx, ny = self._cal_mesh.node_dst(c, r, self._fw, self._fh)
-                dx = (nx - fp.x()) * scale_x
-                dy = (ny - fp.y()) * scale_y
-                d  = math.hypot(dx, dy)
-                if d < _CAL_NODE_R and d < best_d:
+                kx, ky = self._cal_mesh.node_dst(c, r, self._fw, self._fh)
+                sp = self._kron_to_screen(kx, ky)
+                d = math.hypot(sp.x() - pos.x(), sp.y() - pos.y())
+                if d < best_d:
                     best_d, best = d, (c, r)
         return best
 
@@ -796,41 +960,46 @@ class FrameWidget(QWidget):
         self._cal_history.append(entry)
         self._cal_hist_pos = len(self._cal_history) - 1
 
-    def _cal_right_click(self, fx: int, fy: int):
-        """Place or remove a bias dot at the clicked frame position."""
-        _HIT_R = 12  # pixel hit radius for removal
+    def _cal_right_click(self, pos: QPointF):
+        """Remove the bias dot under the cursor, else add one there; saves immediately."""
+        best_d, idx = _CAL_DOT_R, None
         for i, d in enumerate(self._cal_bias_dots):
-            disp_x, disp_y = self._cal_mesh.apply(d.nx, d.ny, self._fw, self._fh)
-            if math.hypot(fx - disp_x, fy - disp_y) <= _HIT_R:
-                removed = self._cal_bias_dots.pop(i)
-                self._cal_push_hist(CalHistEntry(CalHistKind.DotRemoved,
-                                                  dot_idx=i, dot=removed))
-                self._cal_dirty = True
-                self.update()
+            kx, ky = self._cal_mesh.apply(d.nx, d.ny, self._fw, self._fh)
+            sp = self._kron_to_screen(kx, ky)
+            dist = math.hypot(sp.x() - pos.x(), sp.y() - pos.y())
+            if dist < best_d:
+                best_d, idx = dist, i
+        if idx is not None:
+            removed = self._cal_bias_dots.pop(idx)
+            self._cal_push_hist(CalHistEntry(CalHistKind.DotRemoved, dot_idx=idx, dot=removed))
+        else:
+            fp = self._widget_to_frame(pos)
+            if fp is None:
                 return
-        # Dots stored in natural (pre-mesh) coordinates so they follow the mesh
-        nat_x, nat_y = self._cal_mesh.inverse_apply(fx, fy, self._fw, self._fh)
-        dot = CalBiasDot(nat_x, nat_y)
-        self._cal_bias_dots.append(dot)
-        self._cal_push_hist(CalHistEntry(CalHistKind.DotAdded,
-                                          dot_idx=len(self._cal_bias_dots) - 1,
-                                          dot=dot))
-        self._cal_dirty = True
+            # Stored as InverseApply(click) so Apply(stored) == click now and the dot
+            # follows later mesh changes.
+            nat_x, nat_y = self._cal_mesh.inverse_apply(fp.x(), fp.y(), self._fw, self._fh)
+            dot = CalBiasDot(nat_x, nat_y)
+            self._cal_bias_dots.append(dot)
+            self._cal_push_hist(CalHistEntry(CalHistKind.DotAdded,
+                                             dot_idx=len(self._cal_bias_dots) - 1, dot=dot))
+        self.cal_save_requested.emit()
         self.update()
 
     def cal_undo(self):
         if self._cal_hist_pos < 0:
             return
         e = self._cal_history[self._cal_hist_pos]
+        self._cal_hist_pos -= 1
         if e.kind == CalHistKind.NodeMove:
             self._cal_mesh.set_offset(e.col, e.row, e.old_off_x, e.old_off_y)
-        elif e.kind == CalHistKind.DotAdded:
-            if 0 <= e.dot_idx < len(self._cal_bias_dots):
+            self._cal_dirty = True
+        else:
+            if e.kind == CalHistKind.DotAdded:
                 self._cal_bias_dots.pop(e.dot_idx)
-        elif e.kind == CalHistKind.DotRemoved and e.dot is not None:
-            self._cal_bias_dots.insert(e.dot_idx, e.dot)
-        self._cal_hist_pos -= 1
-        self._cal_dirty = True
+            elif e.kind == CalHistKind.DotRemoved and e.dot is not None:
+                self._cal_bias_dots.insert(e.dot_idx, e.dot)
+            self.cal_save_requested.emit()
         self.update()
 
     def cal_redo(self):
@@ -840,12 +1009,13 @@ class FrameWidget(QWidget):
         e = self._cal_history[self._cal_hist_pos]
         if e.kind == CalHistKind.NodeMove:
             self._cal_mesh.set_offset(e.col, e.row, e.new_off_x, e.new_off_y)
-        elif e.kind == CalHistKind.DotAdded and e.dot is not None:
-            self._cal_bias_dots.insert(e.dot_idx, e.dot)
-        elif e.kind == CalHistKind.DotRemoved:
-            if 0 <= e.dot_idx < len(self._cal_bias_dots):
+            self._cal_dirty = True
+        else:
+            if e.kind == CalHistKind.DotAdded and e.dot is not None:
+                self._cal_bias_dots.insert(e.dot_idx, e.dot)
+            elif e.kind == CalHistKind.DotRemoved:
                 self._cal_bias_dots.pop(e.dot_idx)
-        self._cal_dirty = True
+            self.cal_save_requested.emit()
         self.update()
 
     # ── Keyboard input for palette editor ─────────────────────────────────────
@@ -1027,7 +1197,10 @@ class KronosValueSliderPanel(QWidget):
         self._load_images()
 
     def _load_images(self):
-        res = pathlib.Path(__file__).parent / "Resources" / "Images"
+        # Repo-root Resources/Images/ — this file is one directory below the repo
+        # root (see Rendering/control_surface.py's _res() for the fuller writeup
+        # of this off-by-one bug, fixed alongside this one).
+        res = pathlib.Path(__file__).parent.parent / "Resources" / "Images"
         bg = res / "KronosLeftSide2EMPTY.png"
         if bg.exists():
             self._bg_pixmap = QPixmap(str(bg))
@@ -1123,6 +1296,17 @@ class KronosValueSliderPanel(QWidget):
                 self._pressed_btn = None
                 self.update()
 
+    def follow_value(self, val: int):
+        """Follow the hardware VALUE slider (incoming CC# == the configured value-slider CC).
+        Ignored while the user is dragging this slider so an echo can't fight the drag;
+        never re-emits slider_changed (this is a display sync, not a user edit)."""
+        if self._dragging:
+            return
+        val = max(0, min(127, int(val)))
+        self._thumb_top = self._SLIDER_TRAVEL * (127 - val) / 127.0
+        self._value = val
+        self.update()
+
     def _update_slider_from_mouse(self, mouse_y: float):
         local_y = mouse_y - self._CANVAS_TOP
         thumb_top = max(0.0, min(local_y - self._THUMB_HALF, self._SLIDER_TRAVEL))
@@ -1194,7 +1378,7 @@ class _ShutdownOverlay(QWidget):
 
 
 def _log_file_path() -> pathlib.Path:
-    return storage.data_dir() / "kronos_screen_remote.log"
+    return Models.storage.data_dir() / "kronos_screen_remote.log"
 
 
 def _setup_logging(debug: bool):
@@ -1266,8 +1450,8 @@ class _FtpLoginDialog(QDialog):
         form = QFormLayout()
         self._user_edit = QLineEdit(existing_user)
         self._user_edit.setPlaceholderText("root")
-        self._pass_edit = QLineEdit(existing_pass)
-        self._pass_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self._pass_edit = RevealablePasswordEdit()
+        self._pass_edit.setText(existing_pass)
         form.addRow("Username:", self._user_edit)
         form.addRow("Password:", self._pass_edit)
         layout.addLayout(form)
@@ -1353,7 +1537,7 @@ class _FtpLoginDialog(QDialog):
         self._show_error(f"{error} ({remaining} attempt{plural} remaining)")
 
 
-class MainWindow(QMainWindow):
+class MainWindow(MainWindowDialogMixin, QMainWindow):
     def __init__(self, settings: AppSettings):
         super().__init__()
         self._settings    = settings
@@ -1368,8 +1552,8 @@ class MainWindow(QMainWindow):
 
         self._receiver: Optional[StreamReceiver] = None
         self._palette:  list[PaletteEntry] = []
-        self._overrides = storage.load_overrides()
-        self._locked    = storage.load_locks()
+        self._overrides = Models.storage.load_overrides()
+        self._locked    = Models.storage.load_locks()
         self._raw_frame: Optional[bytes] = None
 
         self._mode_detector  = ModeDetector()
@@ -1439,12 +1623,24 @@ class MainWindow(QMainWindow):
         self._zoom_on      = False
         self._zoom_level   = settings.zoom_default_level
         self._mirror_state = False
+        # Set True on connect, initially from the cheap stream_fmt heuristic
+        # (RGB565LE only ships on Nautilus, no extra round trip needed) and
+        # then upgraded once the daemon's own MODEL command resolves
+        # (_fetch_device_family) — that FAMILY field is the authoritative
+        # signal, stream_fmt is a fast correlate of it, not a substitute.
+        # Gates commands with no confirmed Nautilus wire behavior — see
+        # _ctrl_send_bank and MIRROR_ON's docs/api.md note (mirror is VGA-only,
+        # Nautilus has no display behind the panel to mirror to).
+        self._is_nautilus  = False
+        self._device_family = DeviceFamily.UNKNOWN
+        self._model_info = ModelInfo()
         self._perf_window  = None   # PerformanceWindow singleton (lazy)
         self._file_manager_win = None
         self._sysex_tool_win = None
         self._librarian_shell_win = None
         self._sysex_service = SysExService(self)
         self._shutting_down = False
+        self._geometry_restored = False   # first-showEvent one-shot guard
         self._tray_icon = None   # QSystemTrayIcon, set up in _init_tray_icon
 
         # Ping
@@ -1466,27 +1662,28 @@ class MainWindow(QMainWindow):
 
         # VU meter audio capture
         self._audio_capture = None
-        self._vu_device_id: Optional[str] = None
+        self._vu_device_id: Optional[str] = settings.vu_device_id
 
         self._setup_ui()
+        if self._vu_device_id:
+            QTimer.singleShot(0, lambda: self._start_audio_capture(self._vu_device_id))
 
         # Persistence failures (read-only share, disk full, permissions) are
         # logged and swallowed by design so a failed cache write can't take down
         # a sync — but swallowed alone means the app silently stops saving
         # anything. Surface the first of each kind in the notification area.
         # storage calls this from whatever thread failed, so hop to the GUI one.
-        storage.on_write_failure = lambda msg: QTimer.singleShot(
+        Models.storage.on_write_failure = lambda msg: QTimer.singleShot(
             0, self, lambda m=msg: self._notify(m, is_error=True))
         self._wire_actions()
         self._apply_settings_to_ui()
+        self._apply_midi_settings()
 
         # Release keyboard capture when a click lands outside the frame widget
         QApplication.instance().installEventFilter(self)
 
-        # Load cal
-        self._frame_w._cal_mesh, self._frame_w._cal_bias_dots = storage.load_cal()
-        if not self._frame_w._cal_mesh.is_identity():
-            logging.debug("cal mesh loaded, %d bias dot(s)", len(self._frame_w._cal_bias_dots))
+        self._cal_save_lock = threading.Lock()
+        self._frame_w.cal_save_requested.connect(self._save_calibration)
 
         self._ctrl = CtrlClient.get()
 
@@ -1639,7 +1836,10 @@ class MainWindow(QMainWindow):
             w.setAlignment(Qt.AlignmentFlag.AlignCenter)
             w.setStyleSheet(f"color: {dim};")
             w.setToolTip(tip)
-        _midi_io = QWidget()
+        self._midi_io = _midi_io = QWidget()
+        _midi_io.setCursor(Qt.CursorShape.PointingHandCursor)
+        _midi_io.mousePressEvent = lambda e: (self._open_sysex_tool()
+                                              if e.button() == Qt.MouseButton.LeftButton else None)
         _midi_io_lay = QHBoxLayout(_midi_io)
         _midi_io_lay.setContentsMargins(0, 0, 0, 0)
         _midi_io_lay.setSpacing(1)
@@ -1680,22 +1880,31 @@ class MainWindow(QMainWindow):
         _seq_font = QFont(T.FONT_SYMBOL)
         _seq_font.setPixelSize(T.FS_SMALL)
 
-        def _seq_btn(glyph: str, tooltip: str, action: str) -> QLabel:
+        def _seq_btn(glyph: str, tooltip: str, action: str, kronos_only: bool = False,
+                     nautilus_action: Optional[str] = None) -> QLabel:
             lbl = QLabel(glyph)
             lbl.setObjectName("footerIcon")
             lbl.setFont(_seq_font)
             lbl.setStyleSheet(f"color: {T.TEXT_DIM}; padding: 0 3px;")
             lbl.setToolTip(tooltip)
             lbl.setCursor(Qt.CursorShape.PointingHandCursor)
-            lbl.mousePressEvent = lambda ev, a=action, l=lbl: (
-                None if ev.button() != Qt.MouseButton.LeftButton
-                else (self._ctrl_send(f"BUTTON {a}"),
+            # kronos_only: Fast-Forward/Rewind have no confirmed Nautilus wire
+            # token (kept in place but faded + non-clickable there, matching
+            # C#'s ApplyDeviceFamilyUi — unconditional, not just gated by
+            # Sequence mode like the rest of this row). nautilus_action: a
+            # real remapped scan code to send instead on Nautilus (see
+            # _nautilus_token) — resolved at click time, not baked in here,
+            # since device family can change across a reconnect.
+            lbl.mousePressEvent = lambda ev, a=action, na=nautilus_action, l=lbl, ko=kronos_only: (
+                None if ev.button() != Qt.MouseButton.LeftButton or (ko and self._is_nautilus)
+                else (self._ctrl_send(btn(self._nautilus_token(a, na) if na else a)),
                       l.setStyleSheet(f"color: {T.ACCENT}; padding: 0 3px;"),
                       QTimer.singleShot(180, lambda: l.setStyleSheet(
                           f"color: {T.TEXT_DIM}; padding: 0 3px;"))))
             return lbl
 
-        def _seq_icon_btn(kind: str, tooltip: str, action: str) -> QLabel:
+        def _seq_icon_btn(kind: str, tooltip: str, action: str,
+                          nautilus_action: Optional[str] = None) -> QLabel:
             # Painted vector icon, not an emoji glyph — 💾 (U+1F4BE) and the metronome
             # shape have no Segoe UI Symbol coverage, so Qt falls back to the system's
             # COLOR emoji font for them, which is why Save used to render as a colored,
@@ -1707,23 +1916,26 @@ class MainWindow(QMainWindow):
             lbl.setPixmap(_paint_seq_icon(kind, T.TEXT_DIM, size))
             lbl.setToolTip(tooltip)
             lbl.setCursor(Qt.CursorShape.PointingHandCursor)
-            lbl.mousePressEvent = lambda ev, a=action, l=lbl, k=kind, sz=size: (
+            lbl.mousePressEvent = lambda ev, a=action, na=nautilus_action, l=lbl, k=kind, sz=size: (
                 None if ev.button() != Qt.MouseButton.LeftButton
-                else (self._ctrl_send(f"BUTTON {a}"),
+                else (self._ctrl_send(btn(self._nautilus_token(a, na) if na else a)),
                       l.setPixmap(_paint_seq_icon(k, T.ACCENT, sz)),
                       QTimer.singleShot(180, lambda: l.setPixmap(_paint_seq_icon(k, T.TEXT_DIM, sz)))))
             return lbl
 
-        self._seq_locate = _seq_btn("⏮", "Locate — return to the locate point", "SEQ_LOCATE")
-        self._seq_rew    = _seq_btn("◀◀", "Rewind (<<)", "SEQ_REW")
-        self._seq_ff     = _seq_btn("▶▶", "Fast-forward (>>)", "SEQ_FF")
-        self._seq_pause  = _seq_btn("⏸", "Pause", "SEQ_PAUSE")
-        self._seq_rec    = _seq_btn("⏺", "Record", "SEQ_REC")
-        self._seq_start  = _seq_btn("▶", "Start / Stop", "SEQ_START")
+        self._seq_locate = _seq_btn("⏮", "Locate — return to the locate point", "SEQ_LOCATE",
+                                     nautilus_action="MS1")
+        self._seq_rew    = _seq_btn("◀◀", "Rewind (<<)", "SEQ_REW", kronos_only=True)
+        self._seq_ff     = _seq_btn("▶▶", "Fast-forward (>>)", "SEQ_FF", kronos_only=True)
+        self._seq_pause  = _seq_btn("⏸", "Pause", "SEQ_PAUSE", nautilus_action="MS3")
+        self._seq_rec    = _seq_btn("⏺", "Record", "SEQ_REC", nautilus_action="MS2")
+        self._seq_start  = _seq_btn("▶", "Start / Stop", "SEQ_START", nautilus_action="MP6")
         self._tap_tempo_lbl = _seq_icon_btn("metronome",
-            "Tap Tempo — one tap per press; the Kronos averages", "TAP_TEMPO")
+            "Tap Tempo — one tap per press; the Kronos averages", "TAP_TEMPO",
+            nautilus_action="NUM9")
         self._seq_save_lbl  = _seq_icon_btn("save",
-            "Write / Save — REC/WRITE (Setlist/Combi/Program/Global)", "SEQ_REC")
+            "Write / Save — REC/WRITE (Setlist/Combi/Program/Global)", "SEQ_REC",
+            nautilus_action="EXIT")
         # Transport row is one widget so it can be faded/enabled as a unit (req 12).
         _seq_box = QWidget()
         _seq_lay = QHBoxLayout(_seq_box)
@@ -1808,8 +2020,6 @@ class MainWindow(QMainWindow):
         self._recent_menu = conn_menu.addMenu("&Recent Connections")
         self._rebuild_recent_menu()
         self._act_copy_ip = conn_menu.addAction("Copy &IP Address")
-        conn_menu.addSeparator()
-        self._act_file_mgr   = conn_menu.addAction("File &Manager…")
 
         # ── View (MENU_View) ────────────────────────────────────────────────
         view_menu = mb.addMenu("&View")
@@ -1855,7 +2065,7 @@ class MainWindow(QMainWindow):
             self._act_sz[scale] = a
 
         # ── Tools (MENU_Tools) ──────────────────────────────────────────────
-        tools_menu = mb.addMenu("&Tools")
+        self._tools_menu = tools_menu = mb.addMenu("&Tools")
         self._act_palette = tools_menu.addAction("&Palette Editor")
         self._act_palette.setCheckable(True)
         self._act_palette.setVisible(False)  # hidden at runtime — matches C# MainWindow.xaml.cs:615
@@ -1869,13 +2079,18 @@ class MainWindow(QMainWindow):
             self._act_grid[n] = a
         self._act_grid[5].setChecked(True)
         tools_menu.addSeparator()
-        self._act_sysex_tool = tools_menu.addAction("Open &SysEx Tool…")
+        self._act_sysex_tool = tools_menu.addAction("&MIDI Monitor…")
         self._act_librarian_shell = tools_menu.addAction("&Librarian…")
+        self._act_sample_editor = tools_menu.addAction("Sample &Editor…")
+        self._act_sample_editor.triggered.connect(self.on_show_sample_editor)
+        # C# MainWindow.xaml: MNU_FileManager lives in MENU_Tools, after Librarian/
+        # Sample Editor — not in Connection.
+        self._act_file_mgr   = tools_menu.addAction("File &Manager…")
         tools_menu.addSeparator()
         self._act_keyboard_info = tools_menu.addAction("&Keyboard Info…")
         self._act_test_mode   = tools_menu.addAction("Enter Kronos &Test Mode")
         tools_menu.addSeparator()
-        self._act_disable_kbd = tools_menu.addAction("&Disable Keyboard Send")
+        self._act_disable_kbd = tools_menu.addAction("&Disable Remote Typing")
         self._act_disable_kbd.setCheckable(True)
         self._act_paste_clipboard = tools_menu.addAction("&Paste Clipboard to Kronos")
 
@@ -1885,9 +2100,18 @@ class MainWindow(QMainWindow):
         for label in _MODE_MENU_LABELS[1:]:
             a = mode_menu.addAction(label)
             self._act_modes.append(a)
+        # Nautilus item set (MNU_NautilusMode_*): the front panel's own Mode/Page/A-F.
+        # Same wire tokens as the Kronos modes; (label, mode index or 0 for F=EXIT).
+        self._act_naut_modes: list[QAction] = []
+        for label, mode_idx in _NAUT_MODE_ITEMS:
+            a = mode_menu.addAction(label)
+            a.setVisible(False)
+            a.setData(mode_idx)
+            self._act_naut_modes.append(a)
 
         # ── Bank select (MENU_BankSelect) ───────────────────────────────────
         bank_menu = mb.addMenu("Ban&k Select")
+        self._bank_menu = bank_menu
         self._build_bank_menu(bank_menu)
 
         # ── Help ────────────────────────────────────────────────────────────
@@ -1905,15 +2129,15 @@ class MainWindow(QMainWindow):
         internal_menu = menu.addMenu("&Internal (A-G)")
         for letter in letters:
             a = internal_menu.addAction(letter)
-            a.triggered.connect(lambda checked, l=letter: self._ctrl_send(f"BUTTON BANK_I{l}"))
+            a.triggered.connect(lambda checked, l=letter: self._ctrl_send_bank(btn(f"BANK_I{l}")))
         user_menu = menu.addMenu("&User (A-G)")
         for letter in letters:
             a = user_menu.addAction(letter)
-            a.triggered.connect(lambda checked, l=letter: self._ctrl_send(f"BUTTON BANK_U{l}"))
+            a.triggered.connect(lambda checked, l=letter: self._ctrl_send_bank(btn(f"BANK_U{l}")))
         uuser_menu = menu.addMenu("Us&er (AA–GG)")
         for letter in letters:
             a = uuser_menu.addAction(f"{letter}{letter}")
-            a.triggered.connect(lambda checked, l=letter: self._ctrl_send(f"CHORD BANK_U{l} BANK_I{l}"))
+            a.triggered.connect(lambda checked, l=letter: self._ctrl_send_bank((f"BANK_U{l}", f"BANK_I{l}")))
 
     # ── Action wiring ──────────────────────────────────────────────────────────
 
@@ -1968,6 +2192,8 @@ class MainWindow(QMainWindow):
         # carries EDITCTX/BOOT, which this bare hint doesn't) - this only
         # moves the confirmation earlier, via _apply_daemon_state as usual.
         self._sysex_service.mode_changed.connect(self._on_sysex_mode_hint)
+        # Hardware VALUE slider (CC# from Settings > MIDI/SysEx) -> the on-screen slider.
+        self._sysex_service.value_slider_changed.connect(self._left_panel.follow_value)
         # Seed from current state (in case events fired before this wiring).
         br = self._sysex_service.bridge
         self._set_midi_badge(bool(br and br.is_connected))
@@ -1993,7 +2219,14 @@ class MainWindow(QMainWindow):
         # Mode buttons
         for i, (act, cmd) in enumerate(zip(self._act_modes, _MODE_CMDS[1:]), 1):
             act.triggered.connect(lambda checked, c=cmd, m=i:
-                                  (self._ctrl_send(f"BUTTON {c}"), self._set_pending_mode(m)))
+                                  (self._ctrl_send(btn(c)), self._set_pending_mode(m)))
+        for act in self._act_naut_modes:
+            m = act.data()
+            if m:
+                act.triggered.connect(lambda checked, c=_MODE_CMDS[m], m=m:
+                                      (self._ctrl_send(btn(c)), self._set_pending_mode(m)))
+            else:   # F: Save — front-panel EXIT on Nautilus
+                act.triggered.connect(lambda checked: self._ctrl_send(btn("EXIT")))
 
         self._act_settings_dlg.triggered.connect(self._open_settings)
         self._act_show_help.triggered.connect(self._toggle_help)
@@ -2102,7 +2335,7 @@ class MainWindow(QMainWindow):
     def _set_scale_quality(self, mode: str):
         """User picked a scaling quality from the menu."""
         self._settings.scaling_quality = mode
-        storage.save_settings(self._settings)
+        Models.storage.save_settings(self._settings)
         {"Sharp": self._act_scale_sharp, "Smooth": self._act_scale_smooth,
          "HighQuality": self._act_scale_hq}[mode].setChecked(True)  # exclusive group unchecks others
         self._frame_w._scale_mode = mode
@@ -2118,7 +2351,7 @@ class MainWindow(QMainWindow):
                 return
             host = text.strip()
             self._settings.kronos_host = host
-            storage.save_settings(self._settings)
+            Models.storage.save_settings(self._settings)
         self._host = host
         self._connect_async()
 
@@ -2138,7 +2371,7 @@ class MainWindow(QMainWindow):
         self._settings.ftp_username = dlg.username
         self._settings.ftp_password = dlg.password
         if dlg.save_password:
-            storage.save_settings(self._settings)
+            Models.storage.save_settings(self._settings)
         return True
 
     def _connect_async(self):
@@ -2169,7 +2402,7 @@ class MainWindow(QMainWindow):
             self._settings.ftp_username = ""
             self._settings.ftp_password = ""
             self._connecting = False
-            QTimer.singleShot(0, self, lambda: storage.save_settings(self._settings))
+            QTimer.singleShot(0, self, lambda: Models.storage.save_settings(self._settings))
             QTimer.singleShot(0, self, lambda: self._set_conn_state(
                 "disconnected", "Authentication failed — re-enter credentials in Settings"))
             return
@@ -2179,8 +2412,24 @@ class MainWindow(QMainWindow):
             msg = str(e)
             QTimer.singleShot(0, self, lambda m=msg: self._set_conn_state(
                 "disconnected", f"Connection failed: {m}"))
+            QTimer.singleShot(0, self, lambda m=msg: self._show_connection_failed_dialog(m))
             return
         QTimer.singleShot(0, self, lambda: self._apply_new_receiver(rx))
+
+    def _show_connection_failed_dialog(self, error_msg: str):
+        """Port of C#'s OnSessionConnectionFailed dialog step: a single "can't
+        reach the device" popup with a way straight to Settings > Connection
+        (Views/ConnectionFailedDialog.xaml.cs). Only wired into the initial,
+        user-triggered connect path (_connect_bg) — the background auto-
+        reconnect loop (_reconnect_bg/_schedule_reconnect) has no C# equivalent
+        at all (C#'s own Help text: "The app does not auto-reconnect after a
+        network interruption") and popping a modal on every unattended retry
+        would be disruptive, so it stays silent-status-only there."""
+        from Views.connection_dialogs import ConnectionFailedDialog
+        dlg = ConnectionFailedDialog(self._host, self._ctrl_port, error_msg, parent=self)
+        dlg.exec()
+        if dlg.open_settings:
+            self._open_settings("Connection")
 
     def _disconnect(self, quiet: bool = False):
         if not quiet:
@@ -2245,11 +2494,22 @@ class MainWindow(QMainWindow):
         # Per-frame black checks. Both thresholds are answered from a single
         # scan of the frame — the black fraction doesn't depend on which
         # threshold it's compared against.
+        #
+        # INDEX8 only: every pixel-based detector below assumes one palette-index
+        # byte per pixel at stride _fw and a Kronos-shaped reference image. On
+        # Nautilus (RGB565LE, 2 bytes/pixel, different geometry) they would read
+        # meaningless data — never run them there (mirrors C# MainWindow.
+        # Streaming.cs's `_bpp == 8 only` gate). The daemon's STATE poll is
+        # format-agnostic and remains authoritative for both device families.
         frame_w_px = self._frame_w._fw
-        black_frac = frame_black_fraction(raw, self._frame_w._lut)
-        mostly_black = black_frac > 0.90
-        likely_boot = black_frac > self._settings.boot_screen_threshold / 100.0
-        self._frame_w._frame_is_likely_boot_screen = likely_boot
+        is_index8 = self._frame_w._stream_fmt == 0
+        if is_index8:
+            black_frac = frame_black_fraction(raw, self._frame_w._lut)
+            mostly_black = black_frac > 0.90
+            likely_boot = black_frac > self._settings.boot_screen_threshold / 100.0
+            self._frame_w._frame_is_likely_boot_screen = likely_boot
+        else:
+            mostly_black = True   # suppresses the pixel-detector block below
 
         # Pixel detection is only a FALLBACK (req 13): the daemon's STATE poll is the
         # authoritative mode/boot source. While the daemon is answering (or still
@@ -2257,7 +2517,7 @@ class MainWindow(QMainWindow):
         # when the daemon STATE path has never produced a reading (daemon process
         # missing / network to ctrl port failing).
         daemon_authoritative = self._daemon_state_ok
-        if not mostly_black:
+        if is_index8 and not mostly_black:
             # Help overlay is still pixel-detected (the daemon exposes no help signal).
             if self._mode_detector.has_any():
                 help_now = self._mode_detector.is_help_active(raw, frame_w_px, self._frame_w._lut)
@@ -2307,7 +2567,7 @@ class MainWindow(QMainWindow):
 
         # Boot load-phase detection - advance phases strictly forward (fallback only;
         # the daemon's own progress bar is composited server-side into the stream).
-        if self._boot_phase and not daemon_authoritative:
+        if is_index8 and self._boot_phase and not daemon_authoritative:
             detected = self._boot_detector.identify(raw, frame_w_px, self._frame_w._lut)
             if (detected == BootPhase.FINISHING
                     and self._boot_load_phase < BootPhase.FINISHING):
@@ -2330,6 +2590,9 @@ class MainWindow(QMainWindow):
         self._frame_w.update()
         self._mode_poll_timer.stop()
         self._poll_in_progress = False
+        # No session, no LED reading — don't leave stale Nautilus lamps lit
+        # (C#'s ClearModeButtons calling ApplyNautilusLamps(null, null)).
+        self._apply_nautilus_lamps(None, None)
         self._stop_ping()
         # The stream is gone, so the daemon has dropped our ctrl ownership too
         # (screenremote.c clears g_ctrl_allowed_ip on client disconnect). Stop
@@ -2376,7 +2639,7 @@ class MainWindow(QMainWindow):
             self._settings.ftp_username = ""
             self._settings.ftp_password = ""
             self._connecting = False
-            QTimer.singleShot(0, self, lambda: storage.save_settings(self._settings))
+            QTimer.singleShot(0, self, lambda: Models.storage.save_settings(self._settings))
             QTimer.singleShot(0, self, lambda: self._set_conn_state(
                 "disconnected", "Auth failed — re-enter credentials in Settings then reconnect"))
             return
@@ -2400,7 +2663,16 @@ class MainWindow(QMainWindow):
         self._receiver = rx
         self._palette  = list(rx.palette)
         self._frame_w._palette = self._palette
-        self._frame_w.set_frame_size(rx.width, rx.height)
+        self._frame_w.set_frame_size(rx.width, rx.height, rx.stream_fmt)
+        # RGB565LE only ships on Nautilus (docs/api.md §4.5) — cheapest available
+        # family signal, no extra daemon round trip needed for the gating below.
+        # Immediately usable; _fetch_device_family below upgrades it (and
+        # re-applies the gating) once the daemon's own MODEL command
+        # resolves, since FAMILY is the authoritative signal and stream_fmt
+        # is only a fast correlate of it.
+        self._is_nautilus = (rx.stream_fmt == 1)
+        self._apply_device_family_ui()
+        self._fetch_device_family()
         rx.frame_received.connect(self._on_frame)
         rx.disconnected.connect(self._on_disconnected)
         rx.start()
@@ -2423,16 +2695,183 @@ class MainWindow(QMainWindow):
         # per-tick connect/close), and a drop is re-established by the client's
         # own supervisor rather than staying down until the next user gesture.
         self._ctrl.start_persistent(self._host, self._ctrl_port)
-        # Push mirror state and screensaver timeout to daemon on every connect
+        # Calibration lives on the unit, not the PC (docs/api.md CAL_GET/CAL_SET)
+        # — re-fetch it on every connect (matches C#'s ApplyUnitCalibration).
+        self._fetch_unit_calibration()
+        # Push mirror state and screensaver timeout to daemon on every connect.
+        # MIRROR_ON/OFF is Kronos-only (docs/api.md: Nautilus has no VGA output
+        # behind the panel to mirror to — MIRROR_ON there just replies
+        # ERR MIRROR_UNSUPPORTED); matches C#'s OnSessionConnected family check.
         self._mirror_state = self._settings.vga_mirror_enabled
-        self._ctrl_send("MIRROR_ON" if self._mirror_state else "MIRROR_OFF")
+        if not self._is_nautilus:
+            self._ctrl_send("MIRROR_ON" if self._mirror_state else "MIRROR_OFF")
         self._ctrl_send(f"SS_TIMEOUT {self._settings.screensaver_timeout}")
         # MIDI bridge (SysEx tool / Set List viewer / name caching) — port 9875
         if self._settings.midi_monitor_enabled:
             self._sysex_service.start(self._host)
+            # start() always resets to the Kronos codec default (a reconnect
+            # may be a different instrument) — re-push the currently-known
+            # family guess immediately so a Nautilus session isn't briefly
+            # using Kronos SysEx framing until the async MODEL reply lands
+            # and _apply_device_family_ui() runs again. _apply_device_family_ui
+            # itself ran before start() this same call, too early to stick.
+            self._sysex_service.set_device_family(self._is_nautilus)
         # Update perf window if open
         if self._perf_window:
             self._perf_window.update_host(self._host, self._ctrl_port)
+
+    def _fetch_device_family(self):
+        """Connect-time device-family detection via the daemon's own MODEL
+        command (docs/api.md §"MODEL") — port of C#'s ScreenSession issuing
+        MODEL right after the stream handshake on every connect. Runs off
+        the UI thread since it blocks on the network (matches
+        _fetch_unit_calibration's own pattern); the ad-hoc MODEL call in
+        main_window_dialogs.py's Device Info dialog uses the same response
+        format (space-separated KEY=VALUE) but that one only ever feeds a
+        read-only dialog — this is the first real connect-time state
+        transition off of it."""
+        import threading
+        host, port = self._host, self._ctrl_port
+
+        def fetch():
+            resp = self._ctrl.query(host, port, "MODEL", timeout_ms=1500)
+            try:
+                QTimer.singleShot(0, self, lambda: self._apply_device_family(resp))
+            except RuntimeError:
+                pass  # window closed before the query finished
+
+        threading.Thread(target=fetch, daemon=True, name="ModelQuery").start()
+
+    def _apply_device_family(self, model_resp: Optional[str]):
+        if model_resp is None:
+            # No response (daemon older than 3.0.2, or the connection has
+            # already moved on) — UNKNOWN is treated the same as Kronos
+            # everywhere this matters (DeviceFamily's own docstring), and
+            # the stream_fmt-derived _is_nautilus from _apply_new_receiver
+            # already stands, so there's nothing to correct.
+            return
+        info = ModelInfo.parse(model_resp)
+        self._model_info = info
+        kv = {"FAMILY": info.family_raw}
+        self._device_family = info.family
+        if self._device_family != DeviceFamily.UNKNOWN:
+            resolved_nautilus = self._device_family == DeviceFamily.NAUTILUS
+            if resolved_nautilus != self._is_nautilus:
+                logging.info(
+                    "[conn] MODEL FAMILY=%s disagrees with stream_fmt heuristic "
+                    "(is_nautilus was %s) — using MODEL as authoritative",
+                    kv.get("FAMILY"), self._is_nautilus)
+                self._is_nautilus = resolved_nautilus
+        self._apply_device_family_ui()
+
+    def _nautilus_token(self, kronos: str, nautilus: str) -> str:
+        """Resolves a panel-function wire token to Nautilus's own scan code
+        when connected to one, else the Kronos token unchanged. Port of
+        C#'s NautilusToken(). Source: the same hardware-tested
+        button_labels.json C#'s own comment cites as superseding the older,
+        unverified Documentation/nautilus_button_mapping.md — only the
+        handful of tokens that doc/that comment actually confirm are wired
+        here (Seq Locate/Rewind/Forward/Pause, Tap Tempo); everything else
+        stays Kronos-only rather than guessing."""
+        return nautilus if self._is_nautilus else kronos
+
+    def _apply_device_family_ui(self):
+        """Single hook every device-family-gated UI branch runs through —
+        called once after each connect-family resolution (the cheap
+        stream_fmt guess, and again if the authoritative MODEL response
+        changes it) and on every reconnect, so switching families back and
+        forth (or a stale Nautilus session followed by a Kronos one)
+        re-applies cleanly in both directions. Port of C#'s
+        ApplyDeviceFamilyUi(). `_nautilus_token()` (see its own docstring)
+        now covers Seq Locate/Rewind/Forward/Pause/Record/Start/Save + Tap
+        Tempo's wire-token remap across the footer buttons, keybind
+        dispatch, and command palette — Record/Start/Save mirror C#'s
+        SeqTransportViewModel (Record→MS2, Start/Stop→MP6 swapped with
+        Pause's MS3, Save→EXIT since Nautilus's front-panel "F" QA slot is
+        wire EXIT and programmed as Write/Save there, while Kronos fires
+        the same REC/WRITE press for both Record and Save).
+        Also re-pushes the device family into SysExService.set_device_family()
+        so its object-dump/store-bank/dump-bank/bank-digest/reply primitives
+        pick the right 4-byte-vs-6-byte SysEx Exclusive Header (the ONE
+        hardware-confirmed wire difference — see Data/nautilus_sysex.py);
+        live-stream mode/performance/name decode there stays Kronos-only
+        regardless, a real documented gap matching C#'s own scoping decision.
+
+        **Right-panel swap is now done**: `self._ctrl_surface.set_device_family()`
+        switches which skin Rendering/control_surface.py's single
+        custom-painted widget draws/hit-tests (Kronos's 800×600
+        uniform-letterbox layout, or Nautilus's 1024×771 width-only-scale
+        layout ported from NautilusRightPanel.xaml — one widget with two
+        skins, not two separate widgets swapped by visibility the way C#
+        does it, since this surface has no tree of real child widgets to
+        swap). MODE/PAGE lamp state comes from the STATE poll's
+        MODE_LIT/PAGE_LIT fields via `_apply_nautilus_lamps` below, not from
+        this hook — matching C#'s ApplyNautilusLamps being independent of
+        WireButtons.
+
+        Mode Select menu swaps to Mode/Page/A-F on Nautilus (_NAUT_MODE_ITEMS,
+        mapping from C#'s MainWindow.xaml.cs:1092-1099). Play/Record "lit while playing" style removal has no
+        Python analog to remove — Python's footer transport never
+        implemented the persistent lit-while-playing/recording indicator C#
+        has at all (checked: no _is_playing/_is_recording state exists
+        anywhere in this file), so there's nothing to un-light on Nautilus
+        specifically."""
+        self._bank_menu.menuAction().setEnabled(not self._is_nautilus)
+        for a in self._act_modes:
+            a.setVisible(not self._is_nautilus)
+        for a in self._act_naut_modes:
+            a.setVisible(self._is_nautilus)
+        self._sysex_service.set_device_family(self._is_nautilus)
+        self._ctrl_surface.set_device_family(self._is_nautilus)
+
+        # Hide Value Input has no effect on Nautilus (the value-slider panel
+        # doesn't exist there) — forced on, menu item hidden, matches C#'s
+        # unconditional bidirectional branch so switching families back to
+        # Kronos correctly restores the user's own setting. Only touches the
+        # "Full" layout preset's own hide-value-input mechanism, matching
+        # _toggle_hide_value_input's own guard — "Focused" layout drives the
+        # left panel from a separate rail-expand setting C# has no
+        # equivalent of, left alone here.
+        self._act_hide_value.setVisible(not self._is_nautilus)
+        if self._layout_preset == "Full":
+            effective_hide_value = True if self._is_nautilus else self._settings.hide_value_input
+            self._act_hide_value.blockSignals(True)
+            self._act_hide_value.setChecked(effective_hide_value)
+            self._act_hide_value.blockSignals(False)
+            self._show_left_panel(not effective_hide_value)
+        elif self._is_nautilus:
+            self._show_left_panel(False)
+
+        # Footer Fast-Forward/Rewind: faded + non-clickable on Nautilus, kept
+        # in place rather than hidden (matches C#). The click itself is
+        # already guarded in _seq_btn's kronos_only handler; this only
+        # updates the resting (non-flash) visual.
+        ff_rew_color = T.TEXT_FAINT if self._is_nautilus else T.TEXT_DIM
+        for lbl in (self._seq_rew, self._seq_ff):
+            lbl.setStyleSheet(f"color: {ff_rew_color}; padding: 0 3px;")
+
+        # Re-fit the window at the current scale on every connect/family
+        # resolution — Kronos has a left value pane and a 600px screen,
+        # Nautilus has neither (this method already just resized the panel
+        # geometry above), so retaining the prior window size would leave
+        # blank space. Matches C#'s OnSessionConnected calling
+        # SetWindowSize(_currentScale) unconditionally. Only re-fits when
+        # the window is currently at one of the known preset scales — C#
+        # tracks _currentScale continuously (every resize re-derives it, so
+        # even a restored "Last Used" geometry ends up reflected there
+        # before the first connect completes); Python has no such
+        # continuous tracking, only the checkable Window Size menu actions,
+        # so a custom/"Last Used" size that doesn't match any preset is
+        # left alone rather than guessed at and clobbered back to 100%.
+        current_scale = self._current_window_scale()
+        if current_scale is not None:
+            self._set_window_size(current_scale)
+
+    def _current_window_scale(self) -> Optional[float]:
+        for scale, action in self._act_sz.items():
+            if action.isChecked():
+                return scale
+        return None
 
     def _set_pending_mode(self, mode: int):
         """Record a user-requested mode without lighting the button immediately.
@@ -2478,6 +2917,20 @@ class MainWindow(QMainWindow):
         self._ctrl_surface.set_mode(mode)
         self._mode_label.setText(_MODE_NAMES[mode] if 1 <= mode <= 7 else "")
         self._update_seq_enabled()
+
+    def _apply_nautilus_lamps(self, mode_lit: Optional[bool], page_lit: Optional[bool]) -> None:
+        """Nautilus MODE/PAGE front-panel LEDs, mirrored straight from the STATE
+        poll's MODE_LIT/PAGE_LIT fields (docs/api.md, 3.1.0+, Nautilus only).
+        Port of C#'s ApplyNautilusLamps. These are two independent popup
+        toggles, not a mode reading, so they never go through
+        _set_mode_button/_ctrl_surface.set_mode — and the daemon's hook
+        counts injected BUTTON presses as well as physical ones, so this
+        client must not toggle optimistically on click (see _CTRL_BTN_CMD's
+        NAUT_MODE/NAUT_PAGE comment) or every press would count twice.
+        None (Kronos, or a Nautilus whose mode_page_hook.ko didn't load)
+        leaves both unlit rather than guessing — matches C#'s `?? false`."""
+        self._ctrl_surface.set_active("NAUT_MODE", mode_lit or False)
+        self._ctrl_surface.set_active("NAUT_PAGE", page_lit or False)
 
     # ── Boot phase ────────────────────────────────────────────────────────────
 
@@ -2634,6 +3087,8 @@ class MainWindow(QMainWindow):
             mode = 0
             edit_ctx = 0
             boot = 1
+            mode_lit: Optional[bool] = None   # Nautilus-only (docs/api.md STATE) — None on Kronos
+            page_lit: Optional[bool] = None
             for part in resp.split():
                 if part.startswith("MODE="):
                     try:
@@ -2650,12 +3105,18 @@ class MainWindow(QMainWindow):
                         boot = int(part[5:])
                     except ValueError:
                         boot = 1
-            QTimer.singleShot(0, self, lambda m=mode, e=edit_ctx, b=boot:
-                              self._apply_daemon_state(m, e, b))
+                elif part.startswith("MODE_LIT="):
+                    mode_lit = part[9:] == "1"
+                elif part.startswith("PAGE_LIT="):
+                    page_lit = part[9:] == "1"
+            QTimer.singleShot(0, self, lambda m=mode, e=edit_ctx, b=boot, ml=mode_lit, pl=page_lit:
+                              self._apply_daemon_state(m, e, b, ml, pl))
         finally:
             self._poll_in_progress = False
 
-    def _apply_daemon_state(self, mode: int, edit_ctx: int, boot: int) -> None:
+    def _apply_daemon_state(self, mode: int, edit_ctx: int, boot: int,
+                            mode_lit: Optional[bool] = None,
+                            page_lit: Optional[bool] = None) -> None:
         """Port of MainWindow.Streaming.cs's ApplyDaemonState + boot gate handling:
         BOOT=1 keeps the boot phase up (daemon's own authoritative gate); MODE/EDITCTX
         only apply once boot clears. EDITCTX (program-edit-from-Combi/Sequence) drives
@@ -2664,6 +3125,10 @@ class MainWindow(QMainWindow):
             return
         self._daemon_state_ok = True
         self._frame_w._daemon_authoritative = True
+        # Nautilus MODE/PAGE front-panel LEDs — applied on every STATE poll
+        # regardless of boot state, matching C#'s OnSessionStateReceived
+        # calling ApplyNautilusLamps before ApplyDaemonState's own boot gate.
+        self._apply_nautilus_lamps(mode_lit, page_lit)
         daemon_booting = boot != 0
         if daemon_booting:
             self._daemon_booting = True
@@ -2713,6 +3178,30 @@ class MainWindow(QMainWindow):
     def _ctrl_send(self, cmd: str):
         if self._host:
             self._ctrl.send(self._host, self._ctrl_port, cmd)
+
+    def _ctrl_send_chord(self, names, hold_ms: int = 0):
+        if self._host:
+            self._ctrl.send_chord(self._host, self._ctrl_port, list(names), hold_ms)
+
+    def _send_numpad_key(self, name: str, qt_key: int, pressed: bool):
+        """Numpad digit/operator dispatch — see _NUMPAD_LINUX_MAP's docstring.
+        On Kronos, the front panel always intercepts these first regardless
+        of what this client does, so BUTTON NUMn + control-surface animation
+        is correct. On Nautilus that interception doesn't happen, so a real
+        numpad keystroke must forward as a literal KEY press instead — routing
+        it through BUTTON NUMn there sends a Kronos-only front-panel scan code
+        with no confirmed Nautilus meaning (same risk class as the Bank Select
+        gating fixed in c81eeab)."""
+        if self._is_nautilus:
+            code = _NUMPAD_LINUX_MAP.get(qt_key)
+            if code is not None:
+                self._ctrl_send(f"KEY {code} {1 if pressed else 0}")
+            return
+        if pressed:
+            self._ctrl_send(btn(name))
+            self._ctrl_surface.press_button(name)
+        else:
+            self._ctrl_surface.release_button(name)
 
     @Slot(int, int)
     def _on_touch_down(self, nx: int, ny: int):
@@ -2767,7 +3256,7 @@ class MainWindow(QMainWindow):
     # ── Left panel (value slider) ─────────────────────────────────────────────
 
     def _on_left_panel_button(self, name: str):
-        self._ctrl_send(f"BUTTON {name}")
+        self._ctrl_send(btn(name))
 
     def _on_vslider_changed(self, value: int):
         self._ctrl_send(f"VSLIDER {value}")
@@ -2826,16 +3315,13 @@ class MainWindow(QMainWindow):
             return
 
         # Calibration mode — handled by eventFilter, but belt-and-suspenders
-        if self._frame_w._cal_mode:
-            self._handle_cal_key(event)
+        if self._frame_w._cal_mode and self._handle_cal_key(event):
             return
 
-        # Escape: exit fullscreen → send BUTTON EXIT
+        # Escape: full precedence chain (fullscreen-exit / drag-cancel /
+        # zoom-off / BUTTON EXIT) — see _handle_escape.
         if key == Qt.Key_Escape:
-            if self._is_fullscreen:
-                self._toggle_fullscreen()
-                return
-            self._ctrl_send("BUTTON EXIT")
+            self._handle_escape()
             return
 
         # Ctrl shortcuts
@@ -2857,16 +3343,16 @@ class MainWindow(QMainWindow):
             threading.Thread(target=self._play_macro, args=(macro,), daemon=True).start()
             return
 
-        # Numpad always routes to control surface regardless of capture mode
+        # Numpad: front-panel BUTTON on Kronos, real KEY forward on Nautilus —
+        # see _send_numpad_key.
         name = _numpad_btn(key, mods)
         if name:
-            self._ctrl_send(f"BUTTON {name}")
-            self._ctrl_surface.press_button(name)
+            self._send_numpad_key(name, key, pressed=True)
             return
 
         # Enter → BUTTON ENTER (main-keyboard Enter, not numpad)
         if key in (Qt.Key_Return, Qt.Key_Enter) and not (mods & Qt.KeypadModifier):
-            self._ctrl_send("BUTTON ENTER")
+            self._ctrl_send(btn("ENTER"))
             return
 
         # ~ (tilde/backtick) — show/hide the menu bar while fullscreen. Hardcoded,
@@ -2898,11 +3384,15 @@ class MainWindow(QMainWindow):
                 self._toggle_hide_data_input(not self._settings.hide_data_input); return
             if self._matches_keybind(event, "HideValueInput"):
                 self._toggle_hide_value_input(not self._settings.hide_value_input); return
+            if self._matches_keybind(event, "Sample Editor"):
+                self.show_sample_editor(); return
+            if self._matches_keybind(event, "Librarian"):
+                self._open_librarian_shell(); return
 
         # Mode select keybinds
         for i in range(1, 8):
             if self._matches_keybind(event, f"Mode {_MODE_NAMES[i]}"):
-                self._ctrl_send(f"BUTTON {_MODE_CMDS[i]}")
+                self._ctrl_send(btn(_MODE_CMDS[i]))
                 self._set_pending_mode(i)
                 return
 
@@ -2913,17 +3403,31 @@ class MainWindow(QMainWindow):
                 self._ctrl_send(bank_cmd)
                 return
 
-        # Sequencer transport keybinds (unassigned by default — see REBINDABLE_DEFS)
-        seq = {"Seq Locate": "BUTTON SEQ_LOCATE", "Seq Rewind": "BUTTON SEQ_REW",
-               "Seq Forward": "BUTTON SEQ_FF", "Seq Pause": "BUTTON SEQ_PAUSE",
-               "Seq Record": "BUTTON SEQ_REC", "Seq Start": "BUTTON SEQ_START",
-               "Seq Save": "BUTTON SEQ_REC"}   # Save fires the same REC/WRITE press
-        for action, cmd in seq.items():
+        # Sequencer transport keybinds (unassigned by default — see REBINDABLE_DEFS).
+        # All six remap to Nautilus's own scan codes (see _nautilus_token) — real
+        # wire tokens, sourced from hardware-tested button_labels.json per C#'s
+        # MainWindow.xaml.cs BuildCommandRegistry comment, NOT the older unverified
+        # nautilus_button_mapping.md this repo also has. Unlike the footer
+        # FF/Rewind buttons (kept disabled there, a separate UI decision — see
+        # _seq_btn's kronos_only), the keybind path works on both families.
+        # Record/Start/Save mirror C#'s SeqTransportViewModel: Record is Nautilus
+        # MS2 ("SEQ REC"), Start/Stop is MP6 (swapped with Pause's MS3), and Save
+        # is Nautilus front-panel "F" — wire EXIT, that QA slot is programmed as
+        # Write/Save — while on Kronos Save fires the same REC/WRITE press as
+        # Record (one physical key there).
+        seq = {"Seq Locate":  self._nautilus_token("SEQ_LOCATE", "MS1"),
+               "Seq Rewind":  self._nautilus_token("SEQ_REW", "MP7"),
+               "Seq Forward": self._nautilus_token("SEQ_FF", "MP8"),
+               "Seq Pause":   self._nautilus_token("SEQ_PAUSE", "MS3"),
+               "Seq Record":  self._nautilus_token("SEQ_REC", "MS2"),
+               "Seq Start":   self._nautilus_token("SEQ_START", "MP6"),
+               "Seq Save":    self._nautilus_token("SEQ_REC", "EXIT")}
+        for action, token in seq.items():
             if self._matches_keybind(event, action):
-                self._ctrl_send(cmd)
+                self._ctrl_send(btn(token))
                 return
         if self._matches_keybind(event, "Tap Tempo"):
-            self._ctrl_send("BUTTON TAP_TEMPO")
+            self._ctrl_send(btn(self._nautilus_token('TAP_TEMPO', 'NUM9')))
             self._flash_tap_tempo()
             return
 
@@ -2934,10 +3438,10 @@ class MainWindow(QMainWindow):
             if self._kbd_send_en:
                 self._forward_key(event, pressed=False)
             return
-        # Non-capture: release numpad button animation
+        # Non-capture: release numpad button animation (Kronos) / KEY-up (Nautilus)
         name = _numpad_btn(event.key(), event.modifiers())
         if name:
-            self._ctrl_surface.release_button(name)
+            self._send_numpad_key(name, event.key(), pressed=False)
 
     # ── Tap tempo flash ──────────────────────────────────────────────────────
     # One tap = one front-panel TAP TEMPO press; the Kronos does its own averaging
@@ -2983,14 +3487,11 @@ class MainWindow(QMainWindow):
         if not pressed and key == self._kbd_repeat_key:
             self._stop_kbd_repeat()
 
-        # Numpad digits → BUTTON NUM0..9 + control surface animation
+        # Numpad: front-panel BUTTON on Kronos, real KEY forward on Nautilus —
+        # see _send_numpad_key.
         name = _numpad_btn(key, mods)
         if name:
-            if pressed:
-                self._ctrl_send(f"BUTTON {name}")
-                self._ctrl_surface.press_button(name)
-            else:
-                self._ctrl_surface.release_button(name)
+            self._send_numpad_key(name, key, pressed)
             return
 
         # Shift modifier keys — no raw map check for bare modifiers
@@ -3045,13 +3546,18 @@ class MainWindow(QMainWindow):
     def wheelEvent(self, event: QWheelEvent):
         delta = event.angleDelta().y()
         if event.modifiers() & Qt.ControlModifier:
+            # Route through the one shared zoom-step implementation
+            # (_zoom_step) instead of reimplementing it — this used to have
+            # its own hardcoded bounds (0.25 step, 8.0 cap, 1.0 floor) that
+            # silently disagreed with every other zoom trigger (keyboard,
+            # context menu, Command Palette all use 0.5/10.0/zoom_default_level
+            # via _zoom_step, matching C#'s single DoZoomIn/DoZoomOut used by
+            # OnMouseWheel too — Views/MainWindow.Input.cs's OnMouseWheel calls
+            # DoZoomIn()/DoZoomOut() directly, no separate wheel-specific math).
             if delta > 0:
-                self._frame_w._zoom_level = min(8.0, self._frame_w._zoom_level + 0.25)
-                if not self._zoom_on:
-                    self._act_zoom.setChecked(True)
+                self._zoom_step(+0.5)
             elif delta < 0:
-                self._frame_w._zoom_level = max(1.0, self._frame_w._zoom_level - 0.25)
-            self._frame_w.update()
+                self._zoom_step(-0.5)
             event.accept()
             return
         if self._settings.reverse_scrolling:
@@ -3079,6 +3585,34 @@ class MainWindow(QMainWindow):
             self.showFullScreen()
         self._is_fullscreen = not self._is_fullscreen
 
+    def _handle_escape(self, is_repeat: bool = False):
+        """Full Escape precedence chain, mirrors C# MainWindow.Input.cs:389-408
+        (BUTTON EXIT case) — fullscreen-exit / drag-cancel / zoom-off each take
+        priority over sending front-panel EXIT, and are naturally idempotent on
+        key-repeat since the state they check is cleared after firing once, so
+        only the final BUTTON EXIT branch needs an explicit repeat guard.
+        Palette-editor precedence (C#'s _edOpen/_edTyped/_ovlBitmapSrc steps)
+        is deliberately not ported — that feature is retired in C# itself
+        (EffectiveOverrides always empty, menu item unconditionally hidden).
+        Called both from the normal (uncaptured) key path and from the
+        captured-on-Kronos path, where Escape is the front-panel EXIT button
+        rather than a keystroke and was previously swallowed with no effect.
+        """
+        if self._is_fullscreen:
+            self._toggle_fullscreen()
+            return
+        if self._frame_w.cancel_drag():
+            return
+        if self._zoom_on:
+            self._act_zoom.setChecked(False)
+            return
+        if is_repeat:
+            return
+        if not self._is_nautilus:
+            self._ctrl_surface.press_button("EXIT")
+            QTimer.singleShot(_BTN_DEPRESS_MS, lambda: self._ctrl_surface.release_button("EXIT"))
+        self._ctrl_send(btn("EXIT"))
+
     def _toggle_hide_data_input(self, checked: bool):
         if self._layout_preset != "Full":
             return
@@ -3087,7 +3621,7 @@ class MainWindow(QMainWindow):
         self._act_hide_data.blockSignals(True)
         self._act_hide_data.setChecked(checked)
         self._act_hide_data.blockSignals(False)
-        storage.save_settings(self._settings)
+        Models.storage.save_settings(self._settings)
         self._resize_to_fit()
 
     def _toggle_hide_value_input(self, checked: bool):
@@ -3098,7 +3632,7 @@ class MainWindow(QMainWindow):
         self._act_hide_value.blockSignals(True)
         self._act_hide_value.setChecked(checked)
         self._act_hide_value.blockSignals(False)
-        storage.save_settings(self._settings)
+        Models.storage.save_settings(self._settings)
         self._resize_to_fit()
 
     def _apply_layout(self, preset: str):
@@ -3134,7 +3668,7 @@ class MainWindow(QMainWindow):
             self._show_left_panel(value_exp)
             self._value_rail.set_expanded(value_exp)
             self._data_rail.set_expanded(data_exp)
-        storage.save_settings(self._settings)
+        Models.storage.save_settings(self._settings)
         self._resize_to_fit()
 
     def _toggle_focused_data_expand(self):
@@ -3144,7 +3678,7 @@ class MainWindow(QMainWindow):
         self._settings.focused_data_expanded = exp
         self._ctrl_surface.setVisible(exp)
         self._data_rail.set_expanded(exp)
-        storage.save_settings(self._settings)
+        Models.storage.save_settings(self._settings)
         self._resize_to_fit()
 
     def _toggle_focused_value_expand(self):
@@ -3154,14 +3688,14 @@ class MainWindow(QMainWindow):
         self._settings.focused_value_expanded = exp
         self._show_left_panel(exp)
         self._value_rail.set_expanded(exp)
-        storage.save_settings(self._settings)
+        Models.storage.save_settings(self._settings)
         self._resize_to_fit()
 
     def _on_always_on_top_toggled(self, checked: bool):
         self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, checked)
         self.show()
         self._settings.always_on_top = checked
-        storage.save_settings(self._settings)
+        Models.storage.save_settings(self._settings)
 
     def _copy_ip_address(self):
         ip = self._host or self._settings.kronos_host
@@ -3175,8 +3709,13 @@ class MainWindow(QMainWindow):
         if host in hosts:
             hosts.remove(host)
         hosts.insert(0, host)
-        self._settings.recent_hosts = hosts[:10]
-        storage.save_settings(self._settings)
+        self._settings.recent_hosts = hosts[:5]   # C# caps at 5
+        # Remember the login that just worked, so picking this host later restores it.
+        self._settings.host_credentials[host] = {
+            "username": self._settings.ftp_username, "password": self._settings.ftp_password}
+        for stale in [h for h in self._settings.host_credentials if h not in self._settings.recent_hosts]:
+            del self._settings.host_credentials[stale]
+        Models.storage.save_settings(self._settings)
         self._rebuild_recent_menu()
 
     def _rebuild_recent_menu(self):
@@ -3195,13 +3734,45 @@ class MainWindow(QMainWindow):
     def _connect_to_recent(self, host: str):
         self._settings.kronos_host = host
         self._host = host
-        storage.save_settings(self._settings)
+        cred = self._settings.host_credentials.get(host)
+        if cred:
+            self._settings.ftp_username = cred["username"]
+            self._settings.ftp_password = cred["password"]
+        Models.storage.save_settings(self._settings)
         self._connect_async()
 
     def _clear_recent_hosts(self):
         self._settings.recent_hosts.clear()
-        storage.save_settings(self._settings)
+        self._settings.host_credentials.clear()
+        Models.storage.save_settings(self._settings)
         self._rebuild_recent_menu()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not self._geometry_restored:
+            self._geometry_restored = True
+            QTimer.singleShot(0, self._restore_window_geometry)
+
+    def _restore_window_geometry(self):
+        """Applies Settings > View > "Default window size" at launch — port of
+        C#'s MainWindow.Input.cs OnLoaded restore block / ApplyDefaultWindowSize.
+        "Last Used" restores the saved position/size/maximized state (if any);
+        the fixed sizes apply a content scale via _set_window_size, matching
+        C#'s Small=0.75/Medium=1.0/Large=1.25."""
+        s = self._settings
+        mode = s.default_window_size
+        if mode == "LastUsed":
+            if s.window_left >= 0 and s.window_top >= 0:
+                self.move(s.window_left, s.window_top)
+                if s.window_width > 200 and s.window_height > 100:
+                    self.resize(s.window_width, s.window_height)
+            if s.window_maximized:
+                self.showMaximized()
+        elif mode == "Maximized":
+            self.showMaximized()
+        else:
+            scale = {"Small": 0.75, "Medium": 1.0, "Large": 1.25}.get(mode, 1.0)
+            self._set_window_size(scale)
 
     def _set_window_size(self, scale: float):
         controls_visible = self._ctrl_surface.isVisible()
@@ -3239,6 +3810,117 @@ class MainWindow(QMainWindow):
         new_w = int(design_w * scale) + rail_w
         self.resize(new_w, h)
 
+    # ── Calibration sync (CAL_GET/CAL_SET — docs/api.md) ────────────────────────
+    # The mesh lives only on the unit (/korg/rw/HD/ScreenRemote/calibration.txt), so it
+    # follows the instrument rather than this PC — C# MainWindow.Calibration.cs. It is read
+    # on every connect; the mesh from the last unit stays in effect while disconnected but
+    # can only be saved while connected. There is no local copy.
+
+    def _fetch_unit_calibration(self):
+        host, port = self._host, self._ctrl_port
+
+        def fetch():
+            resp = self._ctrl.query(host, port, "CAL_GET", timeout_ms=1500)
+            try:
+                QTimer.singleShot(0, self, lambda: self._apply_unit_calibration(resp))
+            except RuntimeError:
+                pass  # window closed before the query finished
+
+        threading.Thread(target=fetch, daemon=True, name="CalGet").start()
+
+    def _apply_unit_calibration(self, resp: Optional[str]):
+        fw = self._frame_w
+        if fw._cal_mode:
+            self._act_cal.setChecked(False)
+        if fw._cal_dirty:
+            logging.info("[cal] unsaved calibration changes discarded (new connection)")
+
+        # None = daemon can't store calibration (needs 3.1.2+) or the query failed
+        text = None if resp is None else (resp[4:] if resp.startswith("CAL ") else "")
+        if text == "NONE":
+            text = ""
+        parsed = cal_text.parse(text) if text else None
+        fw._cal_mesh, fw._cal_bias_dots = parsed if parsed else (CalMesh(), [])
+        fw._cal_dirty = False
+        fw._cal_dragging = None
+        fw._cal_hover = None
+        fw._cal_history = []
+        fw._cal_hist_pos = -1
+        if text is None:
+            logging.info("[cal] daemon can't store calibration (needs 3.1.2+) - uncalibrated")
+        elif text == "":
+            logging.info("[cal] unit has no stored calibration")
+        elif parsed is None:
+            logging.warning("[cal] unit's stored calibration is unreadable, ignored: %s", text)
+        else:
+            logging.info("[cal] calibration loaded from unit, %d bias dot(s)", len(fw._cal_bias_dots))
+        self._sync_cal_grid_checks()
+        fw.update()
+
+    def _sync_cal_grid_checks(self):
+        for size, act in self._act_grid.items():
+            act.setChecked(size == self._frame_w._cal_mesh.cols)
+
+    @staticmethod
+    def _send_calibration_to_unit(ctrl, host, port, connected: bool, text: str) -> Optional[str]:
+        """None on success, otherwise the message to show (C# SendCalibrationToUnit)."""
+        if not connected:
+            return _CAL_NOT_CONNECTED
+        if len(text) > cal_text.MAX_LENGTH:
+            return _CAL_TOO_LARGE
+        reply = ctrl.query(host, port, f"CAL_SET {text}", timeout_ms=3000)
+        reply = reply.strip() if reply else None
+        if reply == "OK":
+            return None
+        if reply is None:
+            return _CAL_NO_ANSWER
+        if reply == "ERR":
+            return _CAL_DAEMON_TOO_OLD
+        return f'Calibration not saved: the unit replied "{reply}".'
+
+    def _save_calibration(self):
+        """Send the mesh to the unit. Saves run one at a time and serialize only once it is
+        their turn, so the last to reach the unit always carries the newest state. On
+        failure the mesh is marked dirty again and the reason shown in the status bar."""
+        ctrl, host, port = self._ctrl, self._host, self._ctrl_port
+        connected = bool(self._receiver and host)
+        fw = self._frame_w
+
+        def work():
+            with self._cal_save_lock:
+                text = cal_text.serialize(fw._cal_mesh, fw._cal_bias_dots)
+                err = self._send_calibration_to_unit(ctrl, host, port, connected, text)
+            try:
+                QTimer.singleShot(0, self, lambda: self._on_calibration_saved(err))
+            except RuntimeError:
+                pass
+
+        threading.Thread(target=work, daemon=True, name="CalSet").start()
+
+    def _on_calibration_saved(self, err: Optional[str]):
+        if err is None:
+            logging.info("[cal] calibration saved to unit")
+            return
+        self._frame_w._cal_dirty = True
+        logging.info("[cal] save failed: %s", err)
+        self._notify(err, is_error=True)
+        self._frame_w.update()
+
+    def _save_calibration_blocking(self) -> Optional[str]:
+        """For the exit prompt, where an async save would be cut off: waits at most 4 s."""
+        ctrl, host, port = self._ctrl, self._host, self._ctrl_port
+        connected = bool(self._receiver and host)
+        text = cal_text.serialize(self._frame_w._cal_mesh, self._frame_w._cal_bias_dots)
+        result = [_CAL_NO_ANSWER]
+
+        def work():
+            result[0] = self._send_calibration_to_unit(ctrl, host, port, connected, text)
+
+        t = threading.Thread(target=work, daemon=True, name="CalSetBlocking")
+        t.start()
+        t.join(4.0)
+        return result[0]
+
     # ── Tools ──────────────────────────────────────────────────────────────────
 
     def _on_palette_toggled(self, checked: bool):
@@ -3248,52 +3930,75 @@ class MainWindow(QMainWindow):
         self._frame_w.update()
 
     def _on_cal_toggled(self, checked: bool):
-        self._frame_w._cal_mode = checked
+        fw = self._frame_w
+        fw._cal_mode = checked
         self._release_kbd_capture()
         if not checked:
-            self._frame_w._cal_dragging = None
-            self._frame_w._cal_hover    = None
-            if self._frame_w._cal_dirty:
-                storage.save_cal(self._frame_w._cal_mesh,
-                                 self._frame_w._cal_bias_dots)
-                self._frame_w._cal_dirty = False
-        self._frame_w.update()
+            fw._cal_dragging = None
+            fw._cal_hover    = None
+        logging.info("[cal] calibrate mode %s", "ON" if checked else "OFF")
+        fw.update()
 
-    def _handle_cal_key(self, event: QKeyEvent):
+    def _handle_cal_key(self, event: QKeyEvent) -> bool:
+        """Cal-mode keys (C# MainWindow.Input.cs). Anything else falls through to the normal
+        key handling, so e.g. Esc is still front-panel EXIT. True = consumed."""
+        fw   = self._frame_w
         key  = event.key()
         mods = event.modifiers()
-        if key == Qt.Key_Escape:
-            self._act_cal.setChecked(False)
-            return
-        if mods & Qt.ControlModifier and key == Qt.Key_Z:
-            self._frame_w.cal_undo()
-            return
-        if mods & Qt.ControlModifier and key == Qt.Key_Y:
-            self._frame_w.cal_redo()
-            return
-        if key == Qt.Key_S and not mods:
-            storage.save_cal(self._frame_w._cal_mesh,
-                             self._frame_w._cal_bias_dots)
-            self._frame_w._cal_dirty = False
-            self._frame_w.update()
-            return
-        if key == Qt.Key_X and not mods:
-            self._frame_w._cal_bias_dots.clear()
-            self._frame_w._cal_dirty = True
-            self._frame_w.update()
-            return
-        if key == Qt.Key_R and not mods:
-            self._frame_w._cal_mesh.reset()
-            self._frame_w._cal_dirty = True
-            self._frame_w.update()
-            return
+        ctrl = bool(mods & Qt.ControlModifier)
+        if self._matches_keybind(event, "Calibrate"):
+            if not event.isAutoRepeat():
+                self._act_cal.setChecked(False)
+            return True
+        if ctrl and key == Qt.Key_Z:
+            if not event.isAutoRepeat():
+                (fw.cal_redo if mods & Qt.ShiftModifier else fw.cal_undo)()
+            return True
+        if ctrl and key == Qt.Key_Y:
+            if not event.isAutoRepeat():
+                fw.cal_redo()
+            return True
+        if mods & ~Qt.KeypadModifier or key not in (Qt.Key_S, Qt.Key_X, Qt.Key_R):
+            return False
+        if event.isAutoRepeat():
+            return True
+        if key == Qt.Key_R:
+            fw._cal_mesh.reset()
+            fw._cal_dirty = True
+            fw._cal_history = []
+            fw._cal_hist_pos = -1
+        elif key == Qt.Key_X:
+            fw._cal_bias_dots.clear()
+            fw._cal_history = []
+            fw._cal_hist_pos = -1
+            self._save_calibration()
+        else:
+            self._save_calibration()
+            fw._cal_dirty = False
+        fw.update()
+        return True
 
     def _set_cal_grid(self, n: int):
-        self._frame_w._cal_mesh = CalMesh(n, n)
-        self._frame_w._cal_dirty = True
-        for size, act in self._act_grid.items():
-            act.setChecked(size == n)
-        self._frame_w.update()
+        fw = self._frame_w
+        if fw._cal_mesh.cols != n:
+            if not fw._cal_mesh.is_identity() or fw._cal_bias_dots:
+                r = QMessageBox.warning(
+                    self, "Change Calibration Grid",
+                    f"Changing grid size to {n}×{n} will clear existing calibration data.\nProceed?",
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+                if r != QMessageBox.Yes:
+                    self._sync_cal_grid_checks()
+                    return
+            fw._cal_mesh = CalMesh(n, n)
+            fw._cal_bias_dots.clear()
+            fw._cal_dirty = False
+            fw._cal_dragging = None
+            fw._cal_hover = None
+            fw._cal_history = []
+            fw._cal_hist_pos = -1
+            self._save_calibration()
+        self._sync_cal_grid_checks()
+        fw.update()
 
     def _enter_test_mode(self):
         result = QMessageBox.warning(
@@ -3310,9 +4015,8 @@ class MainWindow(QMainWindow):
         if result != QMessageBox.StandardButton.Yes:
             return
         self._set_kbd_capture()
-        self._ctrl_send("BUTTON PROGRAM")
-        QTimer.singleShot(500, lambda: self._ctrl_send(
-            "CHORD 250 MIX_KNOBS RESET ENTER NUM5"))
+        self._ctrl_send(btn("PROGRAM"))
+        QTimer.singleShot(500, lambda: self._ctrl_send_chord(["MIX_KNOBS", "RESET", "ENTER", "NUM5"], 250))
 
     def _save_screenshot(self):
         if not self._frame_w._frame_pixmap:
@@ -3378,6 +4082,8 @@ class MainWindow(QMainWindow):
     # ── Mirror ─────────────────────────────────────────────────────────────────
 
     def _toggle_mirror(self):
+        if self._is_nautilus:   # MIRROR_ON/OFF is Kronos-only, see _apply_new_receiver
+            return
         self._mirror_state = not self._mirror_state
         self._ctrl_send("MIRROR_ON" if self._mirror_state else "MIRROR_OFF")
 
@@ -3401,7 +4107,8 @@ class MainWindow(QMainWindow):
                       self._settings.image_gamma, self._settings.image_saturation,
                       self._settings.image_sharpen)
         dlg = SettingsWindow(self._settings, self, initial_tab=initial_tab,
-                             on_image_preview=self._preview_image_adjust)
+                             on_image_preview=self._preview_image_adjust,
+                             on_button_injector=self.show_button_injector)
         if dlg.exec() == QDialog.Accepted:
             self._apply_settings_side_effects(mirror_before, ss_before, debug_before,
                                               hide_data_before, hide_value_before)
@@ -3416,7 +4123,7 @@ class MainWindow(QMainWindow):
         whether from the Settings dialog's OK button or an Import Settings…
         round-trip — persists to disk and pushes each changed value out to the
         live connection/UI it affects."""
-        storage.save_settings(self._settings)
+        Models.storage.save_settings(self._settings)
         self._host        = self._settings.kronos_host
         self._ctrl_port   = self._settings.ctrl_port
         self._stream_port = self._settings.stream_port
@@ -3438,11 +4145,12 @@ class MainWindow(QMainWindow):
         if self._settings.debug_logging != debug_before:
             _setup_logging(self._settings.debug_logging)
         if self._receiver:
-            if self._settings.vga_mirror_enabled != mirror_before:
+            if not self._is_nautilus and self._settings.vga_mirror_enabled != mirror_before:
                 self._mirror_state = self._settings.vga_mirror_enabled
                 self._ctrl_send("MIRROR_ON" if self._mirror_state else "MIRROR_OFF")
             if self._settings.screensaver_timeout != ss_before:
                 self._ctrl_send(f"SS_TIMEOUT {self._settings.screensaver_timeout}")
+        self._apply_midi_settings()
         # Update perf window host if open
         if self._perf_window:
             self._perf_window.update_host(self._host, self._ctrl_port)
@@ -3457,7 +4165,7 @@ class MainWindow(QMainWindow):
         hide_data_before  = self._settings.hide_data_input
         hide_value_before = self._settings.hide_value_input
         try:
-            imported = storage.import_settings(path)
+            imported = Models.storage.import_settings(path)
         except Exception as e:
             QMessageBox.warning(self, "Import Settings", f"Failed to import settings:\n{e}")
             return
@@ -3476,7 +4184,7 @@ class MainWindow(QMainWindow):
         if not path:
             return
         try:
-            storage.export_settings(self._settings, path)
+            Models.storage.export_settings(self._settings, path)
         except Exception as e:
             QMessageBox.warning(self, "Export Settings", f"Failed to export settings:\n{e}")
             return
@@ -3521,8 +4229,12 @@ class MainWindow(QMainWindow):
             CommandEntry("LayoutFocused", "Layout Preset: Focused", "",
                         lambda: self._apply_layout("Focused")),
             CommandEntry("KeyboardInfo", "Keyboard Info…", "", self._open_keyboard_info),
+            # C# BuildCommandRegistry's ── Tools section has both of these too
+            # (Views/MainWindow.xaml.cs:2145) — were missing from this list entirely.
+            CommandEntry("Sample Editor", "Sample Editor…", "", self.show_sample_editor),
+            CommandEntry("Librarian", "Librarian…", "", self._open_librarian_shell),
             CommandEntry("SaveScreenshot", "Save Screenshot…", "", self._save_screenshot),
-            CommandEntry("ToggleKeyboardSend", "Toggle Keyboard Send", "",
+            CommandEntry("ToggleKeyboardSend", "Toggle Remote Typing", "",
                         lambda: self._act_disable_kbd.setChecked(
                             not self._act_disable_kbd.isChecked())),
             CommandEntry("About", "About…", "", self._open_about),
@@ -3530,14 +4242,29 @@ class MainWindow(QMainWindow):
         dlg = CommandPalette(entries, self)
         dlg.show()
 
+    def _ctrl_send_bank(self, cmd):
+        """Bank Select sends Kronos front-panel scan codes with no confirmed
+        Nautilus equivalent (only ~3 of 28 tokens known) — disabled rather
+        than guessed, matching C#'s BuildCommandRegistry bank-command wrapper
+        (Views/MainWindow.xaml.cs's bank-entries loop) and its rationale
+        (docs/api.md's BUTTON section: name->code mappings mean different
+        things per device family)."""
+        if self._is_nautilus:
+            logging.debug("[cmd] '%s' disabled on Nautilus - no confirmed wire token yet", cmd)
+            return
+        if isinstance(cmd, tuple):
+            self._ctrl_send_chord(cmd)
+        else:
+            self._ctrl_send(cmd)
+
     def _run_action(self, action: str):
         bank_cmd = _bank_action_cmd(action)
         if bank_cmd:
-            self._ctrl_send(bank_cmd)
+            self._ctrl_send_bank(bank_cmd)
             return
         cmds: dict = {
             f"Mode {_MODE_NAMES[i]}": (
-                lambda c=_MODE_CMDS[i], m=i: (self._ctrl_send(f"BUTTON {c}"), self._set_pending_mode(m))
+                lambda c=_MODE_CMDS[i], m=i: (self._ctrl_send(btn(c)), self._set_pending_mode(m))
             )
             for i in range(1, 8)
         }
@@ -3552,15 +4279,19 @@ class MainWindow(QMainWindow):
             "Quit":            self._try_quit,
             "HideDataInput":   lambda: self._toggle_hide_data_input(not self._settings.hide_data_input),
             "HideValueInput":  lambda: self._toggle_hide_value_input(not self._settings.hide_value_input),
-            # Sequencer transport + tap tempo (shared with keybind handling)
-            "Seq Locate":  lambda: self._ctrl_send("BUTTON SEQ_LOCATE"),
-            "Seq Rewind":  lambda: self._ctrl_send("BUTTON SEQ_REW"),
-            "Seq Forward": lambda: self._ctrl_send("BUTTON SEQ_FF"),
-            "Seq Pause":   lambda: self._ctrl_send("BUTTON SEQ_PAUSE"),
-            "Seq Record":  lambda: self._ctrl_send("BUTTON SEQ_REC"),
-            "Seq Start":   lambda: self._ctrl_send("BUTTON SEQ_START"),
-            "Seq Save":    lambda: self._ctrl_send("BUTTON SEQ_REC"),
-            "Tap Tempo":   lambda: (self._ctrl_send("BUTTON TAP_TEMPO"), self._flash_tap_tempo()),
+            # Sequencer transport + tap tempo (shared with keybind handling).
+            # All six remap to Nautilus's own scan codes — see keyPressEvent's
+            # matching seq dict for the Record/Start/Save source (C#'s
+            # SeqTransportViewModel).
+            "Seq Locate":  lambda: self._ctrl_send(btn(self._nautilus_token('SEQ_LOCATE', 'MS1'))),
+            "Seq Rewind":  lambda: self._ctrl_send(btn(self._nautilus_token('SEQ_REW', 'MP7'))),
+            "Seq Forward": lambda: self._ctrl_send(btn(self._nautilus_token('SEQ_FF', 'MP8'))),
+            "Seq Pause":   lambda: self._ctrl_send(btn(self._nautilus_token('SEQ_PAUSE', 'MS3'))),
+            "Seq Record":  lambda: self._ctrl_send(btn(self._nautilus_token('SEQ_REC', 'MS2'))),
+            "Seq Start":   lambda: self._ctrl_send(btn(self._nautilus_token('SEQ_START', 'MP6'))),
+            "Seq Save":    lambda: self._ctrl_send(btn(self._nautilus_token('SEQ_REC', 'EXIT'))),
+            "Tap Tempo":   lambda: (self._ctrl_send(btn(self._nautilus_token('TAP_TEMPO', 'NUM9'))),
+                                     self._flash_tap_tempo()),
         })
         fn = cmds.get(action)
         if fn:
@@ -3607,23 +4338,64 @@ class MainWindow(QMainWindow):
 
     # ── SysEx Tool ───────────────────────────────────────────────────────────────
 
+    def _save_midi_output_channel(self, channel: int) -> None:
+        if channel != self._settings.midi_output_channel:
+            self._settings.midi_output_channel = channel
+            Models.storage.save_settings(self._settings)
+
+    def _apply_midi_settings(self) -> None:
+        """Push Settings > MIDI/SysEx into the service, then reconcile the Monitor-MIDI state."""
+        s, svc = self._settings, self._sysex_service
+        svc.value_slider_cc = s.value_slider_cc
+        svc.pull_names_on_change = s.pull_names_on_change
+        svc.apply_midi_settings(s.proactive_sysex_polling, s.sysex_poll_interval_sec, s.sysex_poll_on_changes)
+        self._sync_midi_monitor_state()
+        self._apply_midi_monitor_menu_state()
+
+    def _sync_midi_monitor_state(self) -> None:
+        """'Monitor MIDI' toggled while connected: start/stop the MIDI bridge live (C# SetStreamEnabled).
+        When off, nothing incoming is processed and the monitor/Librarian sync need it back on."""
+        svc = self._sysex_service
+        connected = self._receiver is not None and bool(self._host)
+        running = svc.bridge is not None
+        if self._settings.midi_monitor_enabled and connected and not running:
+            svc.start(self._host)
+            svc.set_device_family(self._is_nautilus)   # start() resets to the Kronos default
+        elif not self._settings.midi_monitor_enabled and running:
+            svc.stop()
+            self._set_midi_badge(False)
+            self._on_performance_changed("")
+
+    def _apply_midi_monitor_menu_state(self) -> None:
+        """Fade the MIDI Monitor menu item and the footer MIDI cluster while monitoring is off."""
+        enabled = bool(self._settings.midi_monitor_enabled)
+        self._act_sysex_tool.setEnabled(enabled)
+        self._midi_io.setEnabled(enabled)
+        eff = self._midi_io.graphicsEffect()
+        if eff is None:
+            eff = QGraphicsOpacityEffect(self._midi_io)
+            self._midi_io.setGraphicsEffect(eff)
+        eff.setOpacity(1.0 if enabled else 0.4)
+
     def _open_sysex_tool(self):
         if self._sysex_tool_win is not None:
             self._sysex_tool_win.raise_()
             self._sysex_tool_win.activateWindow()
             return
         if not self._host:
-            QMessageBox.warning(self, "SysEx Tool",
+            QMessageBox.warning(self, "MIDI Monitor",
                                 "No Kronos host configured. Set it in Settings first.")
             return
         if not self._settings.midi_monitor_enabled or not self._sysex_service.can_dump:
-            QMessageBox.warning(self, "SysEx Tool",
+            QMessageBox.warning(self, "MIDI Monitor",
                                 "MIDI monitoring is off or not connected. Enable "
-                                "'MIDI bridge' and connect to the Kronos first.")
+                                "'Monitor MIDI' in Settings → MIDI/SysEx and connect to the Kronos first.")
             return
         from Views.sysex_tool_window import SysExToolWindow
         self._sysex_tool_win = SysExToolWindow(
-            self._host, self._sysex_service.bridge, self._sysex_service, self)
+            self._host, self._sysex_service.bridge, self._sysex_service, self,
+            initial_channel=self._settings.midi_output_channel)
+        self._sysex_tool_win.closing.connect(self._save_midi_output_channel)
         self._sysex_tool_win.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self._sysex_tool_win.destroyed.connect(lambda: setattr(self, '_sysex_tool_win', None))
         self._sysex_tool_win.show()
@@ -3736,10 +4508,10 @@ class MainWindow(QMainWindow):
 
     def _show_kbd_context_menu(self, local_pos):
         menu = QMenu(self)
-        a_en = menu.addAction("Enable Keyboard Send")
+        a_en = menu.addAction("Enable Remote Typing")
         a_en.triggered.connect(lambda: self._act_disable_kbd.setChecked(False))
         a_en.setEnabled(not self._kbd_send_en)
-        a_dis = menu.addAction("Disable Keyboard Send")
+        a_dis = menu.addAction("Disable Remote Typing")
         a_dis.triggered.connect(lambda: self._act_disable_kbd.setChecked(True))
         a_dis.setEnabled(self._kbd_send_en)
         menu.exec(self._kbd_label.mapToGlobal(local_pos))
@@ -3756,7 +4528,7 @@ class MainWindow(QMainWindow):
         if ok:
             self._fps = val
             self._settings.max_fps = val
-            storage.save_settings(self._settings)
+            Models.storage.save_settings(self._settings)
             if self._receiver:
                 self._ctrl_send(f"FPS {val}")
 
@@ -3764,9 +4536,10 @@ class MainWindow(QMainWindow):
         menu = QMenu(self)
         for i in range(1, 8):
             a = menu.addAction(_MODE_NAMES[i])
+            a.setEnabled(not self._is_nautilus)   # Kronos-only, as C#'s CTX_Mode_*
             a.triggered.connect(
                 lambda checked, c=_MODE_CMDS[i], m=i:
-                    (self._ctrl_send(f"BUTTON {c}"), self._set_pending_mode(m)))
+                    (self._ctrl_send(btn(c)), self._set_pending_mode(m)))
         menu.exec(self._mode_label.mapToGlobal(local_pos))
 
     # ── Connection state ───────────────────────────────────────────────────────
@@ -3959,11 +4732,15 @@ class MainWindow(QMainWindow):
         devices = list_audio_devices()
         menu = QMenu(self)
         a_none = menu.addAction("No monitoring")
+        a_none.setCheckable(True)
+        a_none.setChecked(not self._vu_device_id)
         a_none.triggered.connect(lambda: self._set_vu_device(None))
         if devices:
             menu.addSeparator()
             for dev_id, dev_name in devices:
                 a = menu.addAction(dev_name)
+                a.setCheckable(True)
+                a.setChecked(dev_id == self._vu_device_id)
                 a.triggered.connect(lambda checked, d=dev_id: self._set_vu_device(d))
         else:
             menu.addSeparator()
@@ -3973,6 +4750,8 @@ class MainWindow(QMainWindow):
 
     def _set_vu_device(self, device_id: Optional[str]):
         self._vu_device_id = device_id
+        self._settings.vu_device_id = device_id
+        Models.storage.save_settings(self._settings)
         self._stop_audio_capture()
         if device_id is not None:
             self._start_audio_capture(device_id)
@@ -4002,21 +4781,24 @@ class MainWindow(QMainWindow):
             event.accept()
             return
         if self._frame_w._cal_dirty:
-            r = QMessageBox.warning(
+            r = QMessageBox.question(
                 self, "Unsaved Calibration",
-                "You have unsaved calibration changes.\n\n"
-                "Do you want to save before quitting?",
-                QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
-                QMessageBox.Save)
+                "You have unsaved calibration changes.\nSave before exiting?",
+                QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel, QMessageBox.Yes)
             if r == QMessageBox.Cancel:
                 event.ignore()
                 return
-            if r == QMessageBox.Save:
-                storage.save_cal(self._frame_w._cal_mesh,
-                                 self._frame_w._cal_bias_dots)
-                self._frame_w._cal_dirty = False
-            else:
-                self._frame_w._cal_dirty = False
+            if r == QMessageBox.Yes:
+                # Must run before _do_shutdown's receiver.stop() - CAL_SET is
+                # ownership-gated and the stream connection is still the owner here.
+                err = self._save_calibration_blocking()
+                if err and QMessageBox.warning(
+                        self, "Unsaved Calibration",
+                        f"{err}\n\nExit anyway and lose the changes?",
+                        QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+                    event.ignore()
+                    return
+            self._frame_w._cal_dirty = False
         if self._settings.prompt_before_quitting:
             r = QMessageBox.question(self, "Quit?", "Disconnect and quit?",
                                      QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
@@ -4061,9 +4843,13 @@ class MainWindow(QMainWindow):
             self._audio_capture = None
 
         self._ctrl.stop_persistent()
-        storage.save_settings(self._settings)
-        if self._frame_w._cal_dirty:
-            storage.save_cal(self._frame_w._cal_mesh, self._frame_w._cal_bias_dots)
+        self._settings.window_maximized = self.isMaximized()
+        if not self.isMaximized():
+            self._settings.window_left   = self.x()
+            self._settings.window_top    = self.y()
+            self._settings.window_width  = self.width()
+            self._settings.window_height = self.height()
+        Models.storage.save_settings(self._settings)
         self.close()
 
     def eventFilter(self, watched, event):
@@ -4085,15 +4871,9 @@ class MainWindow(QMainWindow):
 
         # Intercept all key events during calibration mode so menu
         # accelerators (e.g. &Settings) don't steal single-letter keys.
-        if self._frame_w._cal_mode:
-            t = event.type()
-            if t == QEvent.Type.KeyPress:
-                if isinstance(watched, QWidget) and watched.window() is self:
-                    if not event.isAutoRepeat():
-                        self._handle_cal_key(event)
-                    return True
-            if t == QEvent.Type.KeyRelease:
-                if isinstance(watched, QWidget) and watched.window() is self:
+        if self._frame_w._cal_mode and event.type() == QEvent.Type.KeyPress:
+            if isinstance(watched, QWidget) and watched.window() is self:
+                if self._handle_cal_key(event):
                     return True
 
         # Intercept all key events at application level when captured so
@@ -4113,6 +4893,18 @@ class MainWindow(QMainWindow):
                     if (t == QEvent.Type.KeyPress and (event.modifiers() & Qt.ControlModifier)
                             and event.key() in (Qt.Key_V, Qt.Key_A)):
                         return False
+                    # Escape is front-panel EXIT injection on Kronos, never a
+                    # raw keystroke there — runs the same precedence chain as
+                    # keyPressEvent's uncaptured handler (_handle_escape) on
+                    # KeyPress only; KeyRelease is just swallowed, since no
+                    # KEY-down was ever forwarded for it to pair with. C#
+                    # excludes it from this same forward-while-captured path
+                    # only when NOT Nautilus (MainWindow.Input.cs:337-339) —
+                    # on Nautilus it IS a real keystroke and forwards normally.
+                    if (event.key() == Qt.Key_Escape and not self._is_nautilus):
+                        if t == QEvent.Type.KeyPress:
+                            self._handle_escape(is_repeat=event.isAutoRepeat())
+                        return True   # consumed, but not forwarded as a raw key
                     if not event.isAutoRepeat():
                         if self._kbd_send_en:
                             self._forward_key(event,

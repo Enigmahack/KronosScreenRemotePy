@@ -40,6 +40,8 @@ import threading
 import time
 from typing import Callable, List, Optional
 
+from Core.button_codes import chord_commands
+
 log = logging.getLogger(__name__)
 
 CTRL_PORT = 7374
@@ -60,6 +62,9 @@ _SEND_TIMEOUT_S = 10.0
 
 # Sentinel for "flush the pending TOUCH_MOVE"
 _FLUSH_MOVE = object()
+
+# Queued as (_SLEEP, seconds): a pause between two commands that must not be reordered around it (a chord's hold).
+_SLEEP = object()
 
 # Marker for a queued command that must NOT establish a connection — see
 # send_existing_only. Queued as (_ONLY_IF_CONNECTED, cmd).
@@ -183,6 +188,27 @@ class CtrlClient:
                 self._queue.put(pm)
             self._queue.put(cmd)
 
+    def send_chord(self, host: str, port: int, names: List[str], hold_ms: int = 0) -> None:
+        """BTN_DOWN each button in order, hold, BTN_UP in reverse (docs/api.md BTN / BTN_DOWN / BTN_UP). The hold is a
+        pause in this client's own send queue, so the GUI thread never blocks and the daemon is never stalled the way
+        the deprecated CHORD's server-side sleep stalled it. 5 s matches CHORD's own cap and the daemon's 15 s
+        auto-release leaves ample margin."""
+        cmds = chord_commands(names)
+        half = len(names)
+        hold = max(0, min(5000, int(hold_ms)))
+        self._host = host
+        self._port = port
+        with self._pending_move_lock:
+            pm, self._pending_move = self._pending_move, None
+        if pm is not None:
+            self._queue.put(pm)
+        for c in cmds[:half]:
+            self._queue.put(c)
+        if hold:
+            self._queue.put((_SLEEP, hold / 1000.0))
+        for c in cmds[half:]:
+            self._queue.put(c)
+
     def send_existing_only(self, host: str, port: int, cmd: str) -> bool:
         """Queue `cmd` to be sent only if a persistent session is established.
 
@@ -222,14 +248,24 @@ class CtrlClient:
         """
         Send a command on a short-lived connection and return the trimmed response.
         Does NOT use CTRL_PERSIST — the server handles it as a one-shot command.
+
+        Loops until a newline (single-line replies) rather than trusting one recv
+        to return the whole thing — CAL_GET's response can be up to ~4096 bytes
+        (docs/api.md CAL_GET/CAL_SET), well past what a single small recv is
+        guaranteed to deliver in one shot.
         """
         try:
             with socket.create_connection((host, port), timeout=timeout_ms / 1000) as s:
                 s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                 s.sendall((cmd + "\n").encode("ascii"))
                 s.settimeout(timeout_ms / 1000)
-                data = s.recv(256)
-                return data.decode("ascii", errors="replace").strip() if data else None
+                buf = b""
+                while b"\n" not in buf and len(buf) < 8192:
+                    chunk = s.recv(4096)
+                    if not chunk:
+                        break
+                    buf += chunk
+                return buf.decode("ascii", errors="replace").strip() if buf else None
         except Exception:
             return None
 
@@ -331,6 +367,8 @@ class CtrlClient:
                 if cmd is None:
                     continue
                 self._send_one(cmd)
+            elif isinstance(item, tuple) and item[0] is _SLEEP:
+                time.sleep(item[1])
             elif isinstance(item, tuple) and item[0] is _ONLY_IF_CONNECTED:
                 self._send_one(item[1], allow_connect=False)
             else:

@@ -1,8 +1,28 @@
 """
 KronosControlSurface — custom QWidget that draws the hardware control panel.
 
-The design space is 800×600 (matching the XAML Viewbox).  All coordinates
-below are in that space; they are scaled to the actual widget size in paintEvent.
+The Kronos design space is 800×600 (matching the XAML Viewbox, uniform
+letterbox scale — Stretch="Uniform"). All Kronos coordinates below are in
+that space; they are scaled to the actual widget size in paintEvent.
+
+Also draws the Nautilus front-panel skin (Views/NautilusRightPanel.xaml's
+port) — same widget, same class, switched at runtime via set_device_family()
+rather than a separate widget the way the C# app swaps two UserControls,
+since this is a single custom-painted surface rather than a tree of real
+child widgets. Nautilus's design space is 1024×771 (NautilusFront1.jpg's
+native size) and uses a WIDTH-ONLY scale (`width / 1024`, matching C#'s
+NautilusRightPanel.xaml.cs's own LayoutTransform — see set_device_family's
+docstring for why that's deliberately not the same uniform-letterbox
+strategy Kronos uses).
+
+Both skins' buttons stay registered in self._btns/self._btn_map at all
+times (only the active skin's subset is painted/hit-tested) — this lets
+set_mode()/set_active() keep working unmodified when called for a Kronos
+button name while the Nautilus skin is showing (Nautilus's MODE/PAGE
+buttons reuse Kronos's Combi/Program mode indices for their command/
+pending-mode bookkeeping — see Views/main_window.py's _CTRL_BTN_CMD
+NAUT_MODE/NAUT_PAGE entries — so that machinery must keep working even
+though nothing draws the invisible Kronos button it nominally touches).
 
 Button images are shared with the C# project under
   ../KronosScreenRemote/Resources/Images/
@@ -21,7 +41,13 @@ from PySide6.QtWidgets import QMenu, QWidget
 _DS_W = 800
 _DS_H = 600
 
-# Pixels of vertical drag per wheel step (design-space pixels)
+# Nautilus design space — NautilusFront1.jpg's native size (NOT Kronos's 800×600).
+_NAUT_DS_W = 1024
+_NAUT_DS_H = 771
+
+# Pixels of vertical drag per wheel step (design-space pixels) — same physical
+# gesture sensitivity for both skins; the two design spaces are similar enough
+# scale (both ~200px wheel diameter) that no per-skin value is needed.
 _WHEEL_PX_PER_STEP = 12
 
 # Wheel animation — matches C# WheelAngles / WheelAnimIntervalMs / WheelAnimIdleMs
@@ -31,7 +57,14 @@ _WHEEL_IDLE_MS     = 400
 
 
 def _res(name: str) -> pathlib.Path:
-    return pathlib.Path(__file__).parent / "Resources" / "Images" / name
+    # Repo-root Resources/Images/, not Rendering/Resources/Images/ (which doesn't
+    # exist) — this file lives one directory below the repo root, so it takes
+    # TWO .parent hops to reach it. This was wrong (one hop) until 2026-09-25,
+    # silently loading zero images the whole time — every .exists() guard below
+    # made the miss invisible instead of erroring. See Views/main_window.py's
+    # ValueSliderControl._load_images and Models/storage.py's cal_data.json
+    # fallback for the same bug, fixed alongside this one.
+    return pathlib.Path(__file__).parent.parent / "Resources" / "Images" / name
 
 
 # ── Button descriptor ──────────────────────────────────────────────────────────
@@ -40,13 +73,20 @@ class _Btn:
     """One clickable region in design space."""
     def __init__(self, name: str, x: int, y: int, w: int, h: int,
                  img_unlit: str, img_lit: Optional[str],
-                 toggle: bool, radio_group: Optional[str]):
+                 toggle: bool, radio_group: Optional[str],
+                 skin: str = "kronos", hold_lit: bool = False):
         self.name       = name
         self.rect       = QRect(x, y, w, h)
         self.img_unlit  = img_unlit
         self.img_lit    = img_lit
         self.toggle     = toggle
         self.radio_group = radio_group
+        self.skin       = skin      # "kronos" or "nautilus" — which skin draws/hit-tests it
+        # HoldLit (C#'s ButtonMode="HoldLit", Nautilus A-F): lit only while the
+        # mouse is physically held down on it, not a persistent/toggled state —
+        # mousePressEvent/mouseReleaseEvent set `active` directly for these
+        # rather than the toggle/radio_group/set_active machinery below.
+        self.hold_lit   = hold_lit
         self.active     = False     # lit state
 
 
@@ -82,6 +122,30 @@ _BUTTON_DEFS: list[tuple] = [
 # Data wheel position in design space
 _WHEEL_X, _WHEEL_Y, _WHEEL_W, _WHEEL_H = 41, 222, 202, 218
 
+# Nautilus button layout, converted from Views/NautilusRightPanel.xaml's
+# Margin="left,top,right,bottom" in its 1024×771 canvas:
+#   (x, y, w, h) = (left, top, 1024-left-right, 771-top-bottom)
+# Wire tokens/command wiring live in Views/main_window.py's _CTRL_BTN_CMD
+# (NAUT_* entries) and are documented there, not here.
+_NAUT_BUTTON_DEFS: list[tuple] = [
+    # name         x    y    w    h   img_unlit              img_lit               hold_lit
+    ("NAUT_MODE",  462, 279, 106, 44, "ButtonModeUnlit.png", "ButtonModeLit.png",  False),
+    ("NAUT_PAGE",  782, 278, 105, 44, "ButtonPageUnlit.png", "ButtonPageLit.png",  False),
+    ("NAUT_A",     463, 412, 107, 46, "ButtonAUnlit.png",    "ButtonALit.png",     True),
+    ("NAUT_B",     625, 412, 107, 46, "ButtonBUnlit.png",    "ButtonBLit.png",     True),
+    ("NAUT_C",     787, 410, 107, 46, "ButtonCUnlit.png",    "ButtonCLit.png",     True),
+    ("NAUT_D",     464, 550, 107, 46, "ButtonDUnlit.png",    "ButtonDLit.png",     True),
+    ("NAUT_E",     628, 549, 107, 46, "ButtonEUnlit.png",    "ButtonELit.png",     True),
+    ("NAUT_F",     793, 548, 107, 46, "ButtonFUnlit.png",    "ButtonFLit.png",     True),
+    ("NAUT_EXIT",   34, 551, 115, 53, "ButtonExit.png",      None,                 False),
+    ("NAUT_ENTER", 143, 551, 115, 53, "ButtonEnter.png",     None,                 False),
+    ("NAUT_INC",   146, 465, 115, 53, "ButtonInc.png",       None,                 False),
+    ("NAUT_DEC",    37, 465, 109, 53, "ButtonDec.png",       None,                 False),
+]
+
+# Nautilus data wheel position (Data_Wheel Margin="52,190,771,383" in 1024×771).
+_NAUT_WHEEL_X, _NAUT_WHEEL_Y, _NAUT_WHEEL_W, _NAUT_WHEEL_H = 52, 190, 201, 198
+
 
 class KronosControlSurface(QWidget):
     """
@@ -97,14 +161,20 @@ class KronosControlSurface(QWidget):
         super().__init__(parent)
         self.setMinimumSize(200, 150)
         self._reverse_scroll = False   # set by MainWindow from settings.reverse_scrolling
+        self._active_skin = "kronos"   # "kronos" or "nautilus" — see set_device_family()
         self._btns: list[_Btn] = [
-            _Btn(name, x, y, w, h, ul, lit, toggle, group)
+            _Btn(name, x, y, w, h, ul, lit, toggle, group, skin="kronos")
             for name, x, y, w, h, ul, lit, toggle, group in _BUTTON_DEFS
+        ] + [
+            _Btn(name, x, y, w, h, ul, lit, False, None, skin="nautilus", hold_lit=hold_lit)
+            for name, x, y, w, h, ul, lit, hold_lit in _NAUT_BUTTON_DEFS
         ]
         self._btn_map: dict[str, _Btn] = {b.name: b for b in self._btns}
         self._pixmap_cache: dict[str, QPixmap] = {}
-        self._bg_pixmap:    Optional[QPixmap] = None
-        self._wheel_pixmap: Optional[QPixmap] = None
+        self._bg_pixmap:        Optional[QPixmap] = None   # Kronos background
+        self._naut_bg_pixmap:   Optional[QPixmap] = None   # Nautilus background
+        self._wheel_pixmap:      Optional[QPixmap] = None   # Kronos wheel (transparent)
+        self._naut_wheel_pixmap: Optional[QPixmap] = None   # Nautilus wheel
         self._wheel_angle      = 0.0
         self._wheel_anim_state = 0
         self._wheel_anim_dir   = 1
@@ -137,6 +207,21 @@ class KronosControlSurface(QWidget):
         for i, name in enumerate(names, 1):
             self.set_active(name, i == mode)
 
+    def set_device_family(self, is_nautilus: bool) -> None:
+        """Switches which skin paints/hit-tests — port of C#'s two separate
+        UserControls (KronosRightPanel/NautilusRightPanel) swapped by
+        visibility, adapted to this single custom-painted widget instead.
+        A no-op if unchanged. Does not touch button `active` state — Kronos's
+        radio-group mode lighting and Nautilus's MODE_LIT/PAGE_LIT-driven
+        lamps (Views/main_window.py's _apply_nautilus_lamps) are independent
+        of which skin is currently drawn, exactly as C#'s ApplyNautilusLamps
+        keeps updating _nautilusRightPanel even while it's hidden."""
+        skin = "nautilus" if is_nautilus else "kronos"
+        if skin == self._active_skin:
+            return
+        self._active_skin = skin
+        self.update()
+
     def press_button(self, name: str):
         """Animate a named button as pressed (e.g. from a keyboard shortcut)."""
         btn = self._btn_map.get(name)
@@ -163,6 +248,34 @@ class KronosControlSurface(QWidget):
         self._wheel_angle = 0.0
         self.update()
 
+    # ── Skin geometry helpers ────────────────────────────────────────────────────
+
+    def _skin_dims(self) -> tuple[int, int]:
+        return (_NAUT_DS_W, _NAUT_DS_H) if self._active_skin == "nautilus" else (_DS_W, _DS_H)
+
+    def _skin_wheel_rect(self) -> tuple[int, int, int, int]:
+        if self._active_skin == "nautilus":
+            return _NAUT_WHEEL_X, _NAUT_WHEEL_Y, _NAUT_WHEEL_W, _NAUT_WHEEL_H
+        return _WHEEL_X, _WHEEL_Y, _WHEEL_W, _WHEEL_H
+
+    def _scale_and_offset(self) -> tuple[float, float, float]:
+        ds_w, ds_h = self._skin_dims()
+        if self._active_skin == "nautilus":
+            # Width-only scale — port of NautilusRightPanel.xaml.cs's OnSizeChanged
+            # (scale = e.NewSize.Width / DesignWidth). Deliberately NOT the same
+            # uniform-letterbox strategy Kronos uses below: the column always
+            # matches the live screen's width exactly and only ever crops/gaps
+            # top-bottom (that panel's own comment explains why — the tight
+            # left/right margins around EXIT/PAGE would otherwise get clipped
+            # instead of the generous ~150-unit margin above/below the buttons).
+            scale = self.width() / ds_w if ds_w else 1.0
+        else:
+            # Uniform scale (Viewbox Stretch="Uniform") — letterbox if aspect differs.
+            scale = min(self.width() / ds_w, self.height() / ds_h) if ds_w and ds_h else 1.0
+        ox = (self.width()  - ds_w * scale) / 2
+        oy = (self.height() - ds_h * scale) / 2
+        return scale, ox, oy
+
     # ── Painting ───────────────────────────────────────────────────────────────
 
     def paintEvent(self, _event):
@@ -170,21 +283,23 @@ class KronosControlSurface(QWidget):
         p.setRenderHint(QPainter.SmoothPixmapTransform)
         p.fillRect(self.rect(), Qt.black)
 
-        # Uniform scale (Viewbox Stretch="Uniform") — letterbox if aspect differs
-        scale = min(self.width() / _DS_W, self.height() / _DS_H)
-        ox = (self.width()  - _DS_W * scale) / 2
-        oy = (self.height() - _DS_H * scale) / 2
+        ds_w, ds_h = self._skin_dims()
+        scale, ox, oy = self._scale_and_offset()
         p.translate(ox, oy)
         p.scale(scale, scale)
 
         # Background
-        if self._bg_pixmap:
-            p.drawPixmap(0, 0, _DS_W, _DS_H, self._bg_pixmap)
+        bg = self._naut_bg_pixmap if self._active_skin == "nautilus" else self._bg_pixmap
+        if bg:
+            p.drawPixmap(0, 0, ds_w, ds_h, bg)
         else:
-            p.fillRect(0, 0, _DS_W, _DS_H, Qt.black)
+            p.fillRect(0, 0, ds_w, ds_h, Qt.black)
 
-        # Buttons
+        # Buttons — only the active skin's subset (both skins' buttons stay
+        # registered in self._btns at all times, see this module's docstring).
         for btn in self._btns:
+            if btn.skin != self._active_skin:
+                continue
             key = (btn.img_lit if btn.active and btn.img_lit else btn.img_unlit)
             px = self._pixmap_cache.get(key)
             if px:
@@ -193,21 +308,24 @@ class KronosControlSurface(QWidget):
                 p.drawPixmap(r.x(), r.y() + y_off, r.width(), r.height(), px)
 
         # Data wheel — draw at natural aspect ratio (circle stays circular)
-        if self._wheel_pixmap:
-            iw = self._wheel_pixmap.width()
-            ih = self._wheel_pixmap.height()
+        wheel_px = (self._naut_wheel_pixmap if self._active_skin == "nautilus"
+                    else self._wheel_pixmap)
+        wx, wy, ww, wh = self._skin_wheel_rect()
+        if wheel_px:
+            iw = wheel_px.width()
+            ih = wheel_px.height()
             if iw > 0 and ih > 0:
-                s  = min(_WHEEL_W / iw, _WHEEL_H / ih)
+                s  = min(ww / iw, wh / ih)
                 dw = iw * s
                 dh = ih * s
                 # Centre within the design-space rect
-                cx = _WHEEL_X + (_WHEEL_W - dw) / 2 + dw / 2
-                cy = _WHEEL_Y + (_WHEEL_H - dh) / 2 + dh / 2
+                cx = wx + (ww - dw) / 2 + dw / 2
+                cy = wy + (wh - dh) / 2 + dh / 2
                 p.save()
                 p.translate(cx, cy)
                 p.rotate(self._wheel_angle)
                 p.translate(-dw / 2, -dh / 2)
-                p.drawPixmap(QRect(0, 0, round(dw), round(dh)), self._wheel_pixmap)
+                p.drawPixmap(QRect(0, 0, round(dw), round(dh)), wheel_px)
                 p.restore()
 
         p.end()
@@ -220,26 +338,30 @@ class KronosControlSurface(QWidget):
         ds = self._to_design(event.position())
 
         # Wheel drag
-        if _WHEEL_X <= ds.x() <= _WHEEL_X + _WHEEL_W and \
-                _WHEEL_Y <= ds.y() <= _WHEEL_Y + _WHEEL_H:
+        wx, wy, ww, wh = self._skin_wheel_rect()
+        if wx <= ds.x() <= wx + ww and wy <= ds.y() <= wy + wh:
             self._wheel_dragging = True
             self._wheel_drag_y   = ds.y()
             self._wheel_drag_steps = 0
             self.grabMouse()
             return
 
-        # Button click — find deepest match
+        # Button click — find deepest match (active skin only)
         for btn in reversed(self._btns):
+            if btn.skin != self._active_skin:
+                continue
             if btn.rect.contains(int(ds.x()), int(ds.y())):
                 self._pressed_btn = btn
+                if btn.hold_lit:
+                    btn.active = True
                 self.update()
                 self._handle_click(btn)
                 return
 
     def contextMenuEvent(self, event):
         ds = self._to_design(event.pos())
-        if not (_WHEEL_X <= ds.x() <= _WHEEL_X + _WHEEL_W and
-                _WHEEL_Y <= ds.y() <= _WHEEL_Y + _WHEEL_H):
+        wx, wy, ww, wh = self._skin_wheel_rect()
+        if not (wx <= ds.x() <= wx + ww and wy <= ds.y() <= wy + wh):
             return
         menu = QMenu(self)
         menu.addAction("Settings…", self.wheel_settings_requested.emit)
@@ -266,6 +388,13 @@ class KronosControlSurface(QWidget):
             if self._pressed_btn is not None:
                 btn = self._pressed_btn
                 self._pressed_btn = None
+                if btn.hold_lit:
+                    # Held-lit clears unconditionally on release — it tracks
+                    # "physically depressed right now", not click completion,
+                    # so a drag-off release still unlights it (unlike
+                    # button_released below, which requires landing back on
+                    # the button to fire at all).
+                    btn.active = False
                 self.update()
                 # Fire release only if the cursor is still over the pressed
                 # button (so a drag-off cancels it).
@@ -307,10 +436,9 @@ class KronosControlSurface(QWidget):
     # ── Internals ──────────────────────────────────────────────────────────────
 
     def _to_design(self, pos) -> QPoint:
-        """Convert widget pixel position to 800×600 design space (accounts for letterbox)."""
-        scale = min(self.width() / _DS_W, self.height() / _DS_H)
-        ox = (self.width()  - _DS_W * scale) / 2
-        oy = (self.height() - _DS_H * scale) / 2
+        """Convert widget pixel position to the active skin's design space
+        (accounts for its letterbox/crop strategy — see _scale_and_offset)."""
+        scale, ox, oy = self._scale_and_offset()
         dx = (pos.x() - ox) / scale
         dy = (pos.y() - oy) / scale
         return QPoint(int(dx), int(dy))
@@ -334,6 +462,12 @@ class KronosControlSurface(QWidget):
         wheel_path = _res("DataWheelTransparent.png")
         if wheel_path.exists():
             self._wheel_pixmap = QPixmap(str(wheel_path))
+        naut_bg_path = _res("NautilusFront1.jpg")
+        if naut_bg_path.exists():
+            self._naut_bg_pixmap = QPixmap(str(naut_bg_path))
+        naut_wheel_path = _res("DataWheel.png")
+        if naut_wheel_path.exists():
+            self._naut_wheel_pixmap = QPixmap(str(naut_wheel_path))
         for btn in self._btns:
             for img_name in (btn.img_unlit, btn.img_lit):
                 if img_name and img_name not in self._pixmap_cache:

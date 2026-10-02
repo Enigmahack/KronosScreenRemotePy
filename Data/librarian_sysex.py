@@ -175,6 +175,15 @@ def object_dump_request(obj: int, bank: int, index: int) -> bytes:
     ])
 
 
+def dump_bank_request(obj: int, bank: int) -> bytes:
+    """0x77 Dump Bank Request — every object of a type in a bank (preset banks
+    only; USER banks reject this). Bytes form, paired with
+    Data.nautilus_sysex.dump_bank_request for SysExDumpCollector's
+    device-family codec selection — kronos_sysex.dump_bank_request (a hex
+    STRING) predates that pairing and is unrelated."""
+    return bytes(_HDR) + bytes([0x77, obj & 0x7F, bank & 0x7F, _EOX])
+
+
 def bank_digest_request(obj: int, bank: int) -> bytes:
     """0x37 Bank Digest Request — instrument replies with a 0x38 for this bank."""
     return bytes(_HDR) + bytes([0x37, obj & 0x7F, bank & 0x7F, _EOX])
@@ -326,6 +335,23 @@ def parse_bank_digest(msg: bytes) -> Optional[BankDigest]:
     return BankDigest(obj, bank, bytes(sha1))
 
 
+# ── Reply (0x24) parsing ──────────────────────────────────────────────────────
+
+
+def parse_reply(msg: bytes) -> Optional[int]:
+    """Decode a func-0x24 Reply.  F0 42 3g 68 24 cc F7. Returns the Reply Code
+    (0 = OK, 4 = target object not found, ...), or None if msg isn't one.
+    Paired with Data.nautilus_sysex.parse_reply for SysExDumpCollector's
+    device-family codec selection — no prior Python equivalent existed (the
+    check was inlined at each call site instead)."""
+    if len(msg) < 6:
+        return None
+    if not (msg[0] == 0xF0 and msg[1] == 0x42 and (msg[2] & 0xF0) == 0x30 and
+            msg[3] == 0x68 and msg[4] == 0x24):
+        return None
+    return msg[5] & 0x7F
+
+
 # ── Self-tests (run: python librarian_sysex.py) ──────────────────────────────
 
 
@@ -403,6 +429,13 @@ def _selftest() -> None:
 
     dr = bank_digest_request(OBJ_PROGRAM, 0x00)
     check("digest-req", dr == bytes([0xF0, 0x42, 0x30, 0x68, 0x37, 0x00, 0x00, 0xF7]))
+
+    bdr = dump_bank_request(OBJ_PROGRAM, 0x00)
+    check("dumpbank-req", bdr == bytes([0xF0, 0x42, 0x30, 0x68, 0x77, 0x00, 0x00, 0xF7]))
+
+    check("reply-ok", parse_reply(bytes([0xF0, 0x42, 0x30, 0x68, 0x24, 0x00, 0xF7])) == 0)
+    check("reply-rejected", parse_reply(bytes([0xF0, 0x42, 0x30, 0x68, 0x24, 0x04, 0xF7])) == 4)
+    check("reply-not-a-reply", parse_reply(w) is None)
 
     if fails:
         print("FAIL:", ", ".join(fails))

@@ -389,6 +389,17 @@ def backup_dir() -> pathlib.Path:
 
 # ── Settings ───────────────────────────────────────────────────────────────────
 
+# Plain scalar settings persisted verbatim (type taken from the dataclass default).
+_SCALAR_FIELDS = (
+    "librarian_full_sync_on_launch", "librarian_force_destructive_write", "librarian_sync_mode",
+    "proactive_sysex_polling", "sysex_poll_interval_sec", "sysex_poll_on_changes",
+    "midi_output_channel", "value_slider_cc", "pull_names_on_change",
+    "vu_device_id", "sample_editor_output_device_id", "file_manager_default_local_folder",
+    "sample_undo_byte_cap_mb", "sample_workspace_root", "sample_zone_create_position",
+    "sample_zone_create_range", "sample_zone_original_key_position",
+)
+
+
 def load_settings() -> AppSettings:
     p = _path("settings.json")
     s = AppSettings()
@@ -420,6 +431,12 @@ def load_settings() -> AppSettings:
         s.zoom_default_level     = float(root.get("zoom_default_level", s.zoom_default_level))
         s.zoom_window_size       = float(root.get("zoom_window_size",   s.zoom_window_size))
         s.scaling_quality        = root.get("scaling_quality",         s.scaling_quality)
+        s.default_window_size    = root.get("default_window_size",    s.default_window_size)
+        s.window_left            = int(root.get("window_left",         s.window_left))
+        s.window_top             = int(root.get("window_top",          s.window_top))
+        s.window_width           = int(root.get("window_width",        s.window_width))
+        s.window_height          = int(root.get("window_height",       s.window_height))
+        s.window_maximized       = root.get("window_maximized",       s.window_maximized)
         s.image_brightness       = int(root.get("image_brightness",    s.image_brightness))
         s.image_contrast         = int(root.get("image_contrast",      s.image_contrast))
         s.image_gamma            = float(root.get("image_gamma",       s.image_gamma))
@@ -433,6 +450,20 @@ def load_settings() -> AppSettings:
                                                         s.merge_preserve_duplicate_combis)
         s.merge_behavior        = root.get("merge_behavior",         s.merge_behavior)
         s.recent_hosts           = list(root.get("recent_hosts",      []))
+        for name in _SCALAR_FIELDS:
+            default = getattr(s, name)
+            v = root.get(name, default)
+            try:
+                setattr(s, name, v if default is None else type(default)(v))
+            except (TypeError, ValueError):
+                pass
+        s.host_credentials = {
+            str(h): {"username": str(c.get("username", "")), "password": str(c.get("password", ""))}
+            for h, c in root.get("host_credentials", {}).items() if isinstance(c, dict)}
+        s.window_placements = {
+            str(k): {kk: (bool(vv) if kk == "maximized" else float(vv)) for kk, vv in v.items()}
+            for k, v in root.get("window_placements", {}).items() if isinstance(v, dict)}
+        s.sample_recent_files = [str(x) for x in root.get("sample_recent_files", [])]
         s.keybinds               = root.get("keybinds",               {})
         s.blank_template_source_slots = {
             k: list(v) for k, v in root.get("blank_template_source_slots", s.blank_template_source_slots).items()
@@ -494,6 +525,12 @@ def save_settings(s: AppSettings):
             "zoom_default_level":     s.zoom_default_level,
             "zoom_window_size":       s.zoom_window_size,
             "scaling_quality":        s.scaling_quality,
+            "default_window_size":    s.default_window_size,
+            "window_left":            s.window_left,
+            "window_top":             s.window_top,
+            "window_width":           s.window_width,
+            "window_height":          s.window_height,
+            "window_maximized":       s.window_maximized,
             "image_brightness":       s.image_brightness,
             "image_contrast":         s.image_contrast,
             "image_gamma":            s.image_gamma,
@@ -505,6 +542,10 @@ def save_settings(s: AppSettings):
             "merge_preserve_duplicate_combis":   s.merge_preserve_duplicate_combis,
             "merge_behavior":         s.merge_behavior,
             "recent_hosts":           s.recent_hosts,
+            "host_credentials":       s.host_credentials,
+            "window_placements":      s.window_placements,
+            "sample_recent_files":    s.sample_recent_files,
+            **{name: getattr(s, name) for name in _SCALAR_FIELDS},
             "keybinds":               s.keybinds,
             "blank_template_source_slots": s.blank_template_source_slots,
             "macros": [
@@ -603,58 +644,6 @@ def load_locks() -> Set[int]:
 def save_locks(locked: Set[int]):
     atomic_write_text(_path("palette_lock.json"), json.dumps(sorted(locked)))
     log.debug("%d locked palette entry/entries saved", len(locked))
-
-
-# ── Calibration ────────────────────────────────────────────────────────────────
-
-def load_cal() -> Tuple[CalMesh, List[CalBiasDot]]:
-    dots: list[CalBiasDot] = []
-    p = _path("cal_data.json")
-
-    # Fall back to embedded default bundled with the Python project
-    embedded = pathlib.Path(__file__).parent / "Resources" / "cal_data.json"
-    if not p.exists() and embedded.exists():
-        p = embedded
-
-    if not p.exists():
-        return CalMesh(), dots
-
-    try:
-        root = json.loads(p.read_text(encoding="utf-8"))
-        size = root.get("grid_size", 5)
-        if size not in (3, 4, 5):
-            size = 5
-        mesh = CalMesh(size, size)
-
-        for entry in root.get("mesh", []):
-            if len(entry) >= 4:
-                mesh.set_offset(entry[0], entry[1], entry[2], entry[3])
-
-        for d in root.get("bias_dots", []):
-            if len(d) >= 2:
-                dots.append(CalBiasDot(d[0], d[1]))
-
-        return mesh, dots
-    except Exception:
-        return CalMesh(), dots
-
-
-def save_cal(mesh: CalMesh, dots: List[CalBiasDot]):
-    try:
-        mesh_arr = []
-        for c in range(mesh.cols):
-            for r in range(mesh.rows):
-                ox, oy = mesh.get_offset(c, r)
-                if ox != 0 or oy != 0:
-                    mesh_arr.append([c, r, ox, oy])
-        root = {
-            "grid_size":  mesh.cols,
-            "mesh":       mesh_arr,
-            "bias_dots":  [[d.nx, d.ny] for d in dots],
-        }
-        atomic_write_text(_path("cal_data.json"), json.dumps(root, indent=2))
-    except Exception as e:
-        _note_write_failure("Calibration data", e)
 
 
 # ── Program/Combi name cache ────────────────────────────────────────────────
