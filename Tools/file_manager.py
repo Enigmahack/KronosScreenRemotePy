@@ -348,14 +348,12 @@ class _FtpWorker:
         if _is_top_level_ftp_path(path):
             raise FtpTopLevelPathError(path, "delete")
         self.ensure_connected()
-        for name, facts in self._ftp.mlsd(path):
-            if name in (".", ".."):
-                continue
-            full = f"{path.rstrip('/')}/{name}"
-            if facts.get("type", "").startswith("dir"):
-                self.delete_dir(full)
+        # list_dir, not MLSD: the Kronos' FTP server answers MLSD with "500 Unknown command".
+        for entry in self.list_dir(path):
+            if entry.is_directory:
+                self.delete_dir(entry.full_path)
             else:
-                self._ftp.delete(full)
+                self._ftp.delete(entry.full_path)
         self._ftp.rmd(path)
 
     def rename(self, old: str, new: str):

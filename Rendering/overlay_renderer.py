@@ -27,10 +27,6 @@ _COL_SEP           = QColor(0x44, 0x44, 0x44)
 _COL_SLIDER_BG     = QColor(0x33, 0x33, 0x33)
 _COL_LOCKED        = QColor(0xFF, 0x80, 0x00, 180)
 _COL_GRID          = QColor(0x00, 0xFF, 0x80, 100)
-_COL_NODE_IDLE     = QColor(0x00, 0xFF, 0x80, 180)
-_COL_NODE_HOVER    = QColor(0xFF, 0xFF, 0x00, 220)
-_COL_NODE_DRAG     = QColor(0xFF, 0x60, 0x00, 220)
-_COL_BIAS_DOT      = QColor(0x00, 0xCC, 0xFF, 200)
 _COL_TOUCH_MARKER  = QColor(0xAA, 0xAA, 0xAA, 210)
 _COL_BOOT_BAR      = QColor(0xFF, 0x00, 0x00)
 _COL_DISCONNECTED  = QColor(0xFF, 0x44, 0x44)
@@ -265,64 +261,66 @@ class OverlayRenderer:
                          mesh: CalMesh, bias_dots: list[CalBiasDot],
                          hover_node: Optional[Tuple[int, int]],
                          dragging_node: Optional[Tuple[int, int]],
-                         cal_dirty: bool):
-        fw = 800
-        fh = 600
-        scale_x = frame_rect.width()  / fw
-        scale_y = frame_rect.height() / fh
+                         cal_dirty: bool, kron_w: int, kron_h: int,
+                         win_w: int, win_h: int):
+        """Port of OverlayRenderer.DrawCalOverlay."""
+        fx, fy = frame_rect.x(), frame_rect.y()
+        fw, fh = frame_rect.width(), frame_rect.height()
 
-        def to_screen(nx: float, ny: float) -> QPointF:
-            return QPointF(frame_rect.x() + nx * scale_x,
-                           frame_rect.y() + ny * scale_y)
+        p.fillRect(frame_rect, QColor(0, 0, 0, 80))
 
-        pen_grid = QPen(QColor(0x00, 0xBB, 0x50, 210), 1.8)
-        p.setPen(pen_grid)
-        for c in range(mesh.cols):
-            for r in range(mesh.rows - 1):
-                x1, y1 = mesh.node_dst(c, r,     fw, fh)
-                x2, y2 = mesh.node_dst(c, r + 1, fw, fh)
-                p.drawLine(to_screen(x1, y1), to_screen(x2, y2))
+        # (kron-1), not kron: the same convention as the click <-> native-coordinate
+        # mapping (FrameWidget._kron_to_screen), so a node sits exactly where a click lands.
+        def to_scr(pt: Tuple[int, int]) -> QPointF:
+            return QPointF(fx + pt[0] * fw / (kron_w - 1), fy + pt[1] * fh / (kron_h - 1))
+
+        p.setPen(QPen(QColor(60, 120, 200, 160), 1.0))
         for r in range(mesh.rows):
             for c in range(mesh.cols - 1):
-                x1, y1 = mesh.node_dst(c,     r, fw, fh)
-                x2, y2 = mesh.node_dst(c + 1, r, fw, fh)
-                p.drawLine(to_screen(x1, y1), to_screen(x2, y2))
+                p.drawLine(to_scr(mesh.node_dst(c, r, kron_w, kron_h)),
+                           to_scr(mesh.node_dst(c + 1, r, kron_w, kron_h)))
+        for c in range(mesh.cols):
+            for r in range(mesh.rows - 1):
+                p.drawLine(to_scr(mesh.node_dst(c, r, kron_w, kron_h)),
+                           to_scr(mesh.node_dst(c, r + 1, kron_w, kron_h)))
 
-        # Nodes
         for c in range(mesh.cols):
             for r in range(mesh.rows):
-                nx, ny = mesh.node_dst(c, r, fw, fh)
-                sp = to_screen(nx, ny)
-                if dragging_node == (c, r):
-                    col = _COL_NODE_DRAG
-                elif hover_node == (c, r):
-                    col = _COL_NODE_HOVER
-                else:
-                    col = _COL_NODE_IDLE
+                sp = to_scr(mesh.node_dst(c, r, kron_w, kron_h))
+                is_hov = hover_node == (c, r)
+                is_drag = dragging_node == (c, r)
+                fill = (QColor(255, 200, 50) if is_drag else
+                        QColor(100, 200, 255) if is_hov else QColor(60, 140, 220))
                 p.setPen(Qt.NoPen)
-                p.setBrush(col)
+                p.setBrush(fill)
                 p.drawEllipse(sp, 5, 5)
+                if is_hov or is_drag:
+                    p.setPen(QPen(QColor(255, 255, 255), 1.2))
+                    p.setBrush(Qt.NoBrush)
+                    p.drawEllipse(sp, 10, 10)
 
-        # Bias dots — displayed at their mesh-warped position so they follow the mesh
-        p.setPen(QPen(_COL_BIAS_DOT, 1.5))
-        p.setBrush(Qt.NoBrush)
+        # Bias dots drawn at their warped position so they follow mesh changes
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(220, 60, 60))
         for d in bias_dots:
-            disp_x, disp_y = mesh.apply(d.nx, d.ny, fw, fh)
-            sp = to_screen(disp_x, disp_y)
-            p.drawEllipse(sp, 5, 5)
-            p.drawLine(QPointF(sp.x() - 3, sp.y()), QPointF(sp.x() + 3, sp.y()))
-            p.drawLine(QPointF(sp.x(), sp.y() - 3), QPointF(sp.x(), sp.y() + 3))
+            p.drawEllipse(to_scr(mesh.apply(d.nx, d.ny, kron_w, kron_h)), 2, 2)
 
-        # Status bar
-        dirty_flag = " [unsaved]" if cal_dirty else ""
-        status_text = (f"Calibration{dirty_flag}  |  "
-                       f"S: save  X: clear all dots  R: reset  Ctrl+Z/Y: undo/redo  "
-                       f"RClick: dot  Esc: exit")
-        bar_h = 18
-        bar_rect = QRectF(frame_rect.x(), frame_rect.bottom() - bar_h,
-                          frame_rect.width(), bar_h)
-        p.fillRect(bar_rect, QColor(0, 0, 0, 180))
-        bar_color = QColor(0xCC, 0x44, 0x44) if cal_dirty else QColor(0x44, 0xBB, 0x44)
+        n = len(bias_dots)
+        if cal_dirty:
+            tag, bar_color = "  [UNSAVED]", QColor(220, 80, 60)
+        else:
+            tag, bar_color = "  [SAVED]", QColor(80, 210, 80)
+        msg = (f"CALIBRATE{tag}  |  Click=touch  Drag node=warp  RC=add/del dot  "
+               f"S=save  R=reset  X=clear  C=exit  |  {n} dot{'s' if n != 1 else ''}")
+        font = QFont("Consolas", 8)
+        font.setStyleHint(QFont.Monospace)
+        p.setFont(font)
+        fm = p.fontMetrics()
+        bw = fm.horizontalAdvance(msg) + 8
+        bh = fm.height() + 4
+        bx = max(0.0, (win_w - bw) / 2)
+        by = win_h - bh - 4
+        p.fillRect(QRectF(bx, by, bw, bh), QColor(0, 0, 0, 180))
         p.setPen(bar_color)
-        p.setFont(QFont("Courier New", 8))
-        p.drawText(bar_rect.toRect(), Qt.AlignVCenter | Qt.AlignHCenter, status_text)
+        p.drawText(QPointF(bx + 4, by + 2 + fm.ascent()), msg)
+

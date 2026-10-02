@@ -1,0 +1,4 @@
+PySide6>=6.11
+numpy>=2.0
+sounddevice>=0.5     # Sample Editor playback, VU meter capture
+soxr>=1.0            # Sample Editor audio import: high-quality resampling (C# uses WDL)

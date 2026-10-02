@@ -139,6 +139,23 @@ class PullResult:
     #: advanced — a cancelled pull is a short pull, never a corrupt one — but the
     #: caller must not report it as a completed sync.
     cancelled: bool = False
+    #: Non-None only when the sweep gave up before doing any work because the
+    #: instrument answered nothing at all (see NO_REPLY_GIVE_UP). Carries the
+    #: user-facing explanation; every normal outcome leaves it None.
+    aborted: Optional[str] = None
+
+
+#: Consecutive unanswered digest requests tolerated at the START of the sweep before it
+#: gives up (LibraryPullPipeline.NoReplyGiveUp). Program INT A is the first bank all_banks()
+#: yields and always answers on a live instrument, so silence there means the instrument is
+#: not talking at all (most commonly SysEx switched off in GLOBAL > MIDI) — without this the
+#: failure was invisible: every request times out instead of erroring.
+NO_REPLY_GIVE_UP = 4
+
+SYSEX_OFF_FIX = ("On the Kronos: GLOBAL > MIDI, and check every MIDI Filter box (Program Change, "
+                 "Bank Change, Combi Change, After Touch, Control Change and Exclusive).")
+REFUSE_NO_INSTRUMENT_REPLY = ("REFUSE: the Kronos answered no SysEx requests, so nothing could be "
+                              "pulled. " + SYSEX_OFF_FIX)
 
 
 def all_banks() -> List[BankRef]:
@@ -210,6 +227,7 @@ def pull(index: LocalLibraryIndex, blobs: BlobStore,
     persisted = dict(index.bank_digest_baseline)
     fresh: Dict[str, str] = {}
     no_digest: List[str] = []
+    silent_run = 0
     for b in all_banks():
         if cancel is not None and cancel():
             # Nothing has been written yet; report an empty, cancelled pull
@@ -218,8 +236,16 @@ def pull(index: LocalLibraryIndex, blobs: BlobStore,
         d = get_live_digest(b.bank_key)
         if d:
             fresh[b.bank_key] = d
+            silent_run = 0
         else:
             no_digest.append(b.bank_key)
+            # Only while NOTHING has answered yet: a run of nulls LATER in the sweep is
+            # normal (a whole object type the unit gives no digest for). Returning here
+            # leaves every persisted baseline untouched.
+            if not fresh:
+                silent_run += 1
+                if silent_run >= NO_REPLY_GIVE_UP:
+                    return PullResult(0, 0, 0, aborted=REFUSE_NO_INSTRUMENT_REPLY)
 
     # A bank the instrument never answers a digest request for still needs a PERSISTED
     # baseline, or it is "changed" forever: plan_pull treats a missing fresh OR missing
@@ -412,6 +438,19 @@ def _selftest() -> None:
               untouched_entry is not None and untouched_entry.current_hash == edited_hash
               and not untouched_entry.conflicted)
 
+
+        # ── silent instrument: the sweep gives up after NO_REPLY_GIVE_UP unanswered banks,
+        #    touches no baseline, and reports aborted (not a hang / not "complete") ──
+        asked: List[str] = []
+        idx_silent = LocalLibraryIndex(root / "silent")
+        idx_silent.set_bank_digest_baseline(OBJ_PROGRAM, prog_a_bank, "keep-me")
+        r_silent = pull(idx_silent, blobs, lambda bk: (asked.append(bk) or None),
+                        lambda t, b: {}, full=True)
+        check("silent-aborted", r_silent.aborted is not None and "SysEx" in r_silent.aborted)
+        check("silent-gave-up-early", len(asked) == NO_REPLY_GIVE_UP)
+        check("silent-baseline-untouched",
+              idx_silent.bank_digest_baseline == {LocalLibraryIndex.bank_key(OBJ_PROGRAM, prog_a_bank): "keep-me"})
+        check("silent-nothing-fetched", r_silent.objects_fetched == 0 and not r_silent.cancelled)
     finally:
         if root.exists():
             shutil.rmtree(root)

@@ -189,9 +189,9 @@ from typing import Callable, Dict, List, Optional, Tuple
 log = logging.getLogger(__name__)
 
 from PySide6.QtCore import QByteArray, QMimeData, Qt, QTimer, Signal
-from PySide6.QtGui import QBrush, QColor, QDrag, QIcon, QPainter, QPixmap
+from PySide6.QtGui import QActionGroup, QBrush, QColor, QDrag, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
+    QAbstractItemView, QApplication, QCheckBox, QFrame, QMenu, QToolButton, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
     QGraphicsOpacityEffect, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget,
     QListWidgetItem, QMenu, QMessageBox, QProgressBar, QPushButton, QSpinBox, QSplitter,
     QStackedLayout, QStyle, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
@@ -212,6 +212,13 @@ from Data.librarian_sysex import (
     OBJ_COMBI, OBJ_PROGRAM, OBJ_SET_LIST, OBJ_VERSION, ObjectDump,
     obj_bank_to_func33, set_combi_timbre_ref, set_setlist_slot_ref,
 )
+import Data.library_pull_pipeline as pull_pipeline
+import Tools.sample_reference_walker as sample_walker
+from Data.librarian_dependencies import (
+    DependencyRow, LocalSource, MergeSource, PcgSource, build_merge_gap_rows, collect_local_deps,
+    collect_merge_deps, collect_pcg_deps,
+)
+from Tools.exs_option_index import ExsOptionIndex
 from Data.library_pull_pipeline import EDITABLE_BANKS, SLOT_COUNT
 from Data.local_library_store import (
     BlobStore, LocalIndexEntry, LocalLibraryIndex, LocalLibraryWriteError, OpLog,
@@ -916,10 +923,167 @@ class _PaneTreeWidget(QTreeWidget):
 # ── Main window ────────────────────────────────────────────────────────────────
 
 
+# ── Sync-row text, ported verbatim from AppMessages.Librarian.Shell ──────────────────────
+SYNC_TWO_WAY, SYNC_PULL_ONLY, SYNC_PUSH_ONLY = "TwoWay", "PullOnly", "PushOnly"
+_SYNC_LABEL = {SYNC_PULL_ONLY: "Pull Only", SYNC_PUSH_ONLY: "Push Only", SYNC_TWO_WAY: "2-Way Sync"}
+_SYNC_TOOLTIP = {
+    SYNC_PULL_ONLY: "Replace the keyboard library with what is on the Kronos. Pending local changes "
+                    "are discarded (you are asked first).",
+    SYNC_PUSH_ONLY: "Write every pending local change to the Kronos. If the Kronos has changed since "
+                    "the last sync you are asked before overwriting it.",
+    SYNC_TWO_WAY:   "Pull the library, then push every pending local change.",
+}
+_MSG_SYSEX_OFF_BANNER = (
+    "The Kronos is not answering SysEx. Keyboard Library, the Merge Window and PCG files still work; "
+    "Sync is disabled until it answers. " + pull_pipeline.SYSEX_OFF_FIX)
+_MSG_SYNC_DISABLED_TOOLTIP = "Disabled - the Kronos is not answering SysEx."
+_MSG_DESTRUCTIVE_ARMED = ("Force destructive write is ON - 2-Way Sync overwrites the Kronos without "
+                          "conflict checks.")
+_MSG_CANCELLED_PENDING_DEPS = "Cancelled - unresolved dependencies still pending."
+_MSG_PULL_ONLY_CANCELLED = "Pull cancelled - nothing was changed."
+_MSG_PUSH_OVERWRITING = "Overwriting Kronos from keyboard library..."
+_MSG_COMMIT_FAILED = "Commit failed - see warning."
+_MSG_RESOLVE_TOOLTIP = "Push your copy over the Kronos for every conflicted object."
+_MSG_CHECK_RESOLVE_NO_DIGEST = ("CHECK: some banks gave no digest - their conflicts were left in place "
+                                "rather than cleared without a working baseline. Try again once the "
+                                "Kronos is answering.")
+
+
+def _msg_conflict_banner(count: int) -> str:
+    return (f"{count} local change(s) can't be pushed - their banks changed on the Kronos since this "
+            "library last pulled them. Sync Library to pull those banks, or Resolve Conflicts to "
+            "push your copy over what's on the Kronos.")
+
+
+def _msg_conflicts_resolved(objects: int, rebased: int, banks: int) -> str:
+    return f"Resolved {objects} conflict(s) across {rebased}/{banks} bank(s) - Push Only to push them."
+
+
+def _msg_resolve_confirm(count: int, banks: str) -> str:
+    return (f"Push this library's copy of {count} conflicted object(s) over the Kronos?\n\n"
+            f"Banks affected: {banks}\n\n"
+            "Those banks changed on the Kronos since this library last pulled them. Continuing "
+            "means the next push overwrites whatever changed there with your local copy.\n\n"
+            "To keep the Kronos copy instead, cancel and run Sync Library in 2-Way or Pull Only.")
+
+
+def _msg_sync_result(fetched: int, conflicts: int, written: int, deleted: int, not_pushed: int = 0) -> str:
+    return (f"Pulled {fetched} object(s) ({conflicts} conflict(s)). Pushed {written} object(s)."
+            + (f" Deleted {deleted}." if deleted > 0 else "")
+            + (f" {not_pushed} NOT pushed - see below." if not_pushed > 0 else ""))
+
+
+def _msg_sync_complete(full: bool, fetched: int, conflicts: int) -> str:
+    return (f"{'Full Sync' if full else 'Sync'} Complete - pulled {fetched} object(s)"
+            + (f" ({conflicts} conflict(s))" if conflicts > 0 else "") + ", nothing to push.")
+
+
+def _msg_launch_pull_complete(fetched: int, conflicts: int) -> str:
+    return (f"Full sync on launch - pulled {fetched} object(s)"
+            + (f" ({conflicts} conflict(s))" if conflicts > 0 else "") + ".")
+
+
+def _msg_commit_result(written: int, deleted: int, not_pushed: int = 0) -> str:
+    return (f"Pushed {written} object(s)." + (f" Deleted {deleted}." if deleted > 0 else "")
+            + (f" {not_pushed} NOT pushed - see below." if not_pushed > 0 else ""))
+
+
+def _msg_pull_only_result(fetched: int, discarded: int) -> str:
+    return (f"Pull complete - {fetched} object(s) pulled"
+            + (f", {discarded} local change(s) discarded." if discarded > 0
+               else ", no local changes to discard."))
+
+
+def _msg_pull_discard_prompt(count: int) -> str:
+    return ("Pull Only replaces the keyboard library with what is on the Kronos.\n\n"
+            f"{count} pending local change(s) - edits and slots marked for deletion - will be "
+            "DISCARDED. This cannot be undone.\n\nContinue?")
+
+
+def _msg_push_conflict_summary(count: int) -> str:
+    return f"{count} object(s) changed on the Kronos since the last sync."
+
+
+def _msg_push_overwrite_prompt(reason: str) -> str:
+    return ("Push Only could not write safely:\n\n" + reason + "\n\n"
+            "Overwrite the Kronos with the keyboard library anyway? This is DESTRUCTIVE - "
+            "whatever is on the instrument for those objects is replaced.")
+
+
+def _msg_conflicted_not_pushed(count: int, banks: str) -> str:
+    return (f"CHECK: {count} object(s) in {banks} were NOT pushed - those banks changed on the Kronos "
+            "since this library last pulled them, so overwriting them would clobber whatever changed. "
+            "Sync Library to pull them, or use Resolve Conflicts to push your copy anyway.")
+
+
+def _msg_operation_failed(detail: str) -> str:
+    return f"Operation failed - {detail}"
+
+
+# ── Object Dependencies panel text (AppMessages.UnresolvedDependencies) ──────────────────────
+_MSG_SCAN_DIALOG_TITLE = "Scan a PCG for missing dependencies"
+_MSG_SEARCH_FAILED = lambda detail: f"Search failed: {detail}"
+
+
+def _msg_scan_found(label: str, file_name: str) -> str:
+    return f"Found {label} in {file_name} - staged in the Merge Window. Place it anywhere."
+
+
+def _msg_scan_found_many(found: int, file_name: str) -> str:
+    return (f"Found {found} of the missing objects in {file_name} - staged in the Merge Window. "
+            "Place them anywhere.")
+
+
+def _msg_scan_not_found(label: str, file_name: str) -> str:
+    return f"{file_name} doesn't contain {label}, or any of the others still listed - try another .pcg file."
+
+
+# Row text colours (Themes/Dark.xaml): missing dependency, then one per sample-bank bucket.
+_DEP_MISSING_COLOR = "#E05A5A"
+_DEP_BUCKET_COLOR = {
+    sample_walker.EXS: "#D9C23A",
+    sample_walker.USER: "#4FA3D8",
+    sample_walker.RAM: "#5C7FA3",
+    sample_walker.EXI_EXTERNAL: "#E0954A",
+}
+
+
+class _ObjectInfoDialog(QDialog):
+    """'More Info…' for a dependency row: who referenced it and what it in turn references one
+    level out (C# ObjectInfoDialog). Everything arrives pre-formatted from the DependencyRow."""
+
+    def __init__(self, self_info: str, parent_info: str, children: List[str], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Object Info")
+        self.resize(520, 360)
+        v = QVBoxLayout(self)
+        head = QLabel(self_info)
+        head.setWordWrap(True)
+        head.setStyleSheet("font-weight: bold; font-size: 13px;")
+        v.addWidget(head)
+        ref = QLabel(f"Referenced by: {parent_info}" if parent_info else "Referenced by: (top-level selection)")
+        ref.setWordWrap(True)
+        v.addWidget(ref)
+        title = QLabel("References:")
+        title.setStyleSheet("font-weight: bold;")
+        v.addWidget(title)
+        lst = QListWidget()
+        for line in (children or ["(references nothing)"]):
+            lst.addItem(line)
+        v.addWidget(lst, 1)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        close = QPushButton("Close")
+        close.clicked.connect(self.accept)
+        row.addWidget(close)
+        v.addLayout(row)
+
+
 class LibrarianShellWindow(QDialog):
     _sync_done = Signal(object, object, object, str)     # PullResult|None, ChangesetPlan|None, SyncResult|None, status
     _merge_pull_done = Signal(int, int, str)              # added, gaps, status
     _progress = Signal(str)
+    _sysex_probe_done = Signal(bool)                      # True = the Kronos answered a digest
     # PCG-from-Kronos pull, emitted from the FTP worker thread — Qt marshals both
     # to the GUI thread, which is the only thread allowed to touch the dialogs.
     _pcg_pull_progress = Signal(int, int)                 # bytes received, bytes expected (0 = unknown)
@@ -929,7 +1093,7 @@ class LibrarianShellWindow(QDialog):
                  ftp_port: int = 21, ftp_username: str = "", ftp_password: str = "",
                  parent=None, settings=None):
         super().__init__(parent)
-        self.setWindowTitle("Librarian Shell — Local Library / Merge / PCG")
+        self.setWindowTitle("Librarian")
         self.resize(1280, 800)
         self.setMinimumSize(900, 560)   # matches LibrarianShellWindow.xaml's MinWidth/MinHeight
         self.setStyleSheet(f"QDialog {{ background-color: {T.BG}; color: {T.TEXT}; }}")
@@ -968,7 +1132,27 @@ class LibrarianShellWindow(QDialog):
         # The four possible dirty/dependency dot glyphs, painted once each.
         self._dot_icon_cache: Dict[Tuple[bool, Optional[bool]], QIcon] = {}
 
+        # Object Dependencies panel: the selection-driven half (the red Merge-gap rows are
+        # derived fresh every rebuild) + the memos that keep a Set List click from re-reading
+        # hundreds of blobs over an SMB-hosted data dir.
+        self._dep_selection_rows: List[DependencyRow] = []
+        self._dep_pane: Optional[str] = None
+        self._dep_rerun: Optional[Callable[[], None]] = None
+        self._walk_cache: Dict[Tuple[int, str], tuple] = {}
+        self._pcg_dep_cache: Dict[Tuple[int, int, int], Optional[Tuple[str, bytes]]] = {}
+        self._exs_index: Optional[ExsOptionIndex] = None
         self._busy = False
+        # True = the Kronos answered no SysEx (probe / aborted pull). Browsing and staging still
+        # work; only the commands that talk to hardware are disabled.
+        self._sysex_unavailable = True
+        self._probe_running = False
+        # Per-run arm-time bank digests for a force-destructive push (see _write_to_hardware).
+        self._armed_digests: Dict[str, str] = {}
+        self._run_mode = SYNC_TWO_WAY
+        self._run_force = False
+        self._run_full = False
+        self._run_discarded = 0
+        self._run_is_overwrite_retry = False
         # Worker-thread lifetime — see the "Worker-thread lifetime" section near
         # _start_sync for why a window that can be deleted mid-sync needs these.
         self._closed = False
@@ -1018,11 +1202,13 @@ class LibrarianShellWindow(QDialog):
         # already in place).
         from Objects.global_body import CategoryNames
         cached = Models.storage.load_category_names(host) if host else None
+        self._warm_thread: Optional[threading.Thread] = None
         self._category_names = (CategoryNames.from_dict(cached)
                                 if cached is not None else None) or CategoryNames.numeric()
         if host and service is not None and service.can_dump:
-            threading.Thread(target=self._warm_category_names, args=(host,),
-                             daemon=True, name="CategoryNamesWarm").start()
+            self._warm_thread = threading.Thread(target=self._warm_category_names, args=(host,),
+                                                 daemon=True, name="CategoryNamesWarm")
+            self._warm_thread.start()
 
         self._build_ui()
         self._sync_done.connect(self._on_sync_done)
@@ -1030,11 +1216,19 @@ class LibrarianShellWindow(QDialog):
         self._progress.connect(self._log)
         self._progress.connect(self._status_label.setText)
 
+        self._sysex_probe_done.connect(self._on_sysex_probe_done)
+
         self._load_history()
         self._refresh_local_tree()
         self._refresh_merge_tree()
         self._refresh_pcg_tree()
         self._refresh_enable()
+        self._refresh_sync_button()
+        self._refresh_destructive_banner()
+        self._refresh_conflict_state()
+        # Establishes the SysEx-unavailable banner and the Sync gate; then, if asked to,
+        # a full pull (Settings > Librarian > Full sync on launch) once the probe has answered.
+        self._recheck_sysex(launch_pull=bool(self._settings.librarian_full_sync_on_launch))
 
     def keyPressEvent(self, event) -> None:  # noqa: N802 - Qt override
         """Ctrl+Z (undo, window-wide) plus Ctrl+X/C/V for the Local pane's Cut/Copy/
@@ -1075,11 +1269,31 @@ class LibrarianShellWindow(QDialog):
         root.setContentsMargins(10, 10, 10, 10)
 
         sync_row = QHBoxLayout()
-        self._btn_sync = QPushButton("Sync Library")
-        self._btn_sync.setToolTip("Pull the whole library (lazy digest-diff, or Force Full Sync below), then push "
-                                  "every pending local change.")
+        sync_row.setSpacing(0)
+        # One button + a mode dropdown (C# BTN_Sync / BTN_SyncMode). The label always names the
+        # mode a plain click will run, so a remembered destructive choice can never be invisible.
+        self._btn_sync = QPushButton()
+        self._btn_sync.setMinimumWidth(104)
         self._btn_sync.clicked.connect(self._start_sync)
         sync_row.addWidget(self._btn_sync)
+        self._btn_sync_mode = QToolButton()
+        self._btn_sync_mode.setText("\u25be")
+        self._btn_sync_mode.setToolTip("Choose what Sync does: 2-Way Sync, Pull Only or Push Only")
+        self._btn_sync_mode.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        mode_menu = QMenu(self._btn_sync_mode)
+        mode_group = QActionGroup(mode_menu)
+        mode_group.setExclusive(True)
+        self._sync_mode_actions: Dict[str, object] = {}
+        for mode in (SYNC_TWO_WAY, SYNC_PULL_ONLY, SYNC_PUSH_ONLY):
+            act = mode_menu.addAction(_SYNC_LABEL[mode])
+            act.setCheckable(True)
+            act.setToolTip(_SYNC_TOOLTIP[mode])
+            mode_group.addAction(act)
+            act.triggered.connect(lambda checked, m=mode: self._set_sync_mode(m))
+            self._sync_mode_actions[mode] = act
+        self._btn_sync_mode.setMenu(mode_menu)
+        sync_row.addWidget(self._btn_sync_mode)
+        sync_row.addSpacing(8)
         self._chk_force_full = QCheckBox("Force Full Sync")
         self._chk_force_full.setToolTip("Instead of syncing changes, forces a complete sync for all "
                                         "programs/combis/set lists on the Kronos.")
@@ -1091,6 +1305,19 @@ class LibrarianShellWindow(QDialog):
         sync_row.addWidget(self._btn_undo)
         sync_row.addStretch(1)
         root.addLayout(sync_row)
+
+        # Standing banners (C# BRD_SysExOff / destructive-armed / conflict / BRD_Warning).
+        self._brd_sysex, self._lbl_sysex, self._btn_recheck = self._make_banner(
+            _MSG_SYSEX_OFF_BANNER, "#3A1414", "#C04040", "Re-check", self._recheck_sysex)
+        self._brd_destructive, self._lbl_destructive, _ = self._make_banner(
+            _MSG_DESTRUCTIVE_ARMED, "#3A1414", "#C04040")
+        self._brd_conflict, self._lbl_conflict, self._btn_resolve = self._make_banner(
+            "", "#4A3410", "#C08A20", "Resolve Conflicts", self._resolve_conflicts_keep_mine)
+        self._btn_resolve.setToolTip(_MSG_RESOLVE_TOOLTIP)
+        self._brd_warning, self._lbl_warning, self._btn_dismiss_warning = self._make_banner(
+            "", "#4A3410", "#C08A20", "\u2715", self._clear_warning)
+        for brd in (self._brd_sysex, self._brd_destructive, self._brd_conflict, self._brd_warning):
+            root.addWidget(brd)
 
         # Overall live status line (req 7) - between the Sync row and the three panes,
         # fed by the same _progress signal that drives the History panel, so Sync/Commit/
@@ -1112,24 +1339,29 @@ class LibrarianShellWindow(QDialog):
         history_row.addWidget(self._build_dependencies_pane(), stretch=1)
         root.addLayout(history_row)
 
+        legend = QLabel(
+            f"<span style='color:{_DEP_MISSING_COLOR}'>■</span> Missing dependency (right-click to search a PCG)"
+            "&nbsp;&nbsp;&nbsp;<span style='color:#4A90D9'>●</span> Sample Dependency"
+            "&nbsp;&nbsp;&nbsp;Sample Dependency Type:&nbsp;"
+            f"<span style='color:{_DEP_BUCKET_COLOR[sample_walker.EXS]}'>■</span> EXs&nbsp;"
+            f"<span style='color:{_DEP_BUCKET_COLOR[sample_walker.USER]}'>■</span> User/3rd-Party bank&nbsp;"
+            f"<span style='color:{_DEP_BUCKET_COLOR[sample_walker.RAM]}'>■</span> Sampling Mode (RAM)&nbsp;"
+            f"<span style='color:{_DEP_BUCKET_COLOR[sample_walker.EXI_EXTERNAL]}'>■</span> EXi external bank")
+        legend.setTextFormat(Qt.TextFormat.RichText)
+        legend.setToolTip("Applies to the Object Dependencies panel.")
+        legend.setStyleSheet(f"color: {T.TEXT_DIM}; font-size: 10px; border-top: 1px solid {T.BORDER}; "
+                             "padding-top: 4px;")
+        root.addWidget(legend)
+
         close_row = QHBoxLayout()
         close_row.addStretch(1)
         btn_close = QPushButton("Close")
         btn_close.clicked.connect(self.reject)
         close_row.addWidget(btn_close)
-        self._btn_commit = QPushButton("Commit Changes")
-        self._btn_commit.setToolTip("Validate and push every pending local change now, "
-                                    "without pulling first.")
-        self._btn_commit.setStyleSheet(
-            f"QPushButton {{ background-color: #6E3535; color: {T.TEXT}; }} "
-            f"QPushButton:hover {{ background-color: #7E3F3F; }} "
-            f"QPushButton:disabled {{ background-color: {T.INSET}; color: {T.TEXT_DIM}; }}")
-        self._btn_commit.clicked.connect(self._start_commit)
-        close_row.addWidget(self._btn_commit)
         root.addLayout(close_row)
 
     def _build_local_pane(self) -> QWidget:
-        box = QGroupBox("Local Library")
+        box = QGroupBox("Keyboard Library")
         v = QVBoxLayout(box)
         row = QHBoxLayout()
         btn_cut = QPushButton("Cut")
@@ -1248,7 +1480,7 @@ class LibrarianShellWindow(QDialog):
         self._btn_auto_fill = QPushButton()
         self._btn_auto_fill.setToolTip(
             "Place everything staged here into the next free slots of its own type in "
-            "Local Library - Programs first, then Combis, then Set Lists, so each one's "
+            "Keyboard Library - Programs first, then Combis, then Set Lists, so each one's "
             "dependencies are already placed and its references point at where they "
             "actually landed. Nothing is sent to the Kronos: this only stages, exactly "
             "like dragging items across yourself. Review the result, then Commit Changes "
@@ -1303,7 +1535,7 @@ class LibrarianShellWindow(QDialog):
         row.addWidget(self._chk_force_overwrite)
         btn_clear = QPushButton("Clear Merge")
         btn_clear.setToolTip("Abandons everything staged here, whether or not any of it "
-                             "has been placed into Local Library yet.")
+                             "has been placed into Keyboard Library yet.")
         btn_clear.clicked.connect(self._clear_merge)
         row.addWidget(btn_clear)
         v.addLayout(row)
@@ -1355,6 +1587,29 @@ class LibrarianShellWindow(QDialog):
         v.addWidget(self._tree_pcg)
         return box
 
+    @staticmethod
+    def _set_expanded_recursive(items, expanded: bool) -> None:
+        for it in items:
+            it.setExpanded(expanded)
+            LibrarianShellWindow._set_expanded_recursive(
+                [it.child(i) for i in range(it.childCount())], expanded)
+
+    def _add_expand_collapse(self, menu: QMenu, tree: QTreeWidget, clicked) -> None:
+        """Expand/Collapse Selected + All (C# Expand/CollapseSelected/All): 'Selected' acts on the
+        selection, or on the right-clicked node alone when that node isn't part of it."""
+        def targets():
+            sel = tree.selectedItems()
+            return sel if clicked is None or clicked in sel else [clicked]
+
+        def roots():
+            return [tree.topLevelItem(i) for i in range(tree.topLevelItemCount())]
+
+        menu.addSeparator()
+        menu.addAction("Expand Selected", lambda: self._set_expanded_recursive(targets(), True))
+        menu.addAction("Collapse Selected", lambda: self._set_expanded_recursive(targets(), False))
+        menu.addAction("Expand All", lambda: self._set_expanded_recursive(roots(), True))
+        menu.addAction("Collapse All", lambda: self._set_expanded_recursive(roots(), False))
+
     def _show_pcg_context_menu(self, local_pos) -> None:
         """Port of PcgNodeTemplate's context menu (MI_MoveToMerge)."""
         item = self._tree_pcg.itemAt(local_pos)
@@ -1362,6 +1617,7 @@ class LibrarianShellWindow(QDialog):
             return
         menu = QMenu(self)
         menu.addAction("Move to Merge Window", self._pull_pcg_selected_into_merge)
+        self._add_expand_collapse(menu, self._tree_pcg, item)
         menu.exec(self._tree_pcg.viewport().mapToGlobal(local_pos))
 
     def _build_history_pane(self) -> QWidget:
@@ -1384,6 +1640,9 @@ class LibrarianShellWindow(QDialog):
         box.setFixedHeight(180)
         v = QVBoxLayout(box)
         self._deps_list = QListWidget()
+        self._deps_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._deps_list.customContextMenuRequested.connect(self._show_dependency_menu)
+        self._deps_list.itemDoubleClicked.connect(lambda it: self._show_dependency_info(it))
         self._deps_list.setStyleSheet(f"QListWidget {{ background: {T.INSET}; color: {T.TEXT}; "
                                       f"border: 1px solid {T.BORDER}; font-size: 11px; }}")
         v.addWidget(self._deps_list)
@@ -1436,11 +1695,224 @@ class LibrarianShellWindow(QDialog):
         self._history_list.clear()
         self._log("History cleared.")
 
+    # ── Object Dependencies panel (C# LibrarianShellViewModel.Dependencies.cs) ────────────────
+    # Two halves stacked: everything the Merge Window still MISSES (red, always first, independent
+    # of any selection — that list is the pre-Commit checklist and must not vanish on a stray
+    # click), then what the CURRENT selection references, transitively.
+
+    def _ensure_exs_names(self) -> Optional[ExsOptionIndex]:
+        """Loads the shipped EXs catalog once per session (a local read — nothing to connect to)."""
+        if self._exs_index is None:
+            self._exs_index = ExsOptionIndex.from_catalog()
+            log.info("EXs sample bank names: %d from %s", len(self._exs_index),
+                     "override file" if self._exs_index.from_override_file else "bundled catalog")
+        return self._exs_index
+
+    def _available_locally(self, loc: ObjLoc) -> bool:
+        """Present AND still going to be there after the next Commit — a pending-delete entry
+        still has an index entry, so bare existence would reassure the user off something Commit
+        is about to remove."""
+        e = self._index.get(loc.obj_type, loc.bank, loc.number)
+        return e is not None and not e.pending_delete
+
+    def _local_dep_source(self) -> LocalSource:
+        def walk(loc: ObjLoc):
+            e = self._index.get(loc.obj_type, loc.bank, loc.number)
+            if e is None:
+                return None
+            # Memoised on the body's CONTENT hash (no blob read to look it up), so it is
+            # self-invalidating: an edit rewrites the body, which changes the hash, which misses.
+            key = (loc.obj_type, e.current_hash) if e.current_hash else None
+            if key is not None and key in self._walk_cache:
+                return self._walk_cache[key]
+            body = self._blobs.get(e.current_hash)
+            if body is None:
+                return None
+            result = (list(depscan.walk_display_references(loc.obj_type, body)),
+                      sample_walker.walk(loc.obj_type, body))
+            if key is not None:
+                if len(self._walk_cache) >= 8192:
+                    self._walk_cache.clear()
+                self._walk_cache[key] = result
+            return result
+
+        def display_name(loc: ObjLoc) -> str:
+            e = self._index.get(loc.obj_type, loc.bank, loc.number)
+            return e.display_name if e is not None and e.display_name else ""
+
+        return LocalSource(walk=walk, available=self._available_locally, display_name=display_name,
+                           exs_index=self._ensure_exs_names())
+
+    def _pcg_dep_source(self) -> PcgSource:
+        def get(loc: ObjLoc):
+            k = (loc.obj_type, loc.bank, loc.number)
+            if k not in self._pcg_dep_cache:
+                e = self._pcg_by_addr.get(k)
+                body = wire_body_from_pcg_entry(loc.obj_type, e) if e is not None else None
+                self._pcg_dep_cache[k] = (e.name, body) if e is not None and body is not None else None
+            return self._pcg_dep_cache[k]
+        return PcgSource(get=get)
+
+    def _merge_dep_source(self) -> MergeSource:
+        return MergeSource(
+            try_get=self._merge.try_get,
+            unresolved_sites=lambda: [s for e in self._merge.entries for s in e.ref_sites
+                                      if s.resolved_content_hash is None])
+
+    def _describe_missing_name(self, loc: ObjLoc) -> str:
+        """A display name for an address wherever it can be found: Keyboard Library first, then
+        the loaded PCG. Empty when neither knows it — itself informative in the red list."""
+        e = self._index.get(loc.obj_type, loc.bank, loc.number)
+        if e is not None:
+            return e.display_name or ""
+        pe = self._pcg_by_addr.get((loc.obj_type, loc.bank, loc.number))
+        return pe.name if pe is not None else ""
+
     def _update_object_dependencies(self, pane: str, tree: QTreeWidget) -> None:
-        self._deps_list.clear()
+        """Selection changed in one of the three trees."""
         payloads = [p for p in self._selected_payloads(tree) if p[0] == pane]
-        for row in self._compute_dependency_rows(pane, payloads):
-            self._deps_list.addItem(QListWidgetItem(row))
+        self._dep_pane = pane if payloads else None
+        self._dep_rerun = (lambda: self._populate_dependencies(pane, payloads)) if payloads else None
+        self._populate_dependencies(pane, payloads)
+
+    def _populate_dependencies(self, pane: str, payloads: List[tuple]) -> None:
+        rows: List[DependencyRow] = []
+        src = self._local_dep_source()
+        seen: set = set()
+        sample_seen: set = set()
+        if pane == "local":
+            for p in payloads:
+                collect_local_deps(ObjLoc(p[1], p[2], p[3]), src, seen, sample_seen, rows)
+        elif pane == "pcg":
+            pcg = self._pcg_dep_source()
+            for p in payloads:
+                collect_pcg_deps(ObjLoc(p[1], p[2], p[3]), pcg, src, seen, sample_seen, rows)
+        elif pane == "merge":
+            merge = self._merge_dep_source()
+            seen_hashes: set = set()
+            for p in payloads:
+                entry = self._merge.try_get(p[1])
+                if entry is not None:
+                    collect_merge_deps(entry, merge, src, seen_hashes, sample_seen, rows)
+        self._dep_selection_rows = rows
+        self._rebuild_object_dependencies()
+
+    def _clear_object_dependencies(self) -> None:
+        """Empties the SELECTION half only; the red staged-gap rows belong to the Merge Window."""
+        self._dep_selection_rows = []
+        self._dep_pane = None
+        self._dep_rerun = None
+        self._rebuild_object_dependencies()
+
+    def _on_tree_rebuilt(self, pane: str) -> None:
+        """A tree was rebuilt (which drops its selection). The red gap rows are recomputed from the
+        Merge Window; the selection half is re-run if its tree was NOT the one just rebuilt (so
+        e.g. staging a found dependency shrinks the red section and refreshes the Local selection's
+        rows), else cleared."""
+        if self._dep_pane == pane or self._dep_rerun is None:
+            self._clear_object_dependencies()
+        else:
+            self._dep_rerun()
+
+    def _rebuild_object_dependencies(self) -> None:
+        if not hasattr(self, "_deps_list"):
+            return
+        lst = self._deps_list
+        lst.clear()
+        gaps = build_merge_gap_rows(self._merge_dep_source(), self._local_dep_source(),
+                                    self._describe_missing_name)
+        for row in list(gaps) + self._dep_selection_rows:
+            item = QListWidgetItem(row.description)
+            item.setData(Qt.ItemDataRole.UserRole, row)
+            item.setToolTip(row.parent_info or "")
+            color = (_DEP_MISSING_COLOR if row.is_missing
+                     else _DEP_BUCKET_COLOR.get(row.sample_bucket) if row.sample_bucket else None)
+            if color:
+                item.setForeground(QBrush(QColor(color)))
+            if row.is_missing:
+                f = item.font()
+                f.setBold(True)
+                item.setFont(f)
+            lst.addItem(item)
+
+    @staticmethod
+    def _dep_row(item) -> Optional[DependencyRow]:
+        return item.data(Qt.ItemDataRole.UserRole) if item is not None else None
+
+    def _show_dependency_info(self, item) -> None:
+        row = self._dep_row(item)
+        if row is None:
+            return
+        _ObjectInfoDialog(row.description, row.parent_info, row.describe_children(), self).exec()
+
+    def _show_dependency_menu(self, pos) -> None:
+        item = self._deps_list.itemAt(pos)
+        if item is None:
+            return
+        self._deps_list.setCurrentItem(item)
+        row = self._dep_row(item)
+        menu = QMenu(self)
+        menu.addAction("More Info...", lambda: self._show_dependency_info(item))
+        # Only a red missing-dependency row has anything to search FOR — every other row's object is
+        # already accounted for locally, in the loaded PCG, or in the Merge Window.
+        a_scan = menu.addAction("Search a PCG for this object...", lambda: self._search_pcg_for_row(item))
+        a_scan.setEnabled(row is not None and row.is_missing)
+        menu.exec(self._deps_list.viewport().mapToGlobal(pos))
+
+    def _search_pcg_for_row(self, item) -> None:
+        """One file pick, then EVERY still-missing address listed is looked for in that file (a .pcg
+        holding one of a Combi's missing Programs usually holds the rest). Whatever is found is
+        staged in the Merge Window, which closes its gap and shrinks the red section on refresh."""
+        row = self._dep_row(item)
+        if row is None or row.missing_ref is None:
+            return
+        targets = [row.missing_ref]
+        for i in range(self._deps_list.count()):
+            r = self._dep_row(self._deps_list.item(i))
+            if r is not None and r.missing_ref is not None and r.missing_ref not in targets:
+                targets.append(r.missing_ref)
+        found, status = self._search_pcg_for_missing_objects(targets)
+        if status:
+            self._merge_status_label.setText(status)
+
+    def _search_pcg_for_missing_objects(self, missing: List[ObjLoc]) -> Tuple[List[ObjLoc], str]:
+        if not missing:
+            return [], ""
+        path, _ = QFileDialog.getOpenFileName(self, _MSG_SCAN_DIALOG_TITLE, "",
+                                              "Korg PCG Files (*.pcg *.PCG);;All Files (*)")
+        if not path:
+            return [], ""
+        file_name = os.path.basename(path)
+        try:
+            with open(path, "rb") as fh:
+                pcg = open_pcg(fh.read())
+            if pcg is None:
+                return [], _MSG_SEARCH_FAILED(f"{file_name} is not a recognizable Kronos .pcg file.")
+            by_addr = {(e.obj_type, e.bank.obj_bank if e.bank is not None else 0, e.index): e
+                       for e in pcg.objects}
+            found = [loc for loc in missing if (loc.obj_type, loc.bank, loc.number) in by_addr]
+            if not found:
+                return [], _msg_scan_not_found(missing[0].label(), file_name)
+
+            def resolve_content(obj_type: int, bank: int, number: int):
+                e = by_addr.get((obj_type, bank, number))
+                return wire_body_from_pcg_entry(obj_type, e) if e is not None else None
+
+            # One undo step for the whole sweep: the user made one decision (this file).
+            scope = self._undo.begin(f"Staged dependencies found in {file_name}")
+            try:
+                for loc in found:
+                    self._merge.pull_recursive((loc.obj_type, loc.bank, loc.number), resolve_content,
+                                               self._resolve_refs, source=file_name)
+            finally:
+                if scope is not None:
+                    scope.dispose()
+            self._refresh_merge_tree()
+            return found, (_msg_scan_found(found[0].label(), file_name) if len(found) == 1
+                           else _msg_scan_found_many(len(found), file_name))
+        except Exception as e:   # unreadable / corrupt file
+            log.error("dependency search failed: %s", e, exc_info=True)
+            return [], _MSG_SEARCH_FAILED(str(e))
 
     @staticmethod
     def _selected_payloads(tree: QTreeWidget) -> List[tuple]:
@@ -1450,90 +1922,6 @@ class LibrarianShellWindow(QDialog):
             if data is not None:
                 out.append(tuple(data))
         return out
-
-    def _compute_dependency_rows(self, pane: str, payloads: List[tuple]) -> List[str]:
-        rows: List[str] = []
-        for p in payloads:
-            if pane == "local":
-                _, obj_type, bank, number = p
-                if obj_type not in (OBJ_COMBI, OBJ_SET_LIST):
-                    continue
-                entry = self._index.get(obj_type, bank, number)
-                if entry is None:
-                    continue
-                body = self._blobs.get(entry.current_hash)
-                if body is None:
-                    continue
-                rows.append(f"── {ObjLoc(obj_type, bank, number).label()} ──")
-                rows.extend(self._walk_local_deps(obj_type, body, 1, set()))
-            elif pane == "merge":
-                entry = self._merge.try_get(p[1])
-                if entry is None or entry.obj_type not in (OBJ_COMBI, OBJ_SET_LIST):
-                    continue
-                rows.append(f"── {entry.display_name or entry.content_hash[:8]} ──")
-                rows.extend(self._walk_merge_deps(entry, 1, set()))
-            elif pane == "pcg":
-                _, obj_type, bank, number = p
-                if obj_type not in (OBJ_COMBI, OBJ_SET_LIST):
-                    continue
-                e = self._pcg_by_addr.get((obj_type, bank, number))
-                if e is None:
-                    continue
-                body = self._pcg_resolve_content(obj_type, bank, number)
-                if body is None:
-                    continue
-                rows.append(f"── {ObjLoc(obj_type, bank, number).label()} ──")
-                rows.extend(self._walk_pcg_deps(obj_type, body, 1, set()))
-        return rows
-
-    def _walk_local_deps(self, obj_type: int, body: bytes, depth: int,
-                         visited: set) -> List[str]:
-        indent = "  " * depth
-        rows: List[str] = []
-        for ref in depscan.walk_object_references(obj_type, body):
-            present = self._local_resolver(ref.ref.obj_type, ref.ref.bank, ref.ref.number)
-            rows.append(f"{indent}{ref.ref_kind}: {ref.ref.label()}  "
-                       f"[{'OK' if present else 'MISSING'}]")
-            key = (ref.ref.obj_type, ref.ref.bank, ref.ref.number)
-            if present and ref.ref.obj_type == OBJ_COMBI and key not in visited:
-                visited.add(key)
-                sub_entry = self._index.get(*key)
-                sub_body = self._blobs.get(sub_entry.current_hash) if sub_entry else None
-                if sub_body is not None:
-                    rows.extend(self._walk_local_deps(OBJ_COMBI, sub_body, depth + 1, visited))
-        return rows
-
-    def _walk_merge_deps(self, entry: MergeEntry, depth: int, visited: set) -> List[str]:
-        indent = "  " * depth
-        rows: List[str] = []
-        for site in entry.ref_sites:
-            loc = ObjLoc(*site.target_address)
-            if site.resolved_content_hash is None:
-                rows.append(f"{indent}{loc.label()}  [MISSING]")
-                continue
-            dep = self._merge.try_get(site.resolved_content_hash)
-            name = dep.display_name if dep is not None else loc.label()
-            rows.append(f"{indent}{loc.label()}: {name}  [OK]")
-            if dep is not None and dep.obj_type == OBJ_COMBI and dep.content_hash not in visited:
-                visited.add(dep.content_hash)
-                rows.extend(self._walk_merge_deps(dep, depth + 1, visited))
-        return rows
-
-    def _walk_pcg_deps(self, obj_type: int, body: bytes, depth: int, visited: set) -> List[str]:
-        indent = "  " * depth
-        rows: List[str] = []
-        for ref in depscan.walk_object_references(obj_type, body):
-            key = (ref.ref.obj_type, ref.ref.bank, ref.ref.number)
-            in_pcg = key in self._pcg_by_addr
-            present_locally = self._local_resolver(*key)
-            marker = "in PCG" if in_pcg else ("in Local" if present_locally else "MISSING")
-            rows.append(f"{indent}{ref.ref_kind}: {ref.ref.label()}  [{marker}]")
-            if in_pcg and ref.ref.obj_type == OBJ_COMBI and key not in visited:
-                visited.add(key)
-                sub_body = self._pcg_resolve_content(*key)
-                if sub_body is not None:
-                    rows.extend(self._walk_pcg_deps(OBJ_COMBI, sub_body, depth + 1, visited))
-        return rows
 
     # ── Tree population (Qt glue over the pure _group_* helpers) ────────────
 
@@ -1641,6 +2029,7 @@ class LibrarianShellWindow(QDialog):
         return keys
 
     def _refresh_local_tree(self) -> None:
+        self._refresh_conflict_state_deferred()
         if self._suppress_tree_refresh:
             return
         tree = self._tree_local
@@ -1651,7 +2040,6 @@ class LibrarianShellWindow(QDialog):
         # branch someone opened to look at a change is still open after it.
         expanded = self._expanded_local_keys()
         tree.clear()
-        self._deps_list.clear()
         groups = _group_local(self._index.entries)
         for obj_type in _ROOT_ORDER:
             root = QTreeWidgetItem([_ROOT_LABEL[obj_type]])
@@ -1734,13 +2122,13 @@ class LibrarianShellWindow(QDialog):
         is_empty = len(self._index.entries) == 0
         self._tree_local.setVisible(not is_empty)
         self._empty_hint.setVisible(is_empty)
+        self._on_tree_rebuilt("local")
 
     def _refresh_merge_tree(self) -> None:
         if self._suppress_tree_refresh:
             return
         tree = self._tree_merge
         tree.clear()
-        self._deps_list.clear()
         groups = _group_merge(self._merge.entries)
         for obj_type in _ROOT_ORDER:
             entries = groups.get(obj_type, [])
@@ -1770,13 +2158,14 @@ class LibrarianShellWindow(QDialog):
                     leaf.setForeground(0, QBrush(QColor(T.ERROR_TEXT)))
                 root.addChild(leaf)
         tree.expandAll()
+        self._on_tree_rebuilt("merge")
 
     def _refresh_pcg_tree(self) -> None:
         tree = self._tree_pcg
         tree.clear()
-        self._deps_list.clear()
         objects = self._pcg.objects if self._pcg is not None else []
         self._pcg_by_addr = {}
+        self._pcg_dep_cache = {}
         groups = _group_pcg(objects)
         for obj_type in _ROOT_ORDER:
             by_bank = groups.get(obj_type, {})
@@ -1811,6 +2200,7 @@ class LibrarianShellWindow(QDialog):
             extra = f" ({n_rejected} rejected bank(s))" if n_rejected else ""
             self._pcg_status_label.setText(
                 f"{self._pcg_source_label} - {len(objects)} object(s){extra}")
+        self._on_tree_rebuilt("pcg")
 
     # ── Selection helpers ────────────────────────────────────────────────────
 
@@ -2182,7 +2572,7 @@ class LibrarianShellWindow(QDialog):
         source instead of a PCG one — no new merge_cache.py API needed (see module docstring)."""
         locs = self._selected_local_object_locs()
         if not locs:
-            self._log("Select one or more Local Library items to stage for a batch placement.")
+            self._log("Select one or more Keyboard Library items to stage for a batch placement.")
             return
         label = locs[0].label() if len(locs) == 1 else f"{len(locs)} item(s)"
         scope = self._undo.begin(f"Pulled {label} into Merge Window")
@@ -2283,7 +2673,7 @@ class LibrarianShellWindow(QDialog):
         locs = self._selected_local_object_locs()
         if len(locs) > 1:
             QMessageBox.information(self, "Cut", "Cut only works on exactly one item at a "
-                                    "time — select a single Local Library entry, or use Copy "
+                                    "time — select a single Keyboard Library entry, or use Copy "
                                     "for multiple.")
         ok, msg = self._batch_clip.cut(locs, self._local_dump_of)
         self._log(msg if ok else f"Cut: {msg}")
@@ -2300,7 +2690,7 @@ class LibrarianShellWindow(QDialog):
         Properties uses), so the display name never desyncs from what Sync/Commit pushes."""
         payload = self._leaf_payload(self._tree_local)
         if payload is None or payload[0] != "local":
-            self._local_status_label.setText("Select exactly one Local Library item to rename.")
+            self._local_status_label.setText("Select exactly one Keyboard Library item to rename.")
             return
         _, obj_type, bank, number = payload
         entry = self._index.get(obj_type, bank, number)
@@ -2354,7 +2744,7 @@ class LibrarianShellWindow(QDialog):
         captures the pre-state (one Ctrl+Z restores the edit AND the flag together)."""
         selected_locs = self._selected_local_object_locs()
         if not selected_locs:
-            self._local_status_label.setText("Select one or more Local Library items to delete/restore.")
+            self._local_status_label.setText("Select one or more Keyboard Library items to delete/restore.")
             return
         # Skip read-only GM/g rows (browse-only, never writable).
         locs = [l for l in selected_locs
@@ -2526,6 +2916,7 @@ class LibrarianShellWindow(QDialog):
                 menu.addAction("Stage Bank Conversion...", lambda: self._stage_bank_type_change(bank))
             else:
                 menu.addAction("Unstage Bank Conversion", lambda: self._unstage_bank_type_change(bank))
+        self._add_expand_collapse(menu, self._tree_local, item)
         menu.exec(self._tree_local.viewport().mapToGlobal(local_pos))
 
     def _show_merge_context_menu(self, local_pos) -> None:
@@ -2536,6 +2927,7 @@ class LibrarianShellWindow(QDialog):
             return
         menu = QMenu(self)
         menu.addAction("Remove", self._remove_merge_selected)
+        self._add_expand_collapse(menu, self._tree_merge, item)
         menu.exec(self._tree_merge.viewport().mapToGlobal(local_pos))
 
     # ── Local pane: staged whole-bank HD-1/EXi conversion (requirement 3) ────────
@@ -2786,7 +3178,7 @@ class LibrarianShellWindow(QDialog):
         self._auto_fill_progress_effect.setOpacity(0.35)
         self._auto_fill_label.setText("Filling...")
         self._refresh_enable()
-        scope = self._undo.begin(f"Auto-Fill {total_staged} item(s) to Local Library")
+        scope = self._undo.begin(f"Auto-Fill {total_staged} item(s) to Keyboard Library")
         self._auto_fill_scope = scope
         self._auto_fill_placed = 0
         self._auto_fill_skipped = 0
@@ -3444,18 +3836,18 @@ class LibrarianShellWindow(QDialog):
         elif source_pane == "local":
             self._handle_local_to_local_drop(items, target_item)
         else:
-            self._log("The Local Library pane only accepts drops from the Merge Window or itself.")
+            self._log("The Keyboard Library pane only accepts drops from the Merge Window or itself.")
 
     def _handle_local_to_local_drop(self, items: List[tuple],
                                     target_item: Optional[QTreeWidgetItem]) -> None:
         locals_only = [it for it in items if it and it[0] == "local"]
         if len(locals_only) != 1:
-            self._log("Drag exactly one Local Library item onto another to swap them.")
+            self._log("Drag exactly one Keyboard Library item onto another to swap them.")
             return
         _, obj_type, bank, number = locals_only[0]
         target_payload = target_item.data(0, Qt.ItemDataRole.UserRole) if target_item is not None else None
         if target_payload is None or target_payload[0] != "local":
-            self._log("Drop directly onto another Local Library slot to swap.")
+            self._log("Drop directly onto another Keyboard Library slot to swap.")
             return
         _, t_obj_type, t_bank, t_number = target_payload
         self._swap_local_at(ObjLoc(obj_type, bank, number), ObjLoc(t_obj_type, t_bank, t_number))
@@ -3465,7 +3857,7 @@ class LibrarianShellWindow(QDialog):
         hashes = [it[1] for it in items if it and it[0] == "merge"]
         entries = [e for e in (self._merge.try_get(h) for h in hashes) if e is not None]
         if not entries:
-            self._log("Drag one or more Merge Window items onto the Local Library pane to place them.")
+            self._log("Drag one or more Merge Window items onto the Keyboard Library pane to place them.")
             return
         obj_type = entries[0].obj_type
         if any(e.obj_type != obj_type for e in entries):
@@ -3487,7 +3879,7 @@ class LibrarianShellWindow(QDialog):
             dst_bank = t_bank
             dst_number = self._find_first_free_slot(obj_type, t_bank)
         else:
-            self._log("Drop onto a specific Local Library slot or bank.")
+            self._log("Drop onto a specific Keyboard Library slot or bank.")
             return
 
         try:
@@ -3533,8 +3925,10 @@ class LibrarianShellWindow(QDialog):
 
     # ── Sync / Commit ────────────────────────────────────────────────────────
 
-    def _require_connected(self) -> bool:
+    def _require_connected(self, quiet: bool = False) -> bool:
         if self._service is None or not self._service.can_dump:
+            if quiet:
+                return False
             QMessageBox.warning(self, "Librarian Shell", "Not connected / MIDI monitoring off — "
                                 "Sync/Commit need a live Kronos connection.")
             return False
@@ -3632,8 +4026,13 @@ class LibrarianShellWindow(QDialog):
         connected = self._service is not None and self._service.can_dump
         auto_filling = getattr(self, "_auto_fill_active", False)
         pulling_pcg = getattr(self, "_pcg_pull_active", False)
-        self._btn_sync.setEnabled(connected and not self._busy and not auto_filling)
-        self._btn_commit.setEnabled(connected and not self._busy and not auto_filling)
+        sync_ok = connected and not self._busy and not auto_filling and not self._sysex_unavailable
+        self._btn_sync.setEnabled(sync_ok)
+        self._btn_sync.setToolTip(_MSG_SYNC_DISABLED_TOOLTIP if self._sysex_unavailable
+                                  else _SYNC_TOOLTIP[self._sync_mode()])
+        self._btn_sync_mode.setEnabled(not self._busy)
+        self._btn_resolve.setEnabled(sync_ok and self._conflict_count() > 0)
+        self._btn_recheck.setEnabled(not self._busy and not self._probe_running)
         self._btn_pull_kronos.setEnabled(not self._busy and not auto_filling and not pulling_pcg)
         self._btn_paste.setEnabled(not self._batch_clip.is_empty and not self._busy)
         # Single owner of this button's enabled state (matches CanAutoFill() => !IsBusy
@@ -3751,7 +4150,9 @@ class LibrarianShellWindow(QDialog):
         had landed — a self-conflict, not a real one."""
         loc = ObjLoc(obj_type, bank, number)
         bank_key = LocalLibraryIndex.bank_key(obj_type, bank)
-        baseline = self._index.bank_digest_baseline.get(bank_key)
+        # Force-destructive: compare against the arm-time digest, not the (allowed-stale) pull
+        # baseline; otherwise every write would abort as 'changed since the last pre-scan'.
+        baseline = self._armed_digests.get(bank_key) or self._index.bank_digest_baseline.get(bank_key)
         if baseline is not None:
             fresh_hex = self._get_live_digest(bank_key)
             if fresh_hex is not None and fresh_hex != baseline:
@@ -3881,89 +4282,306 @@ class LibrarianShellWindow(QDialog):
         self._auto_fill_timer.stop()
         super().closeEvent(event)
 
+    # ── Sync modes, banners, probe ────────────────────────────────────────────
+
+    def _make_banner(self, text: str, bg: str, border: str, button_text: str = "",
+                     on_click=None):
+        frame = QFrame()
+        frame.setStyleSheet(f"QFrame {{ background-color: {bg}; border: 1px solid {border}; }}")
+        row = QHBoxLayout(frame)
+        row.setContentsMargins(8, 4, 8, 4)
+        label = QLabel(text)
+        label.setWordWrap(True)
+        label.setStyleSheet(f"color: {T.TEXT}; border: none;")
+        row.addWidget(label, 1)
+        btn = None
+        if button_text:
+            btn = QPushButton(button_text)
+            btn.setStyleSheet("")
+            btn.clicked.connect(on_click)
+            row.addWidget(btn)
+        frame.setVisible(False)
+        return frame, label, btn
+
+    def _sync_mode(self) -> str:
+        mode = self._settings.librarian_sync_mode
+        return mode if mode in _SYNC_LABEL else SYNC_TWO_WAY
+
+    def _set_sync_mode(self, mode: str) -> None:
+        self._settings.librarian_sync_mode = mode
+        Models.storage.save_settings(self._settings)
+        self._refresh_sync_button()
+
+    def _refresh_sync_button(self) -> None:
+        mode = self._sync_mode()
+        self._btn_sync.setText(_SYNC_LABEL[mode])
+        self._sync_mode_actions[mode].setChecked(True)
+        self._btn_sync.setToolTip(_MSG_SYNC_DISABLED_TOOLTIP if self._sysex_unavailable
+                                  else _SYNC_TOOLTIP[mode])
+
+    def _force_destructive(self) -> bool:
+        return bool(self._settings.librarian_force_destructive_write)
+
+    def _refresh_destructive_banner(self) -> None:
+        self._brd_destructive.setVisible(self._force_destructive())
+
+    def _set_warning(self, text: Optional[str]) -> None:
+        self._lbl_warning.setText(text or "")
+        self._brd_warning.setVisible(bool(text))
+
+    def _clear_warning(self) -> None:
+        self._set_warning(None)
+
+    def _conflict_count(self) -> int:
+        return sum(1 for e in self._index.entries.values() if e.conflicted)
+
+    def _refresh_conflict_state_deferred(self) -> None:
+        if hasattr(self, '_brd_conflict'):
+            self._refresh_conflict_state()
+
+    def _refresh_conflict_state(self) -> None:
+        n = self._conflict_count()
+        self._lbl_conflict.setText(_msg_conflict_banner(n))
+        self._brd_conflict.setVisible(n > 0)
+        self._refresh_enable()
+
+    def _recheck_sysex(self, launch_pull: bool = False) -> None:
+        """One bank-digest request against Program INT A, retried: a single attempt false-
+        negatived on real hardware when it queued behind the category-name warm-up's ~24 KB
+        Global dump (both share the service's dump gate). Re-runnable on purpose — the fix for a
+        silent instrument is something the user does at the panel while this window is open."""
+        if self._probe_running:
+            return
+        self._probe_running = True
+        self._refresh_enable()
+        service = self._service
+        warm = self._warm_thread
+
+        def probe() -> None:
+            ok = False
+            if warm is not None:
+                warm.join(timeout=30)
+            for attempt in range(3):
+                if self._closed:
+                    return
+                try:
+                    if (service is not None and service.can_dump
+                            and service.bank_digest(OBJ_PROGRAM, 0x00) is not None):
+                        ok = True
+                        break
+                except Exception as e:  # a throwing probe is treated exactly like a silent one
+                    log.warning("SysEx probe attempt %d failed: %s", attempt + 1, e)
+                if attempt < 2:
+                    time.sleep(1.5)
+            self._safe_emit(self._sysex_probe_done, ok)
+
+        self._pending_launch_pull = launch_pull
+        threading.Thread(target=probe, daemon=True, name="LibShellSysExProbe").start()
+
+    def _on_sysex_probe_done(self, ok: bool) -> None:
+        self._probe_running = False
+        was = self._sysex_unavailable
+        self._sysex_unavailable = not ok
+        self._brd_sysex.setVisible(not ok)
+        self._lbl_sysex.setText(_MSG_SYSEX_OFF_BANNER)
+        if ok and was:
+            log.info("SysEx probe: answered - Sync re-enabled")
+        elif not ok:
+            log.warning("SysEx probe: no reply after 3 attempts - Sync disabled")
+        self._refresh_sync_button()
+        self._refresh_enable()
+        launch = getattr(self, "_pending_launch_pull", False)
+        self._pending_launch_pull = False
+        # IsBusy: the user can already click Sync once the probe enables it; losing that race
+        # would run two sweeps over one index, so yield to the manual click.
+        if ok and launch and not self._busy and not self._closed:
+            self._start_launch_pull()
+
+    def _set_sysex_unavailable_from_pull(self, message: str) -> None:
+        """A pull gave up because the instrument answered nothing — raise the banner here too,
+        since the probe only runs at open and on demand."""
+        self._sysex_unavailable = True
+        self._brd_sysex.setVisible(True)
+        self._set_status("")
+        self._set_warning(message)
+        self._refresh_sync_button()
+
+    def _set_status(self, text: str) -> None:
+        self._status_label.setText(text)
+
+    # ── Sync / Pull / Push entry points ───────────────────────────────────────
+
     def _start_sync(self) -> None:
+        """Runs whichever direction the dropdown selected (SyncLibraryAsync)."""
         if self._busy or not self._require_connected():
             return
-        if not self._show_sync_gate_dialog_if_blocked():
-            return
+        mode = self._sync_mode()
+        if mode == SYNC_PULL_ONLY:
+            self._start_pull_only()
+        elif mode == SYNC_PUSH_ONLY:
+            self._start_push_only()
+        else:
+            self._start_two_way()
+
+    def _begin_run(self, mode: str, status: str, force: bool = False) -> None:
+        self._set_warning(None)
         self._set_busy(True)
-        self._status_label.setText("Syncing...")
-        full_sync = self._chk_force_full.isChecked()
+        self._set_status(status)
+        self._run_mode = mode
+        self._run_force = force
+        self._run_full = self._chk_force_full.isChecked()
         self._sync_cancel.clear()
         self._sync_thread_running = True
-        threading.Thread(target=self._sync_worker, args=(full_sync,), daemon=True,
-                         name="LibShellSync").start()
 
-    def _start_commit(self) -> None:
-        if self._busy or not self._require_connected():
-            return
+    def _arm_banks(self) -> None:
+        """Force-destructive only: the per-write staleness check must compare against the bank's
+        digest as of NOW (C# ArmPlanAsync), not against the pull baseline — in that mode the
+        baseline is allowed to be stale, so comparing against it would abort every write."""
+        self._armed_digests = {}
+        keys = {LocalLibraryIndex.bank_key(*_parse_key(k)[:2])
+                for k, e in self._index.entries.items() if e.is_dirty or e.pending_delete}
+        for bank_key in keys:
+            fresh = self._get_live_digest(bank_key)
+            if fresh is not None:
+                self._armed_digests[bank_key] = fresh
+
+    def _start_two_way(self) -> None:
         if not self._show_sync_gate_dialog_if_blocked():
+            self._set_status(_MSG_CANCELLED_PENDING_DEPS)
             return
-        self._set_busy(True)
-        self._status_label.setText("Committing...")
-        self._sync_cancel.clear()
-        self._sync_thread_running = True
-        threading.Thread(target=self._sync_worker, args=(False,), daemon=True,
-                         name="LibShellCommit").start()
+        self._begin_run(SYNC_TWO_WAY, "Syncing...", self._force_destructive())
+        threading.Thread(target=self._sync_worker, daemon=True, name="LibShellSync").start()
 
-    def _sync_worker(self, full_sync: bool) -> None:
+    def _start_push_only(self, force_override: bool = False) -> None:
+        if not force_override and not self._show_sync_gate_dialog_if_blocked():
+            self._set_status(_MSG_CANCELLED_PENDING_DEPS)
+            return
+        force = force_override or self._force_destructive()
+        self._begin_run(SYNC_PUSH_ONLY, _MSG_PUSH_OVERWRITING if force_override else "Committing...", force)
+        self._run_is_overwrite_retry = force_override
+        threading.Thread(target=self._sync_worker, daemon=True, name="LibShellCommit").start()
+
+    def _discard_pending_for_pull(self) -> int:
+        """Pull Only makes the library a mirror of the instrument, so EVERY pending local change
+        goes first — edits AND slots marked for deletion (a delete flag alone leaves
+        current == baseline, so it would otherwise survive into the next Push Only and erase the
+        object on hardware). Not wrapped in an undo scope: it reverts to baselines the pull then
+        immediately moves, so an 'undo' could only restore edits against a baseline that no
+        longer exists. The confirm is the safety net."""
+        targets = []
+        for key, entry in list(self._index.entries.items()):
+            if entry.is_dirty or entry.pending_delete:
+                obj_type, bank, number = _parse_key(key)
+                self._index.set_entry(obj_type, bank, number, LocalIndexEntry(
+                    version=entry.version, baseline_hash=entry.baseline_hash,
+                    current_hash=entry.baseline_hash, display_name=entry.display_name,
+                    created_utc=entry.created_utc, modified_utc=_now_iso(),
+                    conflicted=False, has_resolved_dependencies=entry.has_resolved_dependencies,
+                    is_exi=entry.is_exi, pending_delete=False))
+                targets.append({"obj_type": obj_type, "bank": bank, "number": number,
+                                "result_hash": entry.baseline_hash})
+        if targets:
+            self._oplog.append({
+                "id": str(uuid.uuid4()), "timestamp_utc": _now_iso(), "op_kind": "Discard",
+                "targets": targets, "description": f"Pull Only discarded {len(targets)} pending change(s)",
+                "sync_batch_id": None, "synced_at_utc": None})
+            self._index.save()
+            # The session clipboard tracks dependencies still owed by placements that have just
+            # been discarded; left alone it would prompt about objects the user can no longer see.
+            self._clipboard.clear()
+        return len(targets)
+
+    def _start_pull_only(self) -> None:
+        pending = sum(1 for e in self._index.entries.values() if e.is_dirty or e.pending_delete)
+        if pending > 0:
+            r = QMessageBox.warning(self, "Discard Local Changes?", _msg_pull_discard_prompt(pending),
+                                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                    QMessageBox.StandardButton.No)
+            if r != QMessageBox.StandardButton.Yes:
+                self._set_status(_MSG_PULL_ONLY_CANCELLED)
+                return
+        self._begin_run(SYNC_PULL_ONLY, "Pulling...")
+        # BEFORE the pull, not after: discard reverts to the BASELINE, which the pull is about
+        # to move forward — the other order would revert to the version just pulled, a no-op.
+        self._run_discarded = self._discard_pending_for_pull() if pending > 0 else 0
+        self._refresh_local_tree()
+        threading.Thread(target=self._sync_worker, daemon=True, name="LibShellPull").start()
+
+    def _start_launch_pull(self) -> None:
+        """Settings > Librarian > Full sync on launch: a FULL pull, never the push half — an
+        unattended launch action must not write to the instrument."""
+        if self._busy or self._sysex_unavailable or not self._require_connected(quiet=True):
+            return
+        self._begin_run(SYNC_PULL_ONLY, "Indexing keyboard library...")
+        self._run_mode = "LaunchPull"
+        self._run_full = True
+        threading.Thread(target=self._sync_worker, daemon=True, name="LibShellLaunchPull").start()
+
+    # ── Worker ────────────────────────────────────────────────────────────────
+
+    def _sync_worker(self) -> None:
+        mode, full, force = self._run_mode, self._run_full, self._run_force
+        pull_result = plan = result = None
         try:
-            if full_sync:
+            if force and mode in (SYNC_TWO_WAY, SYNC_PUSH_ONLY):
+                self._arm_banks()
+            else:
+                self._armed_digests = {}
+            common = dict(
+                get_live_bank_type=self._get_live_bank_type,
+                pending_bank_type_change=self._index.get_pending_bank_type_change,
+                write_bank_type_change=self._write_bank_type_change,
+                cancel=self._sync_cancelled)
+            if mode == SYNC_TWO_WAY:
                 pull_result, plan, result = sync_library(
                     self._index, self._blobs, self._clipboard,
                     get_live_digest=self._get_live_digest, get_bank_objects=self._get_bank_objects,
                     resolver=self._local_resolver, write_to_hardware=self._write_to_hardware,
-                    progress=self._emit_progress,
-                    full=full_sync,
-                    get_live_bank_type=self._get_live_bank_type,
-                    pending_bank_type_change=self._index.get_pending_bank_type_change,
-                    write_bank_type_change=self._write_bank_type_change,
-                    cancel=self._sync_cancelled)
-                # EDITABLE_BANKS (what sync_library pulls bodies for) excludes the GM/g
-                # read-only Program banks — their names come from SysExService's own
-                # cache instead (fed by passive dump-traffic capture, or this explicit
-                # sweep), which is what the Local pane's read-only browse rows read via
-                # cached_bank_names. This used to be a separate "Sync Program/Combi
-                # Names" Tools-menu action; folded in here since that menu item (and its
-                # redundant "Sync All") had no C# equivalent and were removed as such —
-                # but the GM/g name sweep itself is still needed, just triggered from
-                # the one Sync action that remains.
-                if (self._service is not None and self._service.can_dump
-                        and not self._sync_cancelled()):
+                    progress=self._emit_progress, full=full, force_destructive_write=force, **common)
+                # EDITABLE_BANKS (what sync_library pulls bodies for) excludes the GM/g read-only
+                # Program banks — their names come from SysExService's own cache, fed by passive
+                # dump-traffic capture or this explicit sweep (what the Local pane's read-only
+                # browse rows read via cached_bank_names).
+                if (full and self._service is not None and self._service.can_dump
+                        and not self._sync_cancelled() and not pull_result.aborted):
                     self._service.sync_names(
                         progress=lambda done, total, names: self._emit_progress(
                             f"Bulk-dumping Program names {done}/{total}..."),
                         cancel_event=self._sync_cancel)
+            elif mode in (SYNC_PULL_ONLY, "LaunchPull"):
+                pull_result = pull_pipeline.pull(
+                    self._index, self._blobs, self._get_live_digest, self._get_bank_objects,
+                    full=full, progress=self._emit_progress, cancel=self._sync_cancelled)
+                plan = ChangesetPlan()
             else:
-                pull_result = None
                 plan, result = commit_changes(
                     self._index, self._blobs, self._clipboard,
                     get_live_digest=self._get_live_digest, resolver=self._local_resolver,
                     write_to_hardware=self._write_to_hardware,
-                    get_live_bank_type=self._get_live_bank_type,
-                    pending_bank_type_change=self._index.get_pending_bank_type_change,
-                    write_bank_type_change=self._write_bank_type_change,
-                    cancel=self._sync_cancelled)
+                    force_destructive_write=force, **common)
             self._index.save()
         except LocalLibraryWriteError as e:
-            # Distinguished from a generic failure because the fix is completely
-            # different: nothing is wrong with the Kronos or the plan, the local
-            # data directory just can't be written to.
+            # Distinguished from a generic failure because the fix is completely different:
+            # nothing is wrong with the Kronos or the plan, the local data directory just can't
+            # be written to.
             log.error("Sync/Commit aborted on a local write: %s", e)
+            self._sync_thread_running = False
             self._emit_sync_done(None, None, None,
                                  f"Sync/Commit stopped — could not write the local library: {e}")
             return
         except Exception as e:  # pragma: no cover - defensive
             log.exception("Sync/Commit crashed")
-            self._emit_sync_done(None, None, None, f"Sync/Commit crashed: {e}")
+            self._sync_thread_running = False
+            self._emit_sync_done(None, None, None, _msg_operation_failed(str(e)))
             return
         finally:
-            # The window may have been closed (and its C++ object destroyed)
-            # while this ran; the thread itself must still finish tidily.
+            self._armed_digests = {}
+            # The window may have been closed (and its C++ object destroyed) while this ran;
+            # the thread itself must still finish tidily.
             self._sync_thread_running = False
         if result is not None and result.cancelled:
             status = "CANCELLED"
-        elif plan.is_refusable:
+        elif plan is not None and plan.is_refusable:
             status = "REFUSED"
         else:
             status = "DONE"
@@ -3972,22 +4590,28 @@ class LibrarianShellWindow(QDialog):
     def _on_sync_done(self, pull_result, plan: Optional[ChangesetPlan], result: Optional[SyncResult],
                        status: str) -> None:
         self._set_busy(False)
-        self._status_label.setText(status)
+        mode, full = self._run_mode, self._run_full
+        was_overwrite_retry, self._run_is_overwrite_retry = self._run_is_overwrite_retry, False
         if plan is None:
+            # The worker threw — `status` is the failure text.
+            self._set_status("")
+            self._set_warning(status)
             self._log(status)
+            self._refresh_local_tree()
             return
-        # A successful Sync/Commit wrote local state to hardware — the undo stack can't
-        # roll a hardware write back, so it's cleared (mirrors LibrarianShellViewModel
-        # clearing the stack after a push).
+
+        # A successful push wrote local state to hardware — the undo stack can't roll a hardware
+        # write back, so it's cleared (LibrarianShellViewModel.ClearAfterSuccessfulPush).
         if (result is not None and result.written + result.erased > 0
                 and not result.failed and not result.cancelled):
             self._undo.clear()
             self._on_undo_stack_changed()
+
         if pull_result is not None:
             self._log(f"Pull: {pull_result.banks_checked} bank(s) checked, "
-                     f"{pull_result.objects_fetched} object(s) fetched, "
-                     f"{pull_result.conflicts} new conflict(s)."
-                     + (" (cancelled early)" if pull_result.cancelled else ""))
+                      f"{pull_result.objects_fetched} object(s) fetched, "
+                      f"{pull_result.conflicts} new conflict(s)."
+                      + (" (cancelled early)" if pull_result.cancelled else ""))
         if result is not None and result.cancelled:
             self._log("Sync/Commit was cancelled. Anything already written to the "
                       "Kronos is written; everything else still has its pending "
@@ -3996,21 +4620,119 @@ class LibrarianShellWindow(QDialog):
             self._log("  ! " + w)
         if result is not None:
             self._log(f"Push: {result.written} written, {result.erased} erased, "
-                     f"{result.deleted} local-only delete(s), {result.failed} failed, "
-                     f"{result.reformatted} bank(s) reformatted.")
-            # Committed whole-bank type changes are now realized on hardware — clear the
-            # staged intent so a later, unrelated push to the same bank doesn't re-issue the
-            # (erasing) func 0x7C. Mirrors SyncPipeline.cs's own post-success
-            # ClearPendingBankTypeChange loop, confirmed from source: it only runs after the
-            # WHOLE push succeeds, never on a partial/aborted one — result.reformatted equals
-            # len(plan.bank_type_changes) exactly when every queued reformat in THIS push
-            # actually succeeded (execute_changeset's all-or-nothing reformat gate: a single
-            # rejected reformat aborts before any more are attempted).
+                      f"{result.deleted} local-only delete(s), {result.failed} failed, "
+                      f"{result.reformatted} bank(s) reformatted.")
+            # Committed whole-bank type changes are now realized on hardware — clear the staged
+            # intent so a later, unrelated push to the same bank doesn't re-issue the (erasing)
+            # func 0x7C. Only after the WHOLE push succeeded (SyncPipeline.cs).
             if plan.bank_type_changes and result.reformatted == len(plan.bank_type_changes):
                 for bank, _ in plan.bank_type_changes:
                     self._index.clear_pending_bank_type_change(bank)
                 self._index.save()
+
+        warning = "; ".join(plan.warnings) if plan.warnings else ""
+        status_text = status
+        aborted = pull_result.aborted if pull_result is not None else None
+        written = (result.written if result else 0)
+        removed = (result.erased + result.deleted) if result else 0
+
+        if aborted:
+            self._set_sysex_unavailable_from_pull(aborted)
+            status_text, warning = "", aborted
+        elif mode == SYNC_TWO_WAY and pull_result is not None and result is not None:
+            nothing_to_push_clean = (
+                not plan.is_refusable and written == 0 and removed == 0 and pull_result.conflicts == 0
+                and plan.warnings == ["CHECK: nothing to push — no local changes are pending"])
+            if pull_result.cancelled or result.cancelled:
+                status_text = "CANCELLED"
+            elif nothing_to_push_clean:
+                status_text = _msg_sync_complete(full, pull_result.objects_fetched, pull_result.conflicts)
+                warning = ""
+            else:
+                status_text = _msg_sync_result(pull_result.objects_fetched, pull_result.conflicts,
+                                               written, removed, len(plan.conflicted))
+        elif mode == "LaunchPull" and pull_result is not None:
+            status_text = _msg_launch_pull_complete(pull_result.objects_fetched, pull_result.conflicts)
+        elif mode == SYNC_PULL_ONLY and pull_result is not None:
+            status_text = _msg_pull_only_result(pull_result.objects_fetched, self._run_discarded)
+            self._run_discarded = 0
+        elif mode == SYNC_PUSH_ONLY and result is not None:
+            ok = not plan.is_refusable and not result.failed and not result.cancelled
+            # Nothing reached hardware on a refusal, and a conflicted object was EXCLUDED rather
+            # than written wrongly — so offering an overwrite is a first attempt, not a repair.
+            if (not self._run_force and not was_overwrite_retry
+                    and (plan.is_refusable or plan.conflicted)):
+                reason = warning or _msg_push_conflict_summary(len(plan.conflicted))
+                r = QMessageBox.warning(self, "Overwrite the Kronos?", _msg_push_overwrite_prompt(reason),
+                                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                        QMessageBox.StandardButton.No)
+                if r == QMessageBox.StandardButton.Yes:
+                    self._refresh_local_tree()
+                    self._start_push_only(force_override=True)
+                    return
+            status_text = (_msg_commit_result(written, removed, len(plan.conflicted))
+                           if ok else _MSG_COMMIT_FAILED)
+            if result.failed:
+                warning = (warning + "; " if warning else "") + f"{result.failed} object(s) failed to write"
+
+        if plan.conflicted:
+            banks = ", ".join(sorted({self._bank_display(k) for k in plan.conflicted}))
+            warning = (warning + "\n" if warning else "") + _msg_conflicted_not_pushed(len(plan.conflicted), banks)
+        if not aborted:
+            self._set_status(status_text)
+            self._set_warning(warning or None)
+        log.info("Librarian %s done: status=%r", mode, status_text)
         self._refresh_local_tree()
+
+    def _bank_display(self, key: str) -> str:
+        obj_type, bank, _n = _parse_key(key)
+        return _bank_label(obj_type, bank) or f"{obj_type:02X}:{bank:02X}"
+
+    # ── Resolve Conflicts ("keep mine") ───────────────────────────────────────
+
+    def _resolve_conflicts_keep_mine(self) -> None:
+        """Clear the conflict flags AND re-baseline each affected bank from the instrument's
+        CURRENT digest, so the next push's pre-scan passes and the local edits go out. Both halves
+        are required — clearing the flag alone changes nothing, because the pre-scan compares
+        bank digests, not flags. Destructive TO THE INSTRUMENT by design; the other resolution
+        ('take theirs') already exists as a 2-Way / Pull Only sync."""
+        if self._busy or self._sysex_unavailable:
+            return
+        stuck = [k for k, e in self._index.entries.items() if e.conflicted]
+        if not stuck:
+            return
+        banks = sorted({LocalLibraryIndex.bank_key(*_parse_key(k)[:2]) for k in stuck})
+        bank_list = ", ".join(sorted({self._bank_display(k) for k in stuck}))
+        r = QMessageBox.warning(self, "Resolve Conflicts", _msg_resolve_confirm(len(stuck), bank_list),
+                                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                QMessageBox.StandardButton.No)
+        if r != QMessageBox.StandardButton.Yes:
+            return
+        self._set_warning(None)
+        self._set_busy(True)
+        rebased = 0
+        try:
+            for bank_key in banks:
+                # A bank we cannot get a digest for keeps its stale baseline AND its conflicts:
+                # re-baselining on a timeout would clear the flag while the pre-scan still
+                # excluded the bank, which looks like the resolve silently did nothing.
+                fresh = self._get_live_digest(bank_key)
+                if fresh is None:
+                    continue
+                obj_type, bank = (int(x) for x in bank_key.split(":"))
+                self._index.set_bank_digest_baseline(obj_type, bank, fresh)
+                rebased += 1
+                for k in stuck:
+                    ot, b, n = _parse_key(k)
+                    if (ot, b) == (obj_type, bank):
+                        self._index.mark_conflicted(ot, b, n, False)
+            self._index.save()
+            self._set_status(_msg_conflicts_resolved(len(stuck), rebased, len(banks)))
+            if rebased < len(banks):
+                self._set_warning(_MSG_CHECK_RESOLVE_NO_DIGEST)
+        finally:
+            self._set_busy(False)
+            self._refresh_local_tree()
 
     # ── Merge pull (kept synchronous — local blob store only, no hardware) ──
 

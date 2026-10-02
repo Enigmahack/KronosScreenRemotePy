@@ -59,7 +59,7 @@ from Rendering.overlay_renderer import OverlayRenderer
 from Core.stream_receiver import StreamReceiver
 from Core.sysex_service import SysExService
 from Core.device_family import DeviceFamily
-from Views.main_window_dialogs import MainWindowDialogMixin, add_testing_menu_items
+from Views.main_window_dialogs import MainWindowDialogMixin
 from Views.revealable_password_edit import RevealablePasswordEdit
 
 
@@ -196,6 +196,11 @@ _MODE_CMDS  = ("", "SETLIST", "COMBI",  "PROGRAM", "SEQUENCE", "SAMPLING", "GLOB
 # _MODE_NAMES). Kept separate so _MODE_NAMES stays clean for keybind/command lookups.
 _MODE_MENU_LABELS = ("", "&Setlist", "&Combi", "&Program", "S&equence", "S&ampling", "&Global", "&Disk")
 
+# Nautilus Mode Select items (MainWindow.xaml:110-117 / MainWindow.xaml.cs:1092-1099):
+# label -> Kronos mode index whose wire token it sends; 0 = "F: Save" (front-panel EXIT).
+_NAUT_MODE_ITEMS = (("&Mode", 2), ("&Page", 3), ("&A", 4), ("&B", 5),
+                    ("&C", 6), ("&D", 7), ("&E", 1), ("&F", 0))
+
 # Ctrl+1..Ctrl+5 -> Window Size menu scale, matching the C# hardcoded shortcuts
 # (MainWindow.Input.cs) and the View > Window Size menu's own scale values.
 _WINDOW_SIZE_CTRL_KEYS = {
@@ -308,9 +313,17 @@ _FRAME_H    = 600
 _DRAG_START = 8    # px manhattan to start drag
 _DRAG_MOVE  = 3    # px to send TOUCH_MOVE after drag starts
 _CAL_NODE_R = 18.0
+_CAL_DOT_R  = 12.0
+_CAL_PAD    = 20   # CalPad: margin kept around the frame in cal mode
 _CAL_MARGIN = 20
 _TOUCH_FADE = 0.6  # seconds for touch marker fade
 _MODE_POLL_INTERVAL_MS = 1000
+_CAL_NOT_CONNECTED   = "Calibration not saved: it is stored on the unit, so connect to it first."
+_CAL_NO_ANSWER       = "Calibration not saved: the unit did not answer."
+_CAL_TOO_LARGE       = "Calibration not saved: too many bias dots to store on the unit."
+_CAL_DAEMON_TOO_OLD  = ("Calibration not saved: the ScreenRemote daemon on this unit is too old "
+                        "to store it (needs 3.1.2 or later).")
+_BTN_DEPRESS_MS = 150   # KronosButton.DepressMs
 
 
 def _paint_seq_icon(kind: str, color: str, size: int) -> QPixmap:
@@ -351,6 +364,7 @@ class FrameWidget(QWidget):
     touch_move   = Signal(int, int)
     touch_up     = Signal(int, int)
     frame_clicked_for_kbd    = Signal()
+    cal_save_requested       = Signal()   # bias-dot edits save immediately (C# SaveCalibration)
     context_menu_requested   = Signal(QPoint)  # global position
 
     def __init__(self, parent=None):
@@ -655,7 +669,8 @@ class FrameWidget(QWidget):
             self._renderer.draw_cal_overlay(
                 p, fr, self._cal_mesh, self._cal_bias_dots,
                 self._cal_hover, self._cal_dragging,
-                self._cal_dirty)
+                self._cal_dirty, self._fw, self._fh,
+                self.width(), self.height())
 
         # Palette editor
         if self._ed_open and self._palette:
@@ -686,16 +701,30 @@ class FrameWidget(QWidget):
     # ── Coordinate mapping ─────────────────────────────────────────────────────
 
     def _widget_to_frame(self, pos: QPointF) -> Optional[QPoint]:
+        """C# ScreenToKronos: native (w-1)/(h-1) mapping, rounded and clamped. Outside the
+        frame (CalHitRect in cal mode, which adds a 20px margin) there is no coordinate."""
         fr = self._frame_rect
         if fr.width() <= 0 or fr.height() <= 0:
             return None
-        fx = int((pos.x() - fr.x()) * self._fw / fr.width())
-        fy = int((pos.y() - fr.y()) * self._fh / fr.height())
-        if self._cal_mode:
-            return QPoint(fx, fy)
-        if fx < 0 or fy < 0 or fx >= self._fw or fy >= self._fh:
+        hit = fr.adjusted(-_CAL_PAD, -_CAL_PAD, _CAL_PAD, _CAL_PAD) if self._cal_mode else fr
+        if not hit.contains(pos):
             return None
-        return QPoint(fx, fy)
+        fx = round((pos.x() - fr.x()) / fr.width()  * (self._fw - 1))
+        fy = round((pos.y() - fr.y()) / fr.height() * (self._fh - 1))
+        return QPoint(max(0, min(self._fw - 1, fx)), max(0, min(self._fh - 1, fy)))
+
+    def _widget_to_frame_node(self, pos: QPointF) -> QPoint:
+        """C# ScreenToKronosNode: unclamped, w/h basis, for dragging nodes past the edge."""
+        fr = self._frame_rect
+        x = max(0.0, min(float(self.width()),  pos.x()))
+        y = max(0.0, min(float(self.height()), pos.y()))
+        return QPoint(int((x - fr.x()) / fr.width() * self._fw),
+                      int((y - fr.y()) / fr.height() * self._fh))
+
+    def _kron_to_screen(self, kx: int, ky: int) -> QPointF:
+        fr = self._frame_rect
+        return QPointF(fr.x() + kx * fr.width()  / (self._fw - 1),
+                       fr.y() + ky * fr.height() / (self._fh - 1))
 
     def _apply_cal(self, fx: int, fy: int) -> Tuple[int, int]:
         """Apply inverse calibration mesh to get Kronos natural coords."""
@@ -706,9 +735,7 @@ class FrameWidget(QWidget):
     def mousePressEvent(self, event: QMouseEvent):
         # Right-click in cal mode: place or remove a bias dot
         if event.button() == Qt.RightButton and self._cal_mode:
-            fp = self._widget_to_frame(event.position())
-            if fp:
-                self._cal_right_click(fp.x(), fp.y())
+            self._cal_right_click(event.position())
             return
 
         # Right-click in normal mode: emit for context menu
@@ -729,7 +756,7 @@ class FrameWidget(QWidget):
 
         # Calibration node drag — hit node starts drag, miss falls through to touch
         if self._cal_mode:
-            node = self._cal_hit_node(fp)
+            node = self._cal_hit_node(pos)
             if node:
                 self._cal_dragging = node
                 ox, oy = self._cal_mesh.get_offset(*node)
@@ -760,17 +787,18 @@ class FrameWidget(QWidget):
             self._ed_hover(pos)
 
         # Cal node drag / hover
-        if self._cal_mode and fp:
+        if self._cal_mode:
+            old_hover = self._cal_hover
+            self._cal_hover = self._cal_hit_node(pos)
             if self._cal_dragging:
                 col, row = self._cal_dragging
-                nat_x = self._cal_mesh.nat_x(col, self._fw)
-                nat_y = self._cal_mesh.nat_y(row, self._fh)
-                self._cal_mesh.set_offset(col, row, fp.x() - nat_x, fp.y() - nat_y)
+                np_ = self._widget_to_frame_node(pos)
+                self._cal_mesh.set_offset(col, row,
+                                          np_.x() - self._cal_mesh.nat_x(col, self._fw),
+                                          np_.y() - self._cal_mesh.nat_y(row, self._fh))
                 self._cal_dirty = True
                 self.update()
                 return
-            old_hover = self._cal_hover
-            self._cal_hover = self._cal_hit_node(fp)
             if self._cal_hover != old_hover:
                 self.update()
 
@@ -914,20 +942,15 @@ class FrameWidget(QWidget):
 
     # ── Cal helpers ───────────────────────────────────────────────────────────
 
-    def _cal_hit_node(self, fp: Optional[QPoint]) -> Optional[Tuple[int, int]]:
-        if not fp:
-            return None
-        fr = self._frame_rect
-        scale_x = fr.width()  / self._fw if fr.width()  > 0 else 1
-        scale_y = fr.height() / self._fh if fr.height() > 0 else 1
-        best_d, best = 1e9, None
+    def _cal_hit_node(self, pos: QPointF) -> Optional[Tuple[int, int]]:
+        """C# FindNearestCalNode: nearest node within NodeHitRadius, in screen space."""
+        best_d, best = _CAL_NODE_R, None
         for c in range(self._cal_mesh.cols):
             for r in range(self._cal_mesh.rows):
-                nx, ny = self._cal_mesh.node_dst(c, r, self._fw, self._fh)
-                dx = (nx - fp.x()) * scale_x
-                dy = (ny - fp.y()) * scale_y
-                d  = math.hypot(dx, dy)
-                if d < _CAL_NODE_R and d < best_d:
+                kx, ky = self._cal_mesh.node_dst(c, r, self._fw, self._fh)
+                sp = self._kron_to_screen(kx, ky)
+                d = math.hypot(sp.x() - pos.x(), sp.y() - pos.y())
+                if d < best_d:
                     best_d, best = d, (c, r)
         return best
 
@@ -936,41 +959,46 @@ class FrameWidget(QWidget):
         self._cal_history.append(entry)
         self._cal_hist_pos = len(self._cal_history) - 1
 
-    def _cal_right_click(self, fx: int, fy: int):
-        """Place or remove a bias dot at the clicked frame position."""
-        _HIT_R = 12  # pixel hit radius for removal
+    def _cal_right_click(self, pos: QPointF):
+        """Remove the bias dot under the cursor, else add one there; saves immediately."""
+        best_d, idx = _CAL_DOT_R, None
         for i, d in enumerate(self._cal_bias_dots):
-            disp_x, disp_y = self._cal_mesh.apply(d.nx, d.ny, self._fw, self._fh)
-            if math.hypot(fx - disp_x, fy - disp_y) <= _HIT_R:
-                removed = self._cal_bias_dots.pop(i)
-                self._cal_push_hist(CalHistEntry(CalHistKind.DotRemoved,
-                                                  dot_idx=i, dot=removed))
-                self._cal_dirty = True
-                self.update()
+            kx, ky = self._cal_mesh.apply(d.nx, d.ny, self._fw, self._fh)
+            sp = self._kron_to_screen(kx, ky)
+            dist = math.hypot(sp.x() - pos.x(), sp.y() - pos.y())
+            if dist < best_d:
+                best_d, idx = dist, i
+        if idx is not None:
+            removed = self._cal_bias_dots.pop(idx)
+            self._cal_push_hist(CalHistEntry(CalHistKind.DotRemoved, dot_idx=idx, dot=removed))
+        else:
+            fp = self._widget_to_frame(pos)
+            if fp is None:
                 return
-        # Dots stored in natural (pre-mesh) coordinates so they follow the mesh
-        nat_x, nat_y = self._cal_mesh.inverse_apply(fx, fy, self._fw, self._fh)
-        dot = CalBiasDot(nat_x, nat_y)
-        self._cal_bias_dots.append(dot)
-        self._cal_push_hist(CalHistEntry(CalHistKind.DotAdded,
-                                          dot_idx=len(self._cal_bias_dots) - 1,
-                                          dot=dot))
-        self._cal_dirty = True
+            # Stored as InverseApply(click) so Apply(stored) == click now and the dot
+            # follows later mesh changes.
+            nat_x, nat_y = self._cal_mesh.inverse_apply(fp.x(), fp.y(), self._fw, self._fh)
+            dot = CalBiasDot(nat_x, nat_y)
+            self._cal_bias_dots.append(dot)
+            self._cal_push_hist(CalHistEntry(CalHistKind.DotAdded,
+                                             dot_idx=len(self._cal_bias_dots) - 1, dot=dot))
+        self.cal_save_requested.emit()
         self.update()
 
     def cal_undo(self):
         if self._cal_hist_pos < 0:
             return
         e = self._cal_history[self._cal_hist_pos]
+        self._cal_hist_pos -= 1
         if e.kind == CalHistKind.NodeMove:
             self._cal_mesh.set_offset(e.col, e.row, e.old_off_x, e.old_off_y)
-        elif e.kind == CalHistKind.DotAdded:
-            if 0 <= e.dot_idx < len(self._cal_bias_dots):
+            self._cal_dirty = True
+        else:
+            if e.kind == CalHistKind.DotAdded:
                 self._cal_bias_dots.pop(e.dot_idx)
-        elif e.kind == CalHistKind.DotRemoved and e.dot is not None:
-            self._cal_bias_dots.insert(e.dot_idx, e.dot)
-        self._cal_hist_pos -= 1
-        self._cal_dirty = True
+            elif e.kind == CalHistKind.DotRemoved and e.dot is not None:
+                self._cal_bias_dots.insert(e.dot_idx, e.dot)
+            self.cal_save_requested.emit()
         self.update()
 
     def cal_redo(self):
@@ -980,12 +1008,13 @@ class FrameWidget(QWidget):
         e = self._cal_history[self._cal_hist_pos]
         if e.kind == CalHistKind.NodeMove:
             self._cal_mesh.set_offset(e.col, e.row, e.new_off_x, e.new_off_y)
-        elif e.kind == CalHistKind.DotAdded and e.dot is not None:
-            self._cal_bias_dots.insert(e.dot_idx, e.dot)
-        elif e.kind == CalHistKind.DotRemoved:
-            if 0 <= e.dot_idx < len(self._cal_bias_dots):
+            self._cal_dirty = True
+        else:
+            if e.kind == CalHistKind.DotAdded and e.dot is not None:
+                self._cal_bias_dots.insert(e.dot_idx, e.dot)
+            elif e.kind == CalHistKind.DotRemoved:
                 self._cal_bias_dots.pop(e.dot_idx)
-        self._cal_dirty = True
+            self.cal_save_requested.emit()
         self.update()
 
     # ── Keyboard input for palette editor ─────────────────────────────────────
@@ -1265,6 +1294,17 @@ class KronosValueSliderPanel(QWidget):
             if self._pressed_btn is not None:
                 self._pressed_btn = None
                 self.update()
+
+    def follow_value(self, val: int):
+        """Follow the hardware VALUE slider (incoming CC# == the configured value-slider CC).
+        Ignored while the user is dragging this slider so an echo can't fight the drag;
+        never re-emits slider_changed (this is a display sync, not a user edit)."""
+        if self._dragging:
+            return
+        val = max(0, min(127, int(val)))
+        self._thumb_top = self._SLIDER_TRAVEL * (127 - val) / 127.0
+        self._value = val
+        self.update()
 
     def _update_slider_from_mouse(self, mouse_y: float):
         local_y = mouse_y - self._CANVAS_TOP
@@ -1620,9 +1660,11 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
 
         # VU meter audio capture
         self._audio_capture = None
-        self._vu_device_id: Optional[str] = None
+        self._vu_device_id: Optional[str] = settings.vu_device_id
 
         self._setup_ui()
+        if self._vu_device_id:
+            QTimer.singleShot(0, lambda: self._start_audio_capture(self._vu_device_id))
 
         # Persistence failures (read-only share, disk full, permissions) are
         # logged and swallowed by design so a failed cache write can't take down
@@ -1633,14 +1675,13 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             0, self, lambda m=msg: self._notify(m, is_error=True))
         self._wire_actions()
         self._apply_settings_to_ui()
+        self._apply_midi_settings()
 
         # Release keyboard capture when a click lands outside the frame widget
         QApplication.instance().installEventFilter(self)
 
-        # Load cal
-        self._frame_w._cal_mesh, self._frame_w._cal_bias_dots = Models.storage.load_cal()
-        if not self._frame_w._cal_mesh.is_identity():
-            logging.debug("cal mesh loaded, %d bias dot(s)", len(self._frame_w._cal_bias_dots))
+        self._cal_save_lock = threading.Lock()
+        self._frame_w.cal_save_requested.connect(self._save_calibration)
 
         self._ctrl = CtrlClient.get()
 
@@ -1793,7 +1834,10 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             w.setAlignment(Qt.AlignmentFlag.AlignCenter)
             w.setStyleSheet(f"color: {dim};")
             w.setToolTip(tip)
-        _midi_io = QWidget()
+        self._midi_io = _midi_io = QWidget()
+        _midi_io.setCursor(Qt.CursorShape.PointingHandCursor)
+        _midi_io.mousePressEvent = lambda e: (self._open_sysex_tool()
+                                              if e.button() == Qt.MouseButton.LeftButton else None)
         _midi_io_lay = QHBoxLayout(_midi_io)
         _midi_io_lay.setContentsMargins(0, 0, 0, 0)
         _midi_io_lay.setSpacing(1)
@@ -2033,7 +2077,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             self._act_grid[n] = a
         self._act_grid[5].setChecked(True)
         tools_menu.addSeparator()
-        self._act_sysex_tool = tools_menu.addAction("Open &SysEx Tool…")
+        self._act_sysex_tool = tools_menu.addAction("&MIDI Monitor…")
         self._act_librarian_shell = tools_menu.addAction("&Librarian…")
         self._act_sample_editor = tools_menu.addAction("Sample &Editor…")
         self._act_sample_editor.triggered.connect(self.on_show_sample_editor)
@@ -2044,7 +2088,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         self._act_keyboard_info = tools_menu.addAction("&Keyboard Info…")
         self._act_test_mode   = tools_menu.addAction("Enter Kronos &Test Mode")
         tools_menu.addSeparator()
-        self._act_disable_kbd = tools_menu.addAction("&Disable Keyboard Send")
+        self._act_disable_kbd = tools_menu.addAction("&Disable Remote Typing")
         self._act_disable_kbd.setCheckable(True)
         self._act_paste_clipboard = tools_menu.addAction("&Paste Clipboard to Kronos")
 
@@ -2054,6 +2098,14 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         for label in _MODE_MENU_LABELS[1:]:
             a = mode_menu.addAction(label)
             self._act_modes.append(a)
+        # Nautilus item set (MNU_NautilusMode_*): the front panel's own Mode/Page/A-F.
+        # Same wire tokens as the Kronos modes; (label, mode index or 0 for F=EXIT).
+        self._act_naut_modes: list[QAction] = []
+        for label, mode_idx in _NAUT_MODE_ITEMS:
+            a = mode_menu.addAction(label)
+            a.setVisible(False)
+            a.setData(mode_idx)
+            self._act_naut_modes.append(a)
 
         # ── Bank select (MENU_BankSelect) ───────────────────────────────────
         bank_menu = mb.addMenu("Ban&k Select")
@@ -2066,9 +2118,6 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         self._act_cmd_palette = help_menu.addAction("&Command Palette")
         help_menu.addSeparator()
         self._act_about       = help_menu.addAction("&About…")
-
-        # Add testing/diagnostics menu items
-        add_testing_menu_items(self)
 
     def _build_bank_menu(self, menu: QMenu):
         """3 sub-menus (Internal/User/U-User), matching C#'s MainWindow.xaml.cs
@@ -2141,6 +2190,8 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         # carries EDITCTX/BOOT, which this bare hint doesn't) - this only
         # moves the confirmation earlier, via _apply_daemon_state as usual.
         self._sysex_service.mode_changed.connect(self._on_sysex_mode_hint)
+        # Hardware VALUE slider (CC# from Settings > MIDI/SysEx) -> the on-screen slider.
+        self._sysex_service.value_slider_changed.connect(self._left_panel.follow_value)
         # Seed from current state (in case events fired before this wiring).
         br = self._sysex_service.bridge
         self._set_midi_badge(bool(br and br.is_connected))
@@ -2167,6 +2218,13 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         for i, (act, cmd) in enumerate(zip(self._act_modes, _MODE_CMDS[1:]), 1):
             act.triggered.connect(lambda checked, c=cmd, m=i:
                                   (self._ctrl_send(f"BUTTON {c}"), self._set_pending_mode(m)))
+        for act in self._act_naut_modes:
+            m = act.data()
+            if m:
+                act.triggered.connect(lambda checked, c=_MODE_CMDS[m], m=m:
+                                      (self._ctrl_send(f"BUTTON {c}"), self._set_pending_mode(m)))
+            else:   # F: Save — front-panel EXIT on Nautilus
+                act.triggered.connect(lambda checked: self._ctrl_send("BUTTON EXIT"))
 
         self._act_settings_dlg.triggered.connect(self._open_settings)
         self._act_show_help.triggered.connect(self._toggle_help)
@@ -2751,19 +2809,18 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         this hook — matching C#'s ApplyNautilusLamps being independent of
         WireButtons.
 
-        Not yet ported (Phase 3b remainder, see CLAUDE.md): Mode-select menu
-        swap (needs new Nautilus Mode/Page/A-F menu items — the wire tokens
-        for Kronos's existing 7 mode commands are confirmed UNCHANGED on
-        Nautilus per the same button_labels.json source used for the
-        right-panel button layout, only the menu's item set/labels need to
-        change, but the A-F QA-slot mapping itself isn't confident enough to
-        guess here). Play/Record "lit while playing" style removal has no
+        Mode Select menu swaps to Mode/Page/A-F on Nautilus (_NAUT_MODE_ITEMS,
+        mapping from C#'s MainWindow.xaml.cs:1092-1099). Play/Record "lit while playing" style removal has no
         Python analog to remove — Python's footer transport never
         implemented the persistent lit-while-playing/recording indicator C#
         has at all (checked: no _is_playing/_is_recording state exists
         anywhere in this file), so there's nothing to un-light on Nautilus
         specifically."""
         self._bank_menu.menuAction().setEnabled(not self._is_nautilus)
+        for a in self._act_modes:
+            a.setVisible(not self._is_nautilus)
+        for a in self._act_naut_modes:
+            a.setVisible(self._is_nautilus)
         self._sysex_service.set_device_family(self._is_nautilus)
         self._ctrl_surface.set_device_family(self._is_nautilus)
 
@@ -3254,8 +3311,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             return
 
         # Calibration mode — handled by eventFilter, but belt-and-suspenders
-        if self._frame_w._cal_mode:
-            self._handle_cal_key(event)
+        if self._frame_w._cal_mode and self._handle_cal_key(event):
             return
 
         # Escape: full precedence chain (fullscreen-exit / drag-cancel /
@@ -3548,6 +3604,9 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             return
         if is_repeat:
             return
+        if not self._is_nautilus:
+            self._ctrl_surface.press_button("EXIT")
+            QTimer.singleShot(_BTN_DEPRESS_MS, lambda: self._ctrl_surface.release_button("EXIT"))
         self._ctrl_send("BUTTON EXIT")
 
     def _toggle_hide_data_input(self, checked: bool):
@@ -3646,7 +3705,12 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         if host in hosts:
             hosts.remove(host)
         hosts.insert(0, host)
-        self._settings.recent_hosts = hosts[:10]
+        self._settings.recent_hosts = hosts[:5]   # C# caps at 5
+        # Remember the login that just worked, so picking this host later restores it.
+        self._settings.host_credentials[host] = {
+            "username": self._settings.ftp_username, "password": self._settings.ftp_password}
+        for stale in [h for h in self._settings.host_credentials if h not in self._settings.recent_hosts]:
+            del self._settings.host_credentials[stale]
         Models.storage.save_settings(self._settings)
         self._rebuild_recent_menu()
 
@@ -3666,11 +3730,16 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
     def _connect_to_recent(self, host: str):
         self._settings.kronos_host = host
         self._host = host
+        cred = self._settings.host_credentials.get(host)
+        if cred:
+            self._settings.ftp_username = cred["username"]
+            self._settings.ftp_password = cred["password"]
         Models.storage.save_settings(self._settings)
         self._connect_async()
 
     def _clear_recent_hosts(self):
         self._settings.recent_hosts.clear()
+        self._settings.host_credentials.clear()
         Models.storage.save_settings(self._settings)
         self._rebuild_recent_menu()
 
@@ -3738,14 +3807,12 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         self.resize(new_w, h)
 
     # ── Calibration sync (CAL_GET/CAL_SET — docs/api.md) ────────────────────────
-    # The mesh lives on the unit (/korg/rw/HD/ScreenRemote/calibration.txt), so it
-    # follows the instrument rather than this PC — mirrors C#'s
-    # MainWindow.Calibration.cs (ApplyUnitCalibration/SaveCalibrationAsync). The
-    # local cal_data.json (Models.storage.load_cal/save_cal) is kept only as a
-    # pre-connect/offline fallback display, never authoritative once connected.
+    # The mesh lives only on the unit (/korg/rw/HD/ScreenRemote/calibration.txt), so it
+    # follows the instrument rather than this PC — C# MainWindow.Calibration.cs. It is read
+    # on every connect; the mesh from the last unit stays in effect while disconnected but
+    # can only be saved while connected. There is no local copy.
 
     def _fetch_unit_calibration(self):
-        import threading
         host, port = self._host, self._ctrl_port
 
         def fetch():
@@ -3758,47 +3825,97 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         threading.Thread(target=fetch, daemon=True, name="CalGet").start()
 
     def _apply_unit_calibration(self, resp: Optional[str]):
-        if self._frame_w._cal_mode:
+        fw = self._frame_w
+        if fw._cal_mode:
             self._act_cal.setChecked(False)
-        if self._frame_w._cal_dirty:
+        if fw._cal_dirty:
             logging.info("[cal] unsaved calibration changes discarded (new connection)")
 
-        if resp is None:
-            logging.info("[cal] CAL_GET unavailable (daemon needs 3.1.2+, or query failed) "
-                         "— using local fallback")
-            return
-        text = resp[4:] if resp.startswith("CAL ") else ""
-        if not text or text == "NONE":
+        # None = daemon can't store calibration (needs 3.1.2+) or the query failed
+        text = None if resp is None else (resp[4:] if resp.startswith("CAL ") else "")
+        if text == "NONE":
+            text = ""
+        parsed = cal_text.parse(text) if text else None
+        fw._cal_mesh, fw._cal_bias_dots = parsed if parsed else (CalMesh(), [])
+        fw._cal_dirty = False
+        fw._cal_dragging = None
+        fw._cal_hover = None
+        fw._cal_history = []
+        fw._cal_hist_pos = -1
+        if text is None:
+            logging.info("[cal] daemon can't store calibration (needs 3.1.2+) - uncalibrated")
+        elif text == "":
             logging.info("[cal] unit has no stored calibration")
-            self._frame_w._cal_mesh = CalMesh()
-            self._frame_w._cal_bias_dots = []
+        elif parsed is None:
+            logging.warning("[cal] unit's stored calibration is unreadable, ignored: %s", text)
         else:
-            parsed = cal_text.parse(text)
-            if parsed is None:
-                logging.warning("[cal] unit's stored calibration is unreadable, ignored: %s", text)
-            else:
-                self._frame_w._cal_mesh, self._frame_w._cal_bias_dots = parsed
-                logging.info("[cal] calibration loaded from unit, %d bias dot(s)",
-                            len(self._frame_w._cal_bias_dots))
-        self._frame_w._cal_dirty = False
-        self._frame_w._cal_history = []
-        self._frame_w._cal_hist_pos = -1
-        self._frame_w.update()
+            logging.info("[cal] calibration loaded from unit, %d bias dot(s)", len(fw._cal_bias_dots))
+        self._sync_cal_grid_checks()
+        fw.update()
+
+    def _sync_cal_grid_checks(self):
+        for size, act in self._act_grid.items():
+            act.setChecked(size == self._frame_w._cal_mesh.cols)
+
+    @staticmethod
+    def _send_calibration_to_unit(ctrl, host, port, connected: bool, text: str) -> Optional[str]:
+        """None on success, otherwise the message to show (C# SendCalibrationToUnit)."""
+        if not connected:
+            return _CAL_NOT_CONNECTED
+        if len(text) > cal_text.MAX_LENGTH:
+            return _CAL_TOO_LARGE
+        reply = ctrl.query(host, port, f"CAL_SET {text}", timeout_ms=3000)
+        reply = reply.strip() if reply else None
+        if reply == "OK":
+            return None
+        if reply is None:
+            return _CAL_NO_ANSWER
+        if reply == "ERR":
+            return _CAL_DAEMON_TOO_OLD
+        return f'Calibration not saved: the unit replied "{reply}".'
 
     def _save_calibration(self):
-        """Persist locally (offline fallback) and push to the unit via CAL_SET.
-        Must run while the stream connection is still up — CAL_SET requires
-        ownership (docs/api.md), which drops the instant the stream client
-        disconnects, so callers on the shutdown path must call this BEFORE
-        tearing down the receiver."""
-        Models.storage.save_cal(self._frame_w._cal_mesh, self._frame_w._cal_bias_dots)
-        if self._receiver and self._host:
-            text = cal_text.serialize(self._frame_w._cal_mesh, self._frame_w._cal_bias_dots)
-            if len(text) <= cal_text.MAX_LENGTH:
-                self._ctrl_send(f"CAL_SET {text}")
-            else:
-                logging.warning("[cal] serialized calibration exceeds %d bytes — not sent to unit",
-                                cal_text.MAX_LENGTH)
+        """Send the mesh to the unit. Saves run one at a time and serialize only once it is
+        their turn, so the last to reach the unit always carries the newest state. On
+        failure the mesh is marked dirty again and the reason shown in the status bar."""
+        ctrl, host, port = self._ctrl, self._host, self._ctrl_port
+        connected = bool(self._receiver and host)
+        fw = self._frame_w
+
+        def work():
+            with self._cal_save_lock:
+                text = cal_text.serialize(fw._cal_mesh, fw._cal_bias_dots)
+                err = self._send_calibration_to_unit(ctrl, host, port, connected, text)
+            try:
+                QTimer.singleShot(0, self, lambda: self._on_calibration_saved(err))
+            except RuntimeError:
+                pass
+
+        threading.Thread(target=work, daemon=True, name="CalSet").start()
+
+    def _on_calibration_saved(self, err: Optional[str]):
+        if err is None:
+            logging.info("[cal] calibration saved to unit")
+            return
+        self._frame_w._cal_dirty = True
+        logging.info("[cal] save failed: %s", err)
+        self._notify(err, is_error=True)
+        self._frame_w.update()
+
+    def _save_calibration_blocking(self) -> Optional[str]:
+        """For the exit prompt, where an async save would be cut off: waits at most 4 s."""
+        ctrl, host, port = self._ctrl, self._host, self._ctrl_port
+        connected = bool(self._receiver and host)
+        text = cal_text.serialize(self._frame_w._cal_mesh, self._frame_w._cal_bias_dots)
+        result = [_CAL_NO_ANSWER]
+
+        def work():
+            result[0] = self._send_calibration_to_unit(ctrl, host, port, connected, text)
+
+        t = threading.Thread(target=work, daemon=True, name="CalSetBlocking")
+        t.start()
+        t.join(4.0)
+        return result[0]
 
     # ── Tools ──────────────────────────────────────────────────────────────────
 
@@ -3809,50 +3926,75 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         self._frame_w.update()
 
     def _on_cal_toggled(self, checked: bool):
-        self._frame_w._cal_mode = checked
+        fw = self._frame_w
+        fw._cal_mode = checked
         self._release_kbd_capture()
         if not checked:
-            self._frame_w._cal_dragging = None
-            self._frame_w._cal_hover    = None
-            if self._frame_w._cal_dirty:
-                self._save_calibration()
-                self._frame_w._cal_dirty = False
-        self._frame_w.update()
+            fw._cal_dragging = None
+            fw._cal_hover    = None
+        logging.info("[cal] calibrate mode %s", "ON" if checked else "OFF")
+        fw.update()
 
-    def _handle_cal_key(self, event: QKeyEvent):
+    def _handle_cal_key(self, event: QKeyEvent) -> bool:
+        """Cal-mode keys (C# MainWindow.Input.cs). Anything else falls through to the normal
+        key handling, so e.g. Esc is still front-panel EXIT. True = consumed."""
+        fw   = self._frame_w
         key  = event.key()
         mods = event.modifiers()
-        if key == Qt.Key_Escape:
-            self._act_cal.setChecked(False)
-            return
-        if mods & Qt.ControlModifier and key == Qt.Key_Z:
-            self._frame_w.cal_undo()
-            return
-        if mods & Qt.ControlModifier and key == Qt.Key_Y:
-            self._frame_w.cal_redo()
-            return
-        if key == Qt.Key_S and not mods:
+        ctrl = bool(mods & Qt.ControlModifier)
+        if self._matches_keybind(event, "Calibrate"):
+            if not event.isAutoRepeat():
+                self._act_cal.setChecked(False)
+            return True
+        if ctrl and key == Qt.Key_Z:
+            if not event.isAutoRepeat():
+                (fw.cal_redo if mods & Qt.ShiftModifier else fw.cal_undo)()
+            return True
+        if ctrl and key == Qt.Key_Y:
+            if not event.isAutoRepeat():
+                fw.cal_redo()
+            return True
+        if mods & ~Qt.KeypadModifier or key not in (Qt.Key_S, Qt.Key_X, Qt.Key_R):
+            return False
+        if event.isAutoRepeat():
+            return True
+        if key == Qt.Key_R:
+            fw._cal_mesh.reset()
+            fw._cal_dirty = True
+            fw._cal_history = []
+            fw._cal_hist_pos = -1
+        elif key == Qt.Key_X:
+            fw._cal_bias_dots.clear()
+            fw._cal_history = []
+            fw._cal_hist_pos = -1
             self._save_calibration()
-            self._frame_w._cal_dirty = False
-            self._frame_w.update()
-            return
-        if key == Qt.Key_X and not mods:
-            self._frame_w._cal_bias_dots.clear()
-            self._frame_w._cal_dirty = True
-            self._frame_w.update()
-            return
-        if key == Qt.Key_R and not mods:
-            self._frame_w._cal_mesh.reset()
-            self._frame_w._cal_dirty = True
-            self._frame_w.update()
-            return
+        else:
+            self._save_calibration()
+            fw._cal_dirty = False
+        fw.update()
+        return True
 
     def _set_cal_grid(self, n: int):
-        self._frame_w._cal_mesh = CalMesh(n, n)
-        self._frame_w._cal_dirty = True
-        for size, act in self._act_grid.items():
-            act.setChecked(size == n)
-        self._frame_w.update()
+        fw = self._frame_w
+        if fw._cal_mesh.cols != n:
+            if not fw._cal_mesh.is_identity() or fw._cal_bias_dots:
+                r = QMessageBox.warning(
+                    self, "Change Calibration Grid",
+                    f"Changing grid size to {n}×{n} will clear existing calibration data.\nProceed?",
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+                if r != QMessageBox.Yes:
+                    self._sync_cal_grid_checks()
+                    return
+            fw._cal_mesh = CalMesh(n, n)
+            fw._cal_bias_dots.clear()
+            fw._cal_dirty = False
+            fw._cal_dragging = None
+            fw._cal_hover = None
+            fw._cal_history = []
+            fw._cal_hist_pos = -1
+            self._save_calibration()
+        self._sync_cal_grid_checks()
+        fw.update()
 
     def _enter_test_mode(self):
         result = QMessageBox.warning(
@@ -3962,7 +4104,8 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
                       self._settings.image_gamma, self._settings.image_saturation,
                       self._settings.image_sharpen)
         dlg = SettingsWindow(self._settings, self, initial_tab=initial_tab,
-                             on_image_preview=self._preview_image_adjust)
+                             on_image_preview=self._preview_image_adjust,
+                             on_button_injector=self.show_button_injector)
         if dlg.exec() == QDialog.Accepted:
             self._apply_settings_side_effects(mirror_before, ss_before, debug_before,
                                               hide_data_before, hide_value_before)
@@ -4004,6 +4147,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
                 self._ctrl_send("MIRROR_ON" if self._mirror_state else "MIRROR_OFF")
             if self._settings.screensaver_timeout != ss_before:
                 self._ctrl_send(f"SS_TIMEOUT {self._settings.screensaver_timeout}")
+        self._apply_midi_settings()
         # Update perf window host if open
         if self._perf_window:
             self._perf_window.update_host(self._host, self._ctrl_port)
@@ -4087,7 +4231,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             CommandEntry("Sample Editor", "Sample Editor…", "", self.show_sample_editor),
             CommandEntry("Librarian", "Librarian…", "", self._open_librarian_shell),
             CommandEntry("SaveScreenshot", "Save Screenshot…", "", self._save_screenshot),
-            CommandEntry("ToggleKeyboardSend", "Toggle Keyboard Send", "",
+            CommandEntry("ToggleKeyboardSend", "Toggle Remote Typing", "",
                         lambda: self._act_disable_kbd.setChecked(
                             not self._act_disable_kbd.isChecked())),
             CommandEntry("About", "About…", "", self._open_about),
@@ -4188,23 +4332,64 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
 
     # ── SysEx Tool ───────────────────────────────────────────────────────────────
 
+    def _save_midi_output_channel(self, channel: int) -> None:
+        if channel != self._settings.midi_output_channel:
+            self._settings.midi_output_channel = channel
+            Models.storage.save_settings(self._settings)
+
+    def _apply_midi_settings(self) -> None:
+        """Push Settings > MIDI/SysEx into the service, then reconcile the Monitor-MIDI state."""
+        s, svc = self._settings, self._sysex_service
+        svc.value_slider_cc = s.value_slider_cc
+        svc.pull_names_on_change = s.pull_names_on_change
+        svc.apply_midi_settings(s.proactive_sysex_polling, s.sysex_poll_interval_sec, s.sysex_poll_on_changes)
+        self._sync_midi_monitor_state()
+        self._apply_midi_monitor_menu_state()
+
+    def _sync_midi_monitor_state(self) -> None:
+        """'Monitor MIDI' toggled while connected: start/stop the MIDI bridge live (C# SetStreamEnabled).
+        When off, nothing incoming is processed and the monitor/Librarian sync need it back on."""
+        svc = self._sysex_service
+        connected = self._receiver is not None and bool(self._host)
+        running = svc.bridge is not None
+        if self._settings.midi_monitor_enabled and connected and not running:
+            svc.start(self._host)
+            svc.set_device_family(self._is_nautilus)   # start() resets to the Kronos default
+        elif not self._settings.midi_monitor_enabled and running:
+            svc.stop()
+            self._set_midi_badge(False)
+            self._on_performance_changed("")
+
+    def _apply_midi_monitor_menu_state(self) -> None:
+        """Fade the MIDI Monitor menu item and the footer MIDI cluster while monitoring is off."""
+        enabled = bool(self._settings.midi_monitor_enabled)
+        self._act_sysex_tool.setEnabled(enabled)
+        self._midi_io.setEnabled(enabled)
+        eff = self._midi_io.graphicsEffect()
+        if eff is None:
+            eff = QGraphicsOpacityEffect(self._midi_io)
+            self._midi_io.setGraphicsEffect(eff)
+        eff.setOpacity(1.0 if enabled else 0.4)
+
     def _open_sysex_tool(self):
         if self._sysex_tool_win is not None:
             self._sysex_tool_win.raise_()
             self._sysex_tool_win.activateWindow()
             return
         if not self._host:
-            QMessageBox.warning(self, "SysEx Tool",
+            QMessageBox.warning(self, "MIDI Monitor",
                                 "No Kronos host configured. Set it in Settings first.")
             return
         if not self._settings.midi_monitor_enabled or not self._sysex_service.can_dump:
-            QMessageBox.warning(self, "SysEx Tool",
+            QMessageBox.warning(self, "MIDI Monitor",
                                 "MIDI monitoring is off or not connected. Enable "
-                                "'MIDI bridge' and connect to the Kronos first.")
+                                "'Monitor MIDI' in Settings → MIDI/SysEx and connect to the Kronos first.")
             return
         from Views.sysex_tool_window import SysExToolWindow
         self._sysex_tool_win = SysExToolWindow(
-            self._host, self._sysex_service.bridge, self._sysex_service, self)
+            self._host, self._sysex_service.bridge, self._sysex_service, self,
+            initial_channel=self._settings.midi_output_channel)
+        self._sysex_tool_win.closing.connect(self._save_midi_output_channel)
         self._sysex_tool_win.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self._sysex_tool_win.destroyed.connect(lambda: setattr(self, '_sysex_tool_win', None))
         self._sysex_tool_win.show()
@@ -4317,10 +4502,10 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
 
     def _show_kbd_context_menu(self, local_pos):
         menu = QMenu(self)
-        a_en = menu.addAction("Enable Keyboard Send")
+        a_en = menu.addAction("Enable Remote Typing")
         a_en.triggered.connect(lambda: self._act_disable_kbd.setChecked(False))
         a_en.setEnabled(not self._kbd_send_en)
-        a_dis = menu.addAction("Disable Keyboard Send")
+        a_dis = menu.addAction("Disable Remote Typing")
         a_dis.triggered.connect(lambda: self._act_disable_kbd.setChecked(True))
         a_dis.setEnabled(self._kbd_send_en)
         menu.exec(self._kbd_label.mapToGlobal(local_pos))
@@ -4345,6 +4530,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         menu = QMenu(self)
         for i in range(1, 8):
             a = menu.addAction(_MODE_NAMES[i])
+            a.setEnabled(not self._is_nautilus)   # Kronos-only, as C#'s CTX_Mode_*
             a.triggered.connect(
                 lambda checked, c=_MODE_CMDS[i], m=i:
                     (self._ctrl_send(f"BUTTON {c}"), self._set_pending_mode(m)))
@@ -4540,11 +4726,15 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         devices = list_audio_devices()
         menu = QMenu(self)
         a_none = menu.addAction("No monitoring")
+        a_none.setCheckable(True)
+        a_none.setChecked(not self._vu_device_id)
         a_none.triggered.connect(lambda: self._set_vu_device(None))
         if devices:
             menu.addSeparator()
             for dev_id, dev_name in devices:
                 a = menu.addAction(dev_name)
+                a.setCheckable(True)
+                a.setChecked(dev_id == self._vu_device_id)
                 a.triggered.connect(lambda checked, d=dev_id: self._set_vu_device(d))
         else:
             menu.addSeparator()
@@ -4554,6 +4744,8 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
 
     def _set_vu_device(self, device_id: Optional[str]):
         self._vu_device_id = device_id
+        self._settings.vu_device_id = device_id
+        Models.storage.save_settings(self._settings)
         self._stop_audio_capture()
         if device_id is not None:
             self._start_audio_capture(device_id)
@@ -4583,23 +4775,24 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             event.accept()
             return
         if self._frame_w._cal_dirty:
-            r = QMessageBox.warning(
+            r = QMessageBox.question(
                 self, "Unsaved Calibration",
-                "You have unsaved calibration changes.\n\n"
-                "Do you want to save before quitting?",
-                QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
-                QMessageBox.Save)
+                "You have unsaved calibration changes.\nSave before exiting?",
+                QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel, QMessageBox.Yes)
             if r == QMessageBox.Cancel:
                 event.ignore()
                 return
-            if r == QMessageBox.Save:
+            if r == QMessageBox.Yes:
                 # Must run before _do_shutdown's receiver.stop() - CAL_SET is
-                # ownership-gated and the stream connection is still the owner
-                # here (see _save_calibration's docstring).
-                self._save_calibration()
-                self._frame_w._cal_dirty = False
-            else:
-                self._frame_w._cal_dirty = False
+                # ownership-gated and the stream connection is still the owner here.
+                err = self._save_calibration_blocking()
+                if err and QMessageBox.warning(
+                        self, "Unsaved Calibration",
+                        f"{err}\n\nExit anyway and lose the changes?",
+                        QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+                    event.ignore()
+                    return
+            self._frame_w._cal_dirty = False
         if self._settings.prompt_before_quitting:
             r = QMessageBox.question(self, "Quit?", "Disconnect and quit?",
                                      QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
@@ -4651,13 +4844,6 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             self._settings.window_width  = self.width()
             self._settings.window_height = self.height()
         Models.storage.save_settings(self._settings)
-        if self._frame_w._cal_dirty:
-            # Belt-and-suspenders only: closeEvent's Save branch already handles
-            # the normal path. The receiver is already stopped here, so
-            # _save_calibration degrades to the local-only fallback (its
-            # `self._receiver` guard skips CAL_SET) rather than sending on a
-            # connection that's no longer the ctrl port's owner.
-            self._save_calibration()
         self.close()
 
     def eventFilter(self, watched, event):
@@ -4679,15 +4865,9 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
 
         # Intercept all key events during calibration mode so menu
         # accelerators (e.g. &Settings) don't steal single-letter keys.
-        if self._frame_w._cal_mode:
-            t = event.type()
-            if t == QEvent.Type.KeyPress:
-                if isinstance(watched, QWidget) and watched.window() is self:
-                    if not event.isAutoRepeat():
-                        self._handle_cal_key(event)
-                    return True
-            if t == QEvent.Type.KeyRelease:
-                if isinstance(watched, QWidget) and watched.window() is self:
+        if self._frame_w._cal_mode and event.type() == QEvent.Type.KeyPress:
+            if isinstance(watched, QWidget) and watched.window() is self:
+                if self._handle_cal_key(event):
                     return True
 
         # Intercept all key events at application level when captured so

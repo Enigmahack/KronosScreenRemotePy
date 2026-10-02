@@ -112,6 +112,34 @@ def is_always_available(ref: ObjLoc) -> bool:
     return ref.obj_type == OBJ_PROGRAM and ref.bank in _READONLY_PROGRAM_BANKS
 
 
+# Program -> Drum Track (another Program). Drum Track lives in the Common section shared by both wire
+# formats (Prog_HD-1.txt / Prog_EXi_Common.txt agree on these offsets).
+_DRUM_TRACK_NUM, _DRUM_TRACK_BANK = 2688, 2689
+_DRUM_TRACK_ON_BYTE, _DRUM_TRACK_ON_BIT = 1295, 0x10
+
+
+def walk_display_references(obj_type: int, body: bytes) -> Iterator[ObjectRef]:
+    """walk_object_references() plus the Program -> Drum Track reference — DISPLAY ONLY
+    (the Object Dependencies panel). Deliberately NOT folded into walk_object_references: every
+    resolution path (merge pull, repoint, the push referential check) dispatches on `ref_kind`
+    and has no encoder for a drum-track site, so adding it there would mis-route a write to the
+    Set List encoder — the exact bug class C#'s RefKind enum exists to prevent. Making the
+    resolution paths drum-track-aware is a tracked follow-up (CLAUDE.md).
+
+    A never-touched Program's Drum Track bank/number bytes default to 0,0 — a valid-looking
+    Program I-A:000 address, not an absent reference — so it is gated on the 'Drum Track On' bit."""
+    if obj_type != OBJ_PROGRAM:
+        yield from walk_object_references(obj_type, body)
+        return
+    from Objects.object_body import program_body_is_init
+    if program_body_is_init(body):
+        return
+    if len(body) > _DRUM_TRACK_BANK and (body[_DRUM_TRACK_ON_BYTE] & _DRUM_TRACK_ON_BIT):
+        obj_bank = func33_to_obj_bank(1, body[_DRUM_TRACK_BANK])
+        if obj_bank >= 0:
+            yield ObjectRef("drum track", -1, ObjLoc(OBJ_PROGRAM, obj_bank, body[_DRUM_TRACK_NUM]))
+
+
 def walk_resolvable_references(obj_type: int, body: bytes) -> Iterator[ObjectRef]:
     """walk_object_references() minus references nothing can ever resolve
     because they don't need resolving — the shape every RESOLUTION path

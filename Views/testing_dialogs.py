@@ -319,7 +319,7 @@ class InputTesterWindow(BaseDialog):
         widget = QWidget()
         layout = QVBoxLayout(widget)
         info = QLabel(
-            "Live MIDI monitoring already exists — use Tools → Open SysEx Tool…\n"
+            "Live MIDI monitoring already exists — use Tools → MIDI Monitor…\n"
             "(the MIDI bridge, docs/api.md §8, is shared with the rest of the app;\n"
             "duplicating it here would just be a second, unsynced listener)."
         )

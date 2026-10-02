@@ -342,23 +342,126 @@ is partially done, across six more commits:
   positions; screenshots taken during this session confirm it visually,
   not just structurally.
 
-Still not ported (documented inline in `_apply_device_family_ui()`'s own
-docstring in `Views/main_window.py`) — this is now the ENTIRE Phase 3
-remainder, down to one item:
-- **Mode-select menu swap** — Kronos's 7 mode menu items vs. Nautilus's
-  Mode/Page/A-F. The underlying wire tokens for Kronos's existing mode
-  commands are confirmed UNCHANGED on Nautilus (only the label/position
-  differs), so this is "just" new menu items + a QA-slot label mapping —
-  but that A-F mapping itself isn't confident enough to guess from what's
-  in this repo (`Documentation/nautilus_button_mapping.md`'s own header
-  calls it unverified/user-reported and superseded by a `button_labels.json`
-  this repo doesn't have a copy of). Note the right-panel work above
-  confirmed the A-F tooltips/QA-slot assignments from
-  `NautilusRightPanel.xaml`'s own comments (Setlist/Program/Sequencer/
-  Quick Access/Compare/Write-Save) — tooltips were NOT ported to the
-  Python control surface (it has no per-button tooltip mechanism at all,
-  for either skin — a pre-existing gap, not something this pass added),
-  but the same source data is available if picking up the menu-swap item.
+Mode-select menu swap: done in Pass 4 (see below). Phase 3 is complete.
+
+**Pass 4 — 2026-10-02 re-audit against the C# tree (including its uncommitted working
+copy) and the first parity work from it.** Bucketing rule used: *retired in C#* (not a gap),
+*Python-only*, *missing*, *out of scope* (Nautilus PCG conversion, every headless `--flag`
+in `App.xaml.cs`, USB-direct MIDI incl. `MidiTransport`/`UsbMidiDeviceName`). Verified
+retired in C#, do NOT port: Warp Mode, Check for Updates, Report Issue, Palette Editor, the
+Tools-menu Input Tester entry **and** Settings' "Test Inputs" button (both hidden; Python's
+Input Tester is therefore reachable nowhere, user decision). Done this pass:
+- Labels: "MIDI Monitor…", "Disable/Enable Remote Typing"; Nautilus Mode Select item set
+  (Mode/Page/A–F → `_NAUT_MODE_ITEMS`, status-bar mode menu disabled on Nautilus like C#);
+  Escape-EXIT button flash; Button Injector moved to Settings > Debug (shown only while debug
+  logging is ticked), "Testing & Diagnostics" submenu no longer built (its audio/EQ/device-info
+  dialogs are now unreachable but untouched — see item 2 below).
+- Calibration now matches C# 990d1d0: stored **only on the unit** (no `cal_data.json`, no baked-in
+  factory mesh; `load_cal`/`save_cal` deleted), `CAL_SET` reply is read and mapped to C#'s four
+  failure messages, saves are serialized and async (blocking form for the exit prompt), grid change
+  confirms then saves, R/X/S/Ctrl+Z/Ctrl+Y/Calibrate-key semantics, bias-dot edits save immediately,
+  overlay + click mapping use the `(w-1)/(h-1)` convention and the frame's real geometry (the old
+  overlay hard-coded 800×600, wrong on Nautilus), node hit-test in screen space.
+- Settings model: ~20 persisted fields added (`_SCALAR_FIELDS` in `Models/storage.py`), recent
+  hosts cap 5 + per-host credentials, VU device persisted, Settings tabs reordered to C#'s, Input
+  Mapping split out of Debug, Settings > Librarian gained Full-sync-on-launch / Force destructive
+  write.
+- **Librarian sync rework (found a real bug):** the plain "Sync Library" click used to run
+  push-only `commit_changes` — it pulled only when "Force Full Sync" was ticked. Now one Sync
+  button with a 2-Way / Pull Only / Push Only dropdown (persisted), the separate Commit button is
+  gone; SysEx-off probe + banner + Re-check; `PullResult.aborted` (4 silent banks → give up);
+  conflict banner + Resolve Conflicts ("keep mine" re-baselines then clears); warning banner;
+  Pull Only discards edits **and** delete-flags behind a confirm, before pulling; Push Only offers
+  the overwrite retry after a refusal/conflict; `force_destructive_write` skips only the conflict
+  pre-scan (`build_changeset`) and arms per-bank digests so the per-write staleness check doesn't
+  abort against an allowed-stale baseline; launch pull; "Local Library" → "Keyboard Library" in
+  user-visible text; Expand/Collapse in the three tree context menus. Tests: self-tests in
+  `Data/changeset_sync.py` and `Data/library_pull_pipeline.py` were extended; the window itself
+  was driven end-to-end against a duck-typed fake Kronos (`KRONOS_DATA_DIR` isolates it from the
+  real library — always set it when constructing `LibrarianShellWindow` headless).
+
+Live-verified 2026-10-02: Kronos 192.168.100.15 (connect, family detect, unit calibration load, CAL_SET round-trip
+with exact restore, 35-bank digest sweep, SysEx probe); Nautilus 192.168.100.26 (MODEL/STATE/VERSION answer, daemon
+3.1.2; its stream login differs from the Kronos' — Nautilus-side stream/Librarian checks still pending its credentials).
+
+**Object Dependencies panel (done 2026-10-02).** `Data/librarian_dependencies.py` (pure row logic: Local /
+PCG / Merge collectors, red staged-gap rows, lazy "More Info" children), `Tools/sample_reference_walker.py`
+(Program sample banks: HD-1 zones + EXi MOD-7/STR-1; ported with C#'s own self-test cases),
+`Tools/exs_option_index.py` + `Resources/ExsCatalog.json` (EXs name catalog), and
+`dependency_scanner.walk_display_references` (adds the Program Drum Track). UI: coloured rows, legend,
+More Info dialog, "Search a PCG for this object…" (one file, every listed gap, one undo step), red section
+persists across selection changes / tree rebuilds. **C# bug found, user decided "port the intended
+behavior":** C#'s sample-bank name resolution never fires — `SampleDependencyRow.Key` is `"Exs|exs12"` but
+`ResolveSampleDescription` expects bare `exs12`/hex (the one-line C# fix: strip the `Bucket|` prefix); Python
+resolves correctly. Known gaps vs C#, all tracked: (a) **Drum Kit / Wave Sequence object types don't exist in
+Python** (registry, pull, panes, PCG view, `KronosBanks` linear maps) so a Program's oscillator-zone refs to
+them and their own sample refs aren't shown — this is the biggest remaining Librarian-model gap;
+(b) the Program Drum Track ref is display-only: the *resolution* paths (merge pull, repoint, the push
+referential REFUSE check) still use `walk_object_references`, which has no drum-track encoder — adding it
+there without a `RefKind`-style dispatch would write at the wrong offsets, so port it as an enum first.
+
+**Tests live in `tests/`** (run from the repo root, `python tests/<name>.py`): `regress.py` (import every
+module + construct MainWindow), `test_cal.py`, `test_librarian.py` / `test_launch.py` (the whole sync UI
+against a duck-typed fake Kronos; `KRONOS_DATA_DIR` isolates them), `test_deps_ui.py` (needs the real PCGs
+under `Z:\PCG EXAMPLES`), `test_sysex_service.py` (SysExService vs a fake bridge), `real_pcg_walk.py`, `live_midi*.py` (read-only live
+checks of the MIDI service / window), and `live_unit.py <host> [--user U --pass P] [--caltest]` —
+live check against a real unit (the `--caltest` round-trip always restores the original calibration in a
+`finally`). Module self-tests: `python -m Data.librarian_dependencies | Tools.sample_reference_walker |
+Tools.dependency_scanner | Data.changeset_sync | Data.library_pull_pipeline`. Nautilus 192.168.100.26 login
+is `nautilus`/`nautilus`; Kronos 192.168.100.15 uses the repo's `settings.json` login.
+
+**Remaining from the Pass 4 audit, in priority order** (C# `file` references are the truth):
+1. *Librarian*: `WindowPlacements` for non-main windows; File Manager "Set Default Start Folder" (field
+   exists); Drum Kit / Wave Sequence object types (see above); drum-track in the resolution paths.
+2. *(done 2026-10-02) MIDI/SysEx tab + behavior.* `Core/sysex_service.py` gained the perf-metadata loop
+   (`refresh_now()` is now a 300 ms-debounced wake; proactive polling on a fixed interval; poll-on-changes
+   for undecodable Program Changes; a bank-digest 0x38 push always refreshes), the per-change name pull
+   (150 ms debounce, skips while a bulk dump holds the gate or the name is cached), and
+   `value_slider_changed` (CC# from settings; CC 0/32 can never be shadowed). MainWindow: `_apply_midi_settings`
+   (also on Settings OK / Import), live Monitor-MIDI start/stop while connected, hardware slider mirror
+   (`KronosValueSliderPanel.follow_value`, ignored while dragging, never echoes VSLIDER back), faded
+   MIDI Monitor menu + clickable footer MIDI cluster, OUT CH persisted. Settings > MIDI/SysEx tab (C#'s
+   transport combo / USB device status are omitted: USB-direct is out of scope). Verified live on the Kronos
+   (probe, perf loop, proactive @2 s, name pull, Monitor toggle through the real MainWindow). **Not verified
+   live:** the hardware VALUE-slider CC — 25–30 s of listening saw no CC/PC from the Kronos at all (slider not
+   moved, or CC transmit is off in GLOBAL › MIDI); re-run `tests/live_midi.py <host> --listen 30` /
+   `tests/live_midi_raw.py <host> 25` while moving it. **Nautilus:** SysEx reads "unavailable" there because the
+   probe is the Kronos-format mode request — identical to C# (its live-stream decode is Kronos-only by
+   design); the bridge itself connects. Still unported from C#: the storage-change counters
+   (`StorageChangeCountFor` / `ExpectDigestReply`) that the Librarian's post-write step 3b reads.
+3. *Sample Editor — model + window DONE 2026-10-02; self-test port and visual pass remain.* Plan: port C#'s `SampleEditorViewModel` (4,592 lines)
+   as a UI-independent `Core/sample_editor_model.py`, port its self-tests (`Core/Sample/SamplePhase*SelfTests.cs`
+   — each pins a real hardware-observed bug), then rebuild `Views/sample_editor_window.py` on the model (the
+   current window is a first slice with model logic embedded in it). **Dependencies decision (user, 2026-10-02):**
+   `soxr` for resampling (added, `requirements.txt` created), in-house WSOLA for tempo/pitch (no SoundTouch wheel
+   exists), Qt `QAudioDecoder` for MP3/MP4 (verified on real mp3/m4a/8-ch mp4), `sounddevice` WASAPI with
+   `auto_convert=True` for playback (any declared rate, like C#'s WasapiOut). **Done + tested (pure layer):**
+   `Core/sample_dsp.py` (all effects + tempo/pitch), `Core/sample_edit_undo.py` (byte-capped snapshot stack +
+   zone-list stack), `Utils/midi_note_name.py`, `Core/audio_import.py`, `Core/sample_export.py`,
+   `Core/sample_import_builder.py` (+ the disk-based `find_stereo_sibling_on_disk`; `Data/kmp_multisample.
+   find_stereo_sibling` is the *loaded-cache* variant), `Core/sample_support.py` (clipboard, workspace root,
+   normalization report), `Core/sample_playback.py` (one-shot / looping / reverse providers, pan, boost, meters;
+   smoke-tested on the real device). Tests: `python -m Core.sample_dsp | Core.sample_edit_undo | Core.audio_import |
+   Core.sample_playback | Utils.midi_note_name`, `tests/test_sample_core.py`. Note: C#'s pan code is `cos/sin`
+   (centre = -3 dB per channel) although its comment says "unity at centre" — the code is ported. **Window done:** `Views/sample_editor_window.py` (+ `sample_waveform_control.py`, `sample_keymap_control.py`,
+   `sample_small_controls.py`, `sample_editor_dialogs.py`, `sample_editor_widgets.py`, `sample_remote_source.py`), Settings > Sample Editor
+   tab and a Help section; tests `tests/test_sample_ui_controls.py`, `tests/test_sample_window.py`. Live-verified on the Kronos:
+   pull of a Kronos-authored collection, and a byte-identical push->pull round trip in `/SSD2/CLAUDETEST`. **Self-test port DONE** (every C# `Core/Sample/*SelfTests.cs` except `ExsOptionFile`, which belongs to the Librarian; tests `tests/test_sample_phase*.py`, `test_sample_stereo_transcode_hardening.py`, `test_sample_remote.py`, `test_sample_format.py`; negative-controlled by disabling stereo mirroring). **Still to do:** a side-by-side visual pass against the C# app, hardware audition check. **Model:**
+   `Core/sample_editor_model/` — `core.py` (state/tree/select/stereo/dirty/rename), `edit.py` (effects, clipboard, move tool,
+   tempo/pitch, multi-domain undo/redo), `markers.py` (set_marker/loop/flags/Use-Zero), `zones.py` (zone add/delete/
+   move/reorder, import, link/assign, stereo pairs, multisample create/delete), `io.py` (save, export, Save As, remote
+   pull/push via a duck-typed source), `play.py` (transport/piano-key), `model.py` assembles `SampleEditorModel`. Tests:
+   `tests/test_sample_model_edit.py`, `tests/test_sample_model_zones.py` (real SMPTEST fixture copies). Gotchas: zone-adding
+   methods rebuild the tree (selection is dropped — re-find the node with `_node_for_path`); `KmpZone` equality is by
+   VALUE so always use `zone_index`/`zone_in`; the model's `dispatch` hook must be set by the window to marshal the
+   audio-thread `on_stopped` onto the GUI thread.
+4. Status-bar wrap + menu-driven minimum width + live shortcut labels in menus (990d1d0),
+   re-fit window on family switch, keybind defaults diff (C# Zoom In/Out default to none; Python
+   defaults them to =/-), command-palette entry diff incl. `NautilusModeF`, Help window text diff.
+5. Port C#'s self-test suites as the parity evidence (DataSafety, SyncPipeline, MergeAutoFill,
+   CrossPanePlacement, LibrarianUndo, SamplePhase*).
+
+Note: `Core/sample_editor.py` (legacy fake workstation) shadows nothing now because the model package is `Core/sample_editor_model/`.
 
 ## What's left
 
@@ -367,8 +470,7 @@ remainder, down to one item:
 CLI-only in C# (`--nautilus-convert-*` flags), never reachable from its own
 GUI, so not a screen-remote client feature.
 
-Phase 1 and Phase 2 (above) are done. Phase 3 is down to its last item —
-see the "Still not ported" list right above (Mode-select menu swap only).
+Phases 1–3 (above) are done; the live to-do list is the Pass 4 "Remaining" list right above.
 C# itself calls the whole Nautilus area preliminary (its own
 `Documentation/nautilus_button_mapping.md` is marked unverified against
 real hardware — no rooted Nautilus unit even on the C# team's side yet),

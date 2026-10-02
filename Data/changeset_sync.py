@@ -203,7 +203,15 @@ def build_changeset(index: LocalLibraryIndex, blobs: BlobStore,
                      resolver: depscan.Resolver,
                      get_live_bank_type: Optional[GetLiveBankType] = None,
                      pending_bank_type_change: Optional[PendingBankTypeChange] = None,
+                     force_destructive_write: bool = False,
                      ) -> ChangesetPlan:
+    """force_destructive_write (Settings > Librarian): the Local Library is the source of
+    truth, so step 2's conflict pre-scan is skipped outright rather than run and ignored —
+    its digest round trip exists only to decide what to exclude, and flagging a conflict
+    here would mark objects this very push is about to write. The gates that survive it
+    (steps 3 / 3.5 and the per-write staleness check in the caller's write_to_hardware)
+    guard against writes the Kronos would MANGLE, a different question from who wins a
+    disagreement."""
     plan = ChangesetPlan()
 
     # Step 1: dependency-completeness gate.
@@ -230,12 +238,20 @@ def build_changeset(index: LocalLibraryIndex, blobs: BlobStore,
         for k in dirty_keys + pending_delete_keys
     }
     excluded_banks = set()
-    for bank_key in touched_bank_keys:
-        fresh_hex = get_live_digest(bank_key) or ""
-        baseline_hex = index.bank_digest_baseline.get(bank_key)
-        changed = baseline_hex is None or fresh_hex != baseline_hex
-        if changed:
-            excluded_banks.add(bank_key)
+    if not force_destructive_write:
+        for bank_key in touched_bank_keys:
+            fresh_hex = get_live_digest(bank_key) or ""
+            baseline_hex = index.bank_digest_baseline.get(bank_key)
+            changed = baseline_hex is None or fresh_hex != baseline_hex
+            if changed:
+                excluded_banks.add(bank_key)
+    else:
+        # A Conflicted flag left by an earlier pull/push would outlive this push forever —
+        # nothing downstream clears it once the pre-scan no longer runs, and the object it
+        # marks is about to be written. Clear it so the conflict banner stays honest.
+        for k in dirty_keys + pending_delete_keys:
+            obj_type, bank, number = _parse_key(k)
+            index.mark_conflicted(obj_type, bank, number, False)
 
     def _sift(keys: List[str]) -> List[str]:
         surviving: List[str] = []
@@ -479,12 +495,14 @@ def commit_changes(index: LocalLibraryIndex, blobs: BlobStore,
                     pending_bank_type_change: Optional[PendingBankTypeChange] = None,
                     write_bank_type_change: Optional[WriteBankTypeChange] = None,
                     cancel: Optional[Callable[[], bool]] = None,
+                    force_destructive_write: bool = False,
                     ) -> Tuple[ChangesetPlan, SyncResult]:
     """Push-only — port of SyncPipeline.CommitChangesAsync. Deliberately
     skips pulling; pushes straight against whatever bank-digest baseline is
     already on record. `cancel` is forwarded to execute_changeset (see there)."""
     plan = build_changeset(index, blobs, clipboard, get_live_digest, resolver,
-                            get_live_bank_type, pending_bank_type_change)
+                            get_live_bank_type, pending_bank_type_change,
+                            force_destructive_write)
     result = execute_changeset(plan, index, write_to_hardware, write_bank_type_change,
                                 record_success, cancel=cancel)
     return plan, result
@@ -500,6 +518,7 @@ def sync_library(index: LocalLibraryIndex, blobs: BlobStore,
                   pending_bank_type_change: Optional[PendingBankTypeChange] = None,
                   write_bank_type_change: Optional[WriteBankTypeChange] = None,
                   cancel: Optional[Callable[[], bool]] = None,
+                  force_destructive_write: bool = False,
                   ) -> Tuple[PullResult, ChangesetPlan, SyncResult]:
     """Pull, then push — port of SyncPipeline.SyncLibraryAsync. See module
     docstring's pull-vs-commit invariant note for why the ordering is pull
@@ -516,7 +535,8 @@ def sync_library(index: LocalLibraryIndex, blobs: BlobStore,
     plan, result = commit_changes(index, blobs, clipboard, get_live_digest, resolver,
                                   write_to_hardware, record_success,
                                   get_live_bank_type, pending_bank_type_change,
-                                  write_bank_type_change, cancel=cancel)
+                                  write_bank_type_change, cancel=cancel,
+                                  force_destructive_write=force_destructive_write)
     return pull_result, plan, result
 
 
@@ -614,6 +634,27 @@ def _selftest() -> None:
         hw_log3: List[Tuple[int, int, int, bytes]] = []
         result3 = execute_changeset(plan3, idx3, lambda *a: (hw_log3.append(a) or True))
         check("stale-bank-nothing-written", result3.written == 0 and hw_log3 == [])
+
+        # ── (3b) force_destructive_write: same stale bank is NOT excluded, no digest is
+        #    queried, and a leftover Conflicted flag is cleared ──
+        idx3b = LocalLibraryIndex(root / "s3b")
+        idx3b.set_entry(OBJ_PROGRAM, 0x00, 5, LocalIndexEntry(
+            version=1, baseline_hash=old_hash, current_hash=new_hash,
+            display_name="P5", created_utc=now(), modified_utc=now(), conflicted=True))
+        idx3b.set_bank_digest_baseline(OBJ_PROGRAM, 0x00, "bankdigest-v1")
+        asked: List[str] = []
+        plan3b = build_changeset(idx3b, blobs, clip_empty,
+                                  get_live_digest=lambda bk: (asked.append(bk) or "bankdigest-v2-changed"),
+                                  resolver=lambda t, b, n: True, force_destructive_write=True)
+        check("force-writes-stale-bank", len(plan3b.entries) == 1 and plan3b.conflicted == [])
+        check("force-skips-digest-prescan", asked == [])
+        check("force-clears-conflict-flag", idx3b.get(OBJ_PROGRAM, 0x00, 5).conflicted is False)
+        check("force-not-refusable", not plan3b.is_refusable)
+
+        # force does NOT bypass the dependency gate
+        plan3c = build_changeset(idx1, blobs, clip_blocked, get_live_digest=lambda bk: "x",
+                                  resolver=lambda t, b, n: True, force_destructive_write=True)
+        check("force-still-refuses-pending-deps", plan3c.is_refusable and plan3c.entries == [])
 
         # ── (4) dirty Combi with an unresolvable reference -> whole plan REFUSEd ──
         idx4 = LocalLibraryIndex(root / "s4")
