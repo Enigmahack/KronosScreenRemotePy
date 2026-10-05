@@ -9,12 +9,15 @@ flat/silent state and the device list returns [].
 """
 from __future__ import annotations
 import math
+import logging
 import time
 from typing import List, Optional, Tuple
 
 from PySide6.QtCore import QThread, Qt, Signal
 from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import QWidget
+
+log = logging.getLogger(__name__)
 
 # ── Meter constants (mirrors C# VuMeterBar) ────────────────────────────────────
 
@@ -144,6 +147,7 @@ def list_audio_devices() -> List[Tuple[str, str]]:
                 devices.append((str(i), f"{i}: {name}"))
         return devices
     except Exception:
+        log.exception("Could not enumerate audio capture devices")
         return []
 
 
@@ -152,6 +156,7 @@ def list_audio_devices() -> List[Tuple[str, str]]:
 class AudioCapture(QThread):
     """Captures audio from a sounddevice input and emits dBFS levels."""
     levels_updated = Signal(float, float)  # left_db, right_db
+    capture_failed = Signal(str)
 
     def __init__(self, device_id: Optional[str] = None, parent=None):
         super().__init__(parent)
@@ -171,7 +176,10 @@ class AudioCapture(QThread):
         try:
             import sounddevice as sd
             import numpy as np
-        except ImportError:
+        except ImportError as exc:
+            self._running = False
+            log.warning("Audio capture unavailable: %s", exc)
+            self.capture_failed.emit(f"Audio capture unavailable: {exc}")
             return
 
         def callback(indata, frames, time_info, status):
@@ -190,16 +198,20 @@ class AudioCapture(QThread):
             db_r  = 20.0 * math.log10(peak_r)
             self.levels_updated.emit(db_l, db_r)
 
-        kwargs: dict = {"channels": 2, "callback": callback, "blocksize": 2048}
-        if self._device_id is not None:
-            try:
-                kwargs["device"] = int(self._device_id)
-            except ValueError:
-                pass
-
         try:
+            kwargs: dict = {"callback": callback, "blocksize": 2048}
+            if self._device_id is not None:
+                kwargs["device"] = int(self._device_id)
+            info = sd.query_devices(kwargs.get("device"), "input")
+            channels = min(2, int(info["max_input_channels"]))
+            if channels < 1:
+                raise RuntimeError("Selected device has no audio input channels")
+            kwargs["channels"] = channels
             with sd.InputStream(**kwargs):
                 while self._running:
                     self.msleep(100)
-        except Exception:
-            pass
+        except Exception as exc:
+            log.exception("Audio capture failed")
+            self.capture_failed.emit(f"Audio capture failed: {exc}")
+        finally:
+            self._running = False

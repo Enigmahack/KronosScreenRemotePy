@@ -20,7 +20,7 @@ dlgs.confirm = lambda *a, **k: True
 import Views.sample_editor_window as sew
 sew.confirm = lambda *a, **k: True
 
-FIX = r"Z:\KronosScreenRemote\SampleFixtures"
+from fixture_paths import SAMPLE_FIXTURES as FIX
 fails = []
 
 

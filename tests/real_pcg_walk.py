@@ -4,8 +4,10 @@ from Data.pcg_file import open_pcg, wire_body_from_pcg_entry
 from Data.librarian_sysex import OBJ_PROGRAM
 import Tools.sample_reference_walker as sw, Tools.dependency_scanner as ds
 
-files = sorted(glob.glob(r"Z:\PCG EXAMPLES\**\*.pcg", recursive=True) + glob.glob(r"Z:\PCG EXAMPLES\**\*.PCG", recursive=True))
-files += sorted(glob.glob(r"Z:\KronosScreenRemote\SampleFixtures\**\*.pcg", recursive=True))
+from pathlib import Path
+from fixture_paths import PCG_EXAMPLES, SAMPLE_FIXTURES
+files = sorted({str(f) for directory in (PCG_EXAMPLES, SAMPLE_FIXTURES)
+                for f in Path(directory).rglob("*") if f.suffix.lower() == ".pcg"})
 files = files[:25]
 print(len(files), "pcg files", flush=True)
 tot = collections.Counter(); drum = 0; progs = 0; sample_progs = 0; ex = {}; bad = 0

@@ -134,7 +134,7 @@ def _pull_zones(ftp: _FtpWorker, kmp_bytes: bytes, kmp_remote_path: str, local_r
 def pull(ftp: _FtpWorker, remote_entry_path: str, local_root: str,
         on_progress: Optional[Callable[[str], None]] = None) -> Tuple[str, Dict[str, str], List[str]]:
     """Pull a .KSC or .KMP plus its whole dependency closure (every listed
-    .KMP, every non-skipped zone's .KSF) into local_root.
+    .KMP, every non-skipped zone's .KSF, and every bare .KSF) into local_root.
 
     Returns (local_path_of_the_entry, {local_path: remote_path, ...}, failures).
     """
@@ -149,18 +149,20 @@ def pull(ftp: _FtpWorker, remote_entry_path: str, local_root: str,
     if name.upper().endswith(".KSC"):
         collection = KscCollection.open(data)
         ksc_base_remote_dir = f"{remote_dir.rstrip('/')}/{os.path.splitext(name)[0]}"
-        for kmp_name in collection.entries:
-            if not kmp_name.upper().endswith(".KMP"):
+        for entry in collection.entries:
+            is_kmp = entry.upper().endswith(".KMP")
+            if not is_kmp and not entry.upper().endswith(".KSF"):
                 continue
-            kmp_remote_path = f"{ksc_base_remote_dir}/{kmp_name}"
+            entry_remote_path = f"{ksc_base_remote_dir}/{entry}"
             try:
-                kmp_bytes = _download_one(ftp, kmp_remote_path, local_root, remote_map, on_progress)
+                entry_bytes = _download_one(ftp, entry_remote_path, local_root, remote_map, on_progress)
             except Exception as ex:
-                log.warning("Sample pull: skipping unreachable multisample '%s': %s", kmp_remote_path, ex)
-                if not is_ignorable_placeholder_kmp(kmp_name):
-                    failures.append(f"{kmp_name}: {ex}")
+                log.warning("Sample pull: unreachable collection entry '%s': %s", entry_remote_path, ex)
+                if not (is_kmp and is_ignorable_placeholder_kmp(entry)):
+                    failures.append(f"{entry}: {ex}")
                 continue
-            _pull_zones(ftp, kmp_bytes, kmp_remote_path, local_root, remote_map, on_progress, failures)
+            if is_kmp:
+                _pull_zones(ftp, entry_bytes, entry_remote_path, local_root, remote_map, on_progress, failures)
     elif name.upper().endswith(".KMP"):
         _pull_zones(ftp, data, remote_entry_path, local_root, remote_map, on_progress, failures)
 
@@ -175,7 +177,7 @@ def push_closure(ftp: _FtpWorker, local_ksc_path: str, collection: KscCollection
     _UserBank.KSC sibling if present) and every listed .KMP — both are small
     text/metadata files, safe to always resync — but a zone's .KSF is only
     re-uploaded when `only_ksf_paths` is None (push everything) or the
-    zone's local path is IN that set.
+    zone's local path is IN that set. Bare .KSF entries follow the same filter.
 
     `only_ksf_paths` exists so a caller that only edited a couple of samples
     doesn't re-transfer every other multi-megabyte sample in the collection
@@ -206,6 +208,15 @@ def push_closure(ftp: _FtpWorker, local_ksc_path: str, collection: KscCollection
     content_dir = os.path.join(os.path.dirname(local_ksc_path), os.path.splitext(ksc_name)[0])
     ksc_base_remote_dir = f"{remote_dest_trimmed}/{os.path.splitext(ksc_name)[0]}"
     for entry in collection.entries:
+        if entry.upper().endswith(".KSF"):
+            ksf_local_path = path_guard.ensure_under(content_dir, os.path.join(content_dir, entry), entry)
+            if only_ksf_paths is not None and ksf_local_path not in only_ksf_paths:
+                continue
+            if not os.path.isfile(ksf_local_path):
+                failures.append(f"{entry}: not found locally")
+                continue
+            _upload_one(ftp, ksf_local_path, f"{ksc_base_remote_dir}/{entry}", on_progress, failures)
+            continue
         if not entry.upper().endswith(".KMP"):
             continue
         kmp_local_path = os.path.join(content_dir, entry)

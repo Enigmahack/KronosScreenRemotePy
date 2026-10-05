@@ -75,9 +75,12 @@ A Python application for remotely viewing and controlling a **Korg Kronos** synt
 |---|---|
 | [PySide6](https://pypi.org/project/PySide6/) | Qt 6 GUI framework (widgets, threading, signals) |
 | [numpy](https://pypi.org/project/numpy/) | Required. Video pipeline (tone/sharpen curves, RGB565 decode for Nautilus) and VU meter buffer processing |
-| [sounddevice](https://pypi.org/project/sounddevice/) | Optional — WASAPI audio capture for the VU meter |
+| [sounddevice](https://pypi.org/project/sounddevice/) | Sample Editor playback and VU input capture: WASAPI, CoreAudio, or ALSA |
+| [soxr](https://pypi.org/project/soxr/) | Sample import resampling and Sample Editor DSP |
 
-> **sounddevice** is the only optional dependency. The application launches and operates without it; the VU meter will simply be unavailable. **numpy** is required — the app will not start without it.
+The remote-control client launches without **sounddevice**, but Sample Editor
+playback and VU monitoring require it. **soxr** is required for sample resampling.
+Install all packages from `requirements.txt` for the full application.
 
 ### Installation
 
@@ -96,13 +99,17 @@ python -m venv .venv
 source .venv/bin/activate
 
 # Install dependencies
-pip install PySide6 numpy sounddevice
+pip install -r requirements.txt
 
 # Run
 python main.py
 ```
 
 On **macOS**, if `pip install pyside6` fails with a wheel error, ensure you are inside an activated virtual environment before installing.
+
+On **Linux**, sounddevice also needs the system PortAudio library (for example,
+`libportaudio2` on Debian/Ubuntu). Output selection uses the platform's audio
+backend; WASAPI is preferred on Windows.
 
 ### Where your data is kept
 
@@ -129,6 +136,30 @@ An existing install that already keeps its data in the program folder carries on
 using it, unchanged, for as long as that folder stays writable. If it stops being
 writable, the app moves to the per-user directory and offers, once, to copy the
 old data across (the originals are never deleted).
+
+### Regression checks
+
+Run `python tests/regress.py` from the repository root for recursive package
+imports and headless MainWindow construction. Import failures return a nonzero
+exit code; application data is isolated in a temporary directory.
+
+Hardware-fixture tests default to the sibling
+`KronosScreenRemote/SampleFixtures` and workspace `PCG EXAMPLES` directories on
+all platforms. Set `KRONOS_SAMPLE_FIXTURES` and `KRONOS_PCG_EXAMPLES` when those
+directories live elsewhere.
+
+### Library push safety
+
+Library pushes require live pre-image backups of every overwritten slot before
+any bank is reformatted or written. Staleness is checked before the write burst;
+each affected bank is Stored once after the complete burst succeeds. Close,
+disconnect and connection-setting changes are blocked during a protected push.
+
+If a write or Store fails, uncommitted edits remain pending and the application
+reports the affected operation. Restore the pre-image backups before relying on
+partial volatile bank data or using the instrument's own Store command. Front-panel
+Stores during the write burst are not detectable through the current transport;
+avoid editing or Storing on the instrument until the push finishes.
 
 ---
 

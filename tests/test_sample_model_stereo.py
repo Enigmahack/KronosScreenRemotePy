@@ -8,7 +8,7 @@ import numpy as np
 from Core.sample_editor_model.model import SampleEditorModel
 from Data.ksf_sample import KsfSample
 
-FIX = r"Z:\KronosScreenRemote\SampleFixtures"
+from fixture_paths import SAMPLE_FIXTURES as FIX
 fails = []
 
 

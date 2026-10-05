@@ -12,7 +12,7 @@ import Core.sample_import_builder as builder
 import Core.sample_export as exporter
 import Core.sample_support as support
 
-FIX = r"Z:\KronosScreenRemote\SampleFixtures"
+from fixture_paths import SAMPLE_FIXTURES as FIX
 fails = []
 
 

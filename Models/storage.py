@@ -15,6 +15,7 @@ import pathlib
 import shutil
 import sys
 import threading
+import uuid
 from typing import Dict, List, Optional, Set, Tuple
 
 from Models.models import PaletteEntry, CalMesh, CalBiasDot
@@ -37,9 +38,11 @@ log = logging.getLogger(__name__)
 # copy+unlink and reintroduce exactly the torn-write window this closes.
 
 def _atomic_write(path: pathlib.Path, data: bytes, mode: Optional[int] = None):
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    created = False
     try:
-        with open(tmp, "wb") as f:
+        with open(tmp, "xb") as f:
+            created = True
             f.write(data)
             f.flush()
             os.fsync(f.fileno())
@@ -47,10 +50,11 @@ def _atomic_write(path: pathlib.Path, data: bytes, mode: Optional[int] = None):
             os.chmod(tmp, mode)
         os.replace(tmp, path)
     except BaseException:
-        try:
-            tmp.unlink()
-        except OSError:
-            pass
+        if created:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
         raise
 
 
@@ -203,7 +207,7 @@ def legacy_data_dir() -> Optional[pathlib.Path]:
     a ONE-time event: once the active directory has data of its own, this stops
     reporting anything, so the prompt doesn't come back every launch."""
     active = _data_dir()
-    script_dir = pathlib.Path(__file__).resolve().parent
+    script_dir = pathlib.Path(__file__).resolve().parent.parent
     if script_dir == active or not _has_data(script_dir) or _has_data(active):
         return None
     return script_dir
@@ -222,7 +226,7 @@ def _resolve_data_dir() -> Tuple[pathlib.Path, Optional[str]]:
 
     A directory that fails the write probe is never returned, whichever rule
     selected it."""
-    script_dir = pathlib.Path(__file__).resolve().parent
+    script_dir = pathlib.Path(__file__).resolve().parent.parent
     user_dir = _user_data_dir()
 
     chosen = _data_dir_override

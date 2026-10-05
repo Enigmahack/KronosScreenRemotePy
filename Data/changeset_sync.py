@@ -78,17 +78,13 @@ discipline every other module in this subsystem already documents):
     second value in a tuple return from build_changeset the way C#'s
     BuildAsync returns `(ChangesetPlan, List<ObjLoc>)`. Functionally
     identical, simpler for a single dataclass return.
-  * execute_changeset's `write_to_hardware(obj_type, bank, number, body) ->
-    bool` is a deliberately simplified transport boundary compared to C#'s
-    Librarian.ArmPlanAsync/ApplyMoveAsync (four separate MoveExecutor methods:
-    backup_objects/bank_digest/write_object/store_bank) — same "the real
-    wiring is the caller's job" precedent GetLiveDigest/GetBankObjects already
-    set in library_pull_pipeline.py. A real integration's write_to_hardware is
-    expected to internally do the backup + a final staleness re-check + the
-    0x73 write + 0x76 Store (e.g. via librarian_model.py's WriteOp/apply_move
-    plumbing, the same backup -> staleness-gate -> write -> store sequence
-    the existing move/swap tool already uses) — this module only needs to
-    know whether the whole per-slot write succeeded, not its internal steps.
+  * The production integration supplies prepare_hardware (backups and the
+    pre-mutation staleness gate), volatile write_to_hardware, and store_bank.
+    A rejected write stops the burst before any Store; baselines advance only
+    for banks actually Stored. Cancellation is honored before mutation, never
+    halfway through a burst that may already have erased an entire bank.
+    Legacy callers without store_bank supply an already-committing per-slot
+    callback instead.
 
 Two entry points, confirmed distinct from the C# source (not guessed):
   commit_changes — push only. Skips pulling.
@@ -114,7 +110,7 @@ from Data.librarian_sysex import OBJ_COMBI, OBJ_PROGRAM, OBJ_SET_LIST
 from Data.library_pull_pipeline import GetBankObjects, GetLiveDigest, PullResult
 import Data.library_pull_pipeline as pull_pipeline
 from Data.local_library_store import BlobStore, LocalLibraryIndex
-from Data.pcg_file import WIRE_SIZE_EXI
+from Data.pcg_file import WIRE_SIZE_EXI, WIRE_SIZE_HD1
 from Commands.session_dependency_clipboard import SessionDependencyClipboard
 
 WriteToHardware = Callable[[int, int, int, bytes], bool]
@@ -168,6 +164,10 @@ class ChangesetPlan:
     def is_refusable(self) -> bool:
         return any(w.startswith("REFUSE:") for w in self.warnings)
 
+    @property
+    def banks(self) -> List[Tuple[int, int]]:
+        return list(dict.fromkeys((e.obj_type, e.bank) for e in self.entries))
+
 
 def _add_bank_type_change(plan: ChangesetPlan, bank: int, is_exi: bool) -> None:
     """Port of ChangesetModel.cs's ChangesetPlan.AddBankTypeChange — idempotent per bank (a
@@ -184,11 +184,12 @@ class SyncResult:
     deleted: int = 0      # local-only deletes removed (never existed on hardware)
     failed: int = 0       # entries where write_to_hardware returned False
     reformatted: int = 0  # whole-bank func-0x7C type changes successfully applied
-    #: True when `cancel` stopped the push early. Entries already written are
-    #: recorded as written (they really are on the instrument); the rest were
-    #: never attempted, so they stay dirty and a later Commit picks them up.
-    #: Distinct from `failed`, which means the instrument REJECTED a write.
+    #: Production cancellation is honored before mutation. Legacy callbacks that
+    #: commit each slot themselves may stop between slots; their committed entries
+    #: remain recorded. Never cancel an in-flight reformat/write/Store transaction.
     cancelled: bool = False
+    completed_bank_type_changes: Tuple[int, ...] = ()
+    committed_banks: Tuple[Tuple[int, int], ...] = ()
 
 
 RecordSuccess = Callable[[ChangesetEntry], None]
@@ -266,6 +267,10 @@ def build_changeset(index: LocalLibraryIndex, blobs: BlobStore,
 
     surviving = _sift(dirty_keys)
     surviving_deletes = _sift(pending_delete_keys)
+    being_erased = {_parse_key(k) for k in surviving_deletes}
+
+    def push_resolver(obj_type: int, bank: int, number: int) -> bool:
+        return (obj_type, bank, number) not in being_erased and resolver(obj_type, bank, number)
 
     # Step 3: defense-in-depth referential check over surviving EDITS only
     # (an entry about to be erased has no "own references must resolve"
@@ -280,7 +285,7 @@ def build_changeset(index: LocalLibraryIndex, blobs: BlobStore,
         if body is None:
             continue
         loc = ObjLoc(obj_type, bank, number)
-        for missing in depscan.scan(resolver, obj_type, body):
+        for missing in depscan.scan(push_resolver, obj_type, body):
             plan.warnings.append(
                 f"REFUSE: {loc.label()} references {missing.ref.label()} "
                 f"({missing.ref_kind}), which does not exist locally")
@@ -300,6 +305,16 @@ def build_changeset(index: LocalLibraryIndex, blobs: BlobStore,
             target_is_exi = pending_bank_type_change(bank)
             if target_is_exi is not None:
                 _add_bank_type_change(plan, bank, target_is_exi)
+        staged_targets = dict(plan.bank_type_changes)
+        for k in surviving + surviving_deletes:
+            obj_type, bank, number = _parse_key(k)
+            if obj_type == OBJ_PROGRAM and bank in staged_targets:
+                body = blobs.get(index.entries[k].current_hash)
+                expected_size = WIRE_SIZE_EXI if staged_targets[bank] else WIRE_SIZE_HD1
+                if body is not None and len(body) != expected_size:
+                    plan.warnings.append(
+                        f"REFUSE: {ObjLoc(obj_type, bank, number).label()} does not match the "
+                        "staged bank format — replace it with content in the target format before reformatting")
 
     # Step 3.5b: Program EXi/HD-1 bank-type re-verification — a fresh live query per distinct
     # surviving, NOT-already-staged Program bank, run right before any hardware write, to catch
@@ -401,33 +416,26 @@ def execute_changeset(plan: ChangesetPlan, index: LocalLibraryIndex,
                        write_to_hardware: WriteToHardware,
                        write_bank_type_change: Optional[WriteBankTypeChange] = None,
                        record_success: Optional[RecordSuccess] = None,
-                       cancel: Optional[Callable[[], bool]] = None) -> SyncResult:
-    """Port of SyncPipeline.PushAsync's execution half (RecordPushSuccesses).
-    A refusable plan writes nothing (mirrors PushAsync's own
-    `if (plan.IsRefusable) return` before ever touching hardware). Each entry
-    is independent: one write_to_hardware failure does not abort the rest of
-    the batch — matches RecordPushSuccesses only ever advancing the objects
-    that actually wrote successfully, never all-or-nothing.
+                       cancel: Optional[Callable[[], bool]] = None,
+                       prepare_hardware: Optional[Callable[[ChangesetPlan], bool]] = None,
+                       store_bank: Optional[Callable[[int, int], bool]] = None) -> SyncResult:
+    """Back up/check, reformat, write the full burst, then Store each bank once.
 
-    plan.bank_type_changes is the one EXCEPTION to that independence, ported
-    exactly from LibrarianModel.cs's ApplyMoveAsync: every queued func-0x7C
-    reformat is issued FIRST (0x7C erases the whole bank, so every slot must
-    still be about to be rewritten by this same plan), and a single False
-    from write_bank_type_change ABORTS THE ENTIRE CALL — no plan.entries are
-    written at all, matching ApplyMoveAsync's own all-or-nothing gate at that
-    step (unlike a rejected object write, which only skips that one entry).
-
-    `cancel`, when given, is polled BEFORE each hardware write; returning True
-    stops the push there. Checked before rather than after so a cancelled push
-    never issues one more write than the user asked for — the Librarian window
-    closing mid-Commit must stop sending objects to the instrument, not merely
-    stop reporting about them. Entries already written stay written and have
-    their baselines advanced; the remainder are left dirty for the next Commit.
-    A reformat sequence, once begun, still runs to completion: 0x7C erases a
-    whole bank, so abandoning it half-done would leave banks erased that this
-    plan was about to refill."""
+    Production callbacks split volatile writes from persistence. Never publish
+    a successful local baseline for volatile data or a rejected Store. Once
+    mutation begins, cancellation cannot leave an erased bank unfilled.
+    Without store_bank, legacy callbacks commit individual objects themselves.
+    """
     if plan.is_refusable:
         return SyncResult()
+    if cancel is not None and cancel():
+        return SyncResult(cancelled=True)
+    if any((OBJ_PROGRAM, bank) not in plan.banks for bank, _ in plan.bank_type_changes):
+        plan.warnings.append("REFUSE: bank reformat has no refill writes.")
+        return SyncResult(failed=len(plan.entries))
+    if plan.entries and prepare_hardware is not None and not prepare_hardware(plan):
+        return SyncResult(failed=len(plan.entries),
+                          cancelled=cancel is not None and cancel())
     if cancel is not None and cancel():
         return SyncResult(cancelled=True)
 
@@ -437,24 +445,22 @@ def execute_changeset(plan: ChangesetPlan, index: LocalLibraryIndex,
             # A plan that needs a reformat but was given no way to perform one is a caller
             # wiring bug — refuse to touch hardware at all rather than silently write
             # mismatched-format bodies into a bank that was never actually reformatted.
-            return SyncResult()
+            return SyncResult(failed=len(plan.entries))
         for bank, to_exi in plan.bank_type_changes:
             if not write_bank_type_change(bank, to_exi):
+                plan.warnings.append("CHECK: bank reformat failed; restore pre-image backups before relying on the bank.")
                 return SyncResult(failed=len(plan.entries), reformatted=reformatted)
             reformatted += 1
 
+    transactional = store_bank is not None or bool(plan.bank_type_changes)
     written = 0
     erased = 0
     failed = 0
     cancelled = False
-    for entry in plan.entries:
-        if cancel is not None and cancel():
-            cancelled = True
-            break
-        ok = write_to_hardware(entry.obj_type, entry.bank, entry.number, entry.body)
-        if not ok:
-            failed += 1
-            continue
+    pending: List[ChangesetEntry] = []
+
+    def record(entry: ChangesetEntry) -> None:
+        nonlocal written, erased
         if entry.is_erase:
             erased += 1
         else:
@@ -464,13 +470,45 @@ def execute_changeset(plan: ChangesetPlan, index: LocalLibraryIndex,
         else:
             idx_entry = index.get(entry.obj_type, entry.bank, entry.number)
             if idx_entry is not None:
-                idx_entry.baseline_hash = idx_entry.current_hash
+                idx_entry.baseline_hash = BlobStore.compute_hash(entry.body)
                 idx_entry.conflicted = False
                 if entry.is_erase:
                     idx_entry.pending_delete = False
 
+    for entry in plan.entries:
+        if not transactional and cancel is not None and cancel():
+            cancelled = True
+            break
+        ok = write_to_hardware(entry.obj_type, entry.bank, entry.number, entry.body)
+        if not ok:
+            failed += 1
+            if transactional:
+                plan.warnings.append(
+                    "CHECK: object write failed; no banks were Stored. Volatile bank data may be partial — "
+                    "restore pre-image backups before a panel Store or retry.")
+                return SyncResult(failed=len(plan.entries), reformatted=reformatted)
+            continue
+        if transactional:
+            pending.append(entry)
+        else:
+            record(entry)
+
+    committed_banks = set()
+    if transactional:
+        for obj_type, bank in plan.banks:
+            if store_bank is not None and not store_bank(obj_type, bank):
+                failed = len(pending) - written - erased
+                plan.warnings.append(
+                    f"CHECK: Store failed for bank {obj_type}:{bank}; uncommitted edits remain pending. "
+                    "Restore pre-image backups before relying on the affected banks.")
+                break
+            committed_banks.add((obj_type, bank))
+            for entry in pending:
+                if (entry.obj_type, entry.bank) == (obj_type, bank):
+                    record(entry)
+
     deleted = 0
-    if not cancelled:
+    if not cancelled and not failed:
         # Local-only deletes touch no hardware, but they are still part of "this
         # plan was applied". Skipping them on cancel keeps the plan replayable in
         # full by the next Commit instead of half-consumed.
@@ -480,7 +518,11 @@ def execute_changeset(plan: ChangesetPlan, index: LocalLibraryIndex,
             deleted += 1
 
     return SyncResult(written=written, erased=erased, deleted=deleted, failed=failed,
-                       reformatted=reformatted, cancelled=cancelled)
+                       reformatted=reformatted, cancelled=cancelled,
+                       completed_bank_type_changes=tuple(
+                           bank for bank, _ in plan.bank_type_changes
+                           if (OBJ_PROGRAM, bank) in committed_banks),
+                       committed_banks=tuple(b for b in plan.banks if b in committed_banks))
 
 
 # ── Entry points ─────────────────────────────────────────────────────────────
@@ -496,6 +538,8 @@ def commit_changes(index: LocalLibraryIndex, blobs: BlobStore,
                     write_bank_type_change: Optional[WriteBankTypeChange] = None,
                     cancel: Optional[Callable[[], bool]] = None,
                     force_destructive_write: bool = False,
+                    prepare_hardware: Optional[Callable[[ChangesetPlan], bool]] = None,
+                    store_bank: Optional[Callable[[int, int], bool]] = None,
                     ) -> Tuple[ChangesetPlan, SyncResult]:
     """Push-only — port of SyncPipeline.CommitChangesAsync. Deliberately
     skips pulling; pushes straight against whatever bank-digest baseline is
@@ -504,7 +548,8 @@ def commit_changes(index: LocalLibraryIndex, blobs: BlobStore,
                             get_live_bank_type, pending_bank_type_change,
                             force_destructive_write)
     result = execute_changeset(plan, index, write_to_hardware, write_bank_type_change,
-                                record_success, cancel=cancel)
+                                record_success, cancel=cancel,
+                                prepare_hardware=prepare_hardware, store_bank=store_bank)
     return plan, result
 
 
@@ -519,6 +564,8 @@ def sync_library(index: LocalLibraryIndex, blobs: BlobStore,
                   write_bank_type_change: Optional[WriteBankTypeChange] = None,
                   cancel: Optional[Callable[[], bool]] = None,
                   force_destructive_write: bool = False,
+                  prepare_hardware: Optional[Callable[[ChangesetPlan], bool]] = None,
+                  store_bank: Optional[Callable[[int, int], bool]] = None,
                   ) -> Tuple[PullResult, ChangesetPlan, SyncResult]:
     """Pull, then push — port of SyncPipeline.SyncLibraryAsync. See module
     docstring's pull-vs-commit invariant note for why the ordering is pull
@@ -532,11 +579,14 @@ def sync_library(index: LocalLibraryIndex, blobs: BlobStore,
                                      full=full, progress=progress, cancel=cancel)
     if pull_result.cancelled:
         return pull_result, ChangesetPlan(), SyncResult(cancelled=True)
+    if pull_result.aborted:
+        return pull_result, ChangesetPlan(warnings=[pull_result.aborted]), SyncResult()
     plan, result = commit_changes(index, blobs, clipboard, get_live_digest, resolver,
                                   write_to_hardware, record_success,
                                   get_live_bank_type, pending_bank_type_change,
                                   write_bank_type_change, cancel=cancel,
-                                  force_destructive_write=force_destructive_write)
+                                  force_destructive_write=force_destructive_write,
+                                  prepare_hardware=prepare_hardware, store_bank=store_bank)
     return pull_result, plan, result
 
 
@@ -739,6 +789,8 @@ def _selftest() -> None:
         def write_fails_for_2(obj_type, bank, number, body):
             return number != 2
 
+        # Legacy callbacks already commit each slot independently. Production
+        # volatile callbacks instead withhold every Store on a rejected write.
         result6 = execute_changeset(plan6, idx6, write_fails_for_2)
         check("mixed-one-written-one-failed", result6.written == 1 and result6.failed == 1)
         good_after = idx6.get(OBJ_PROGRAM, 0x00, 1)
@@ -852,6 +904,80 @@ def _selftest() -> None:
                                       lambda bank, to_exi: False)   # reformat rejected
         check("banktype-abort-no-entry-write", hw_log9b == [])
         check("banktype-abort-failed-count", result9b.written == 0 and result9b.failed == 1)
+
+        # Production callbacks: whole burst, one Store, baseline only after Store.
+        def transaction_index():
+            idx = LocalLibraryIndex(root / "transaction")
+            for n, old, new in ((1, good_old, good_new), (2, bad_old, bad_new)):
+                idx.set_entry(OBJ_PROGRAM, 0, n, LocalIndexEntry(
+                    version=1, baseline_hash=old, current_hash=new))
+            return idx
+
+        tx = transaction_index()
+        tx_events = []
+        tx_cancelled = [False]
+
+        def tx_write(obj_type, bank, number, body):
+            tx_events.append(("write", number))
+            tx_cancelled[0] = True
+            return True
+
+        def tx_store(obj_type, bank):
+            check("transaction-baseline-waits-for-store", all(e.is_dirty for e in tx.entries.values()))
+            tx_events.append(("store", bank))
+            return True
+
+        tx_result = execute_changeset(
+            plan6, tx, tx_write, cancel=lambda: tx_cancelled[0], store_bank=tx_store)
+        check("transaction-cancel-during-burst-finishes",
+              tx_result.written == 2 and not tx_result.cancelled)
+        check("transaction-one-store-after-all-writes",
+              tx_events == [("write", 1), ("write", 2), ("store", 0)])
+        check("transaction-records-committed-bank", tx_result.committed_banks == ((OBJ_PROGRAM, 0),))
+        check("transaction-baselines-advance-after-store",
+              all(not e.is_dirty for e in tx.entries.values()))
+
+        tx = transaction_index()
+        tx_events.clear()
+        tx_result = execute_changeset(
+            plan6, tx, lambda *args: tx_events.append("write") or True,
+            cancel=lambda: True, store_bank=lambda *args: tx_events.append("store") or True)
+        check("transaction-cancel-before-mutation-does-nothing",
+              tx_result.cancelled and tx_events == [])
+
+        tx = transaction_index()
+        tx_events.clear()
+        tx_result = execute_changeset(
+            plan6, tx, write_fails_for_2,
+            store_bank=lambda *args: tx_events.append("store") or True)
+        check("transaction-failed-write-never-stores",
+              tx_result.written == 0 and tx_result.failed == 2 and tx_events == [])
+        check("transaction-failed-write-leaves-all-baselines",
+              all(e.is_dirty for e in tx.entries.values()))
+
+        tx = transaction_index()
+        tx_result = execute_changeset(plan6, tx, lambda *args: True, store_bank=lambda *args: False)
+        check("transaction-failed-store-not-recorded",
+              tx_result.written == 0 and tx_result.failed == 2
+              and all(e.is_dirty for e in tx.entries.values()))
+
+        conversion_events = []
+        conversion_cancelled = [False]
+
+        def convert_then_cancel(bank, to_exi):
+            conversion_events.append("reformat")
+            conversion_cancelled[0] = True
+            return True
+
+        conversion_result = execute_changeset(
+            plan9bt, idx9bt,
+            lambda *args: conversion_events.append("write") or True,
+            convert_then_cancel, cancel=lambda: conversion_cancelled[0],
+            store_bank=lambda *args: conversion_events.append("store") or True)
+        check("transaction-conversion-cancel-cannot-abandon-refill",
+              conversion_events == ["reformat", "write", "store"]
+              and conversion_result.written == 1 and not conversion_result.cancelled
+              and conversion_result.completed_bank_type_changes == (0x04,))
 
         # ── commit_changes / sync_library thin wrappers ──
         idx7 = LocalLibraryIndex(root / "s7")

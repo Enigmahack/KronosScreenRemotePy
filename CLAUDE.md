@@ -382,7 +382,11 @@ Input Tester is therefore reachable nowhere, user decision). Done this pass:
 
 Live-verified 2026-10-02: Kronos 192.168.100.15 (connect, family detect, unit calibration load, CAL_SET round-trip
 with exact restore, 35-bank digest sweep, SysEx probe); Nautilus 192.168.100.26 (MODEL/STATE/VERSION answer, daemon
-3.1.2; its stream login differs from the Kronos' — Nautilus-side stream/Librarian checks still pending its credentials).
+3.1.2). Subsequent read-only checks on the Nautilus verified authenticated 800x480 RGB565LE streaming,
+the device-family UI, stored calibration loading, FTP listing, native Nautilus bank digest/object dumps,
+MIDI-monitor off/on, and Settings-driven reconnects in both change and pull modes. Calibration was
+unchanged; no button presses or library/sample writes were performed. Full Librarian sync remains
+unverified there. The Kronos-format live metadata probe still does not support Nautilus.
 
 **Object Dependencies panel (done 2026-10-02).** `Data/librarian_dependencies.py` (pure row logic: Local /
 PCG / Merge collectors, red staged-gap rows, lazy "More Info" children), `Tools/sample_reference_walker.py`
@@ -400,10 +404,10 @@ them and their own sample refs aren't shown — this is the biggest remaining Li
 referential REFUSE check) still use `walk_object_references`, which has no drum-track encoder — adding it
 there without a `RefKind`-style dispatch would write at the wrong offsets, so port it as an enum first.
 
-**Tests live in `tests/`** (run from the repo root, `python tests/<name>.py`): `regress.py` (import every
-module + construct MainWindow), `test_cal.py`, `test_librarian.py` / `test_launch.py` (the whole sync UI
+**Tests live in `tests/`** (run from the repo root, `python tests/<name>.py`): `regress.py` (recursively import every
+module, fail on import errors, construct/close MainWindow with temporary application data), `test_cal.py`, `test_librarian.py` / `test_launch.py` (the whole sync UI
 against a duck-typed fake Kronos; `KRONOS_DATA_DIR` isolates them), `test_deps_ui.py` (needs the real PCGs
-under `Z:\PCG EXAMPLES`), `test_sysex_service.py` (SysExService vs a fake bridge), `real_pcg_walk.py`, `live_midi*.py` (read-only live
+under the workspace `PCG EXAMPLES` directory), `test_sysex_service.py` (SysExService vs a fake bridge), `real_pcg_walk.py`, `live_midi*.py` (read-only live
 checks of the MIDI service / window), and `live_unit.py <host> [--user U --pass P] [--caltest]` —
 live check against a real unit (the `--caltest` round-trip always restores the original calibration in a
 `finally`). Module self-tests: `python -m Data.librarian_dependencies | Tools.sample_reference_walker |
@@ -471,7 +475,14 @@ purpose (the API outranks both apps). The stream handshake reads statuses `0x03`
 CPU topology, stream format/geometry; Device Info dialog shows them). The Performance window uses the display-ready `TEMP_CPU`/
 `TEMP_ACPI`/`FAN_RPM` (falling back to `TEMP1`/`FAN1_RPM` on pre-3.0.2 daemons) and shows unit/board/CPU-mask rows. Tests:
 `python -m Core.button_codes | Core.device_family`, `tests/test_button_wire.py`, `test_button_actions.py`, `test_handshake_status.py`;
-`tests/live_api_check.py <host>` is a read-only live check (`BTN 999` must come back `ERR`). Not done, deliberately: UDP discovery
+`tests/live_api_check.py <host>` is a read-only live check (`BTN 999` must come back `ERR`). Fixture paths in
+`tests/fixture_paths.py` default to sibling/workspace directories on any OS; override with
+`KRONOS_SAMPLE_FIXTURES` / `KRONOS_PCG_EXAMPLES` when needed. `tests/test_portability_safety.py` covers
+legacy-data migration, concurrent atomic writes, native audio outputs, mono capture, standalone-sample FTP closures, and import-failure exit codes.
+`tests/test_sync_safety.py` and `tests/test_connection_input_safety.py` exercise bank-level push safety
+and connection/input lifecycle regressions. Pushes require live pre-image backups for every overwritten destination;
+cached pull baselines cannot substitute for unavailable live dumps.
+Not done, deliberately: UDP discovery
 (neither app has it), a v2 stream fallback for pre-3.0.2 daemons (a v3 hello gets status `0x01` there, indistinguishable from bad
 credentials, and the existing credential-wipe on `0x01` still applies), and the daemon's SYSEX/MIDI_SEND ctrl-port MIDI path
 (Python uses the 9875 bridge). Kronos-to-Nautilus conversion in C# stays untouched (WIP).
@@ -566,7 +577,8 @@ asked — Python has no USB-direct transport today, only the TCP bridge.
 
 ## Testing without real hardware
 
-No Kronos/Nautilus is reachable from this environment. Patterns that worked:
+Nautilus 192.168.100.26 was reachable for the read-only checks above. Hardware may not always be
+available; the following offline patterns worked:
 
 - **Protocol-level**: build a minimal fake TCP server replaying exact bytes
   from `docs/api.md`'s worked examples (stream handshake, frame envelopes) or

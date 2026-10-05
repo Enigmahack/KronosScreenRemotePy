@@ -125,7 +125,8 @@ def _icmp_ping_subprocess(host: str, timeout_ms: int) -> float:
     import re
     try:
         result = subprocess.run(
-            ["ping", "-c", "1", "-W", str(max(1, timeout_ms // 1000)), host],
+            ["ping", "-c", "1", "-W",
+             str(max(1, timeout_ms if sys.platform == "darwin" else timeout_ms // 1000)), host],
             capture_output=True, text=True, timeout=timeout_ms / 1000 + 2,
         )
         if result.returncode == 0:
@@ -858,12 +859,14 @@ class FrameWidget(QWidget):
                     self.touch_up.emit(nx, ny)
 
         if self._drag_active:
-            self._drag_active = False
             if fp:
+                self._drag_active = False
                 self._show_touch_marker(fp.x(), fp.y())
                 if self._is_connected:
                     nx, ny = self._apply_cal(fp.x(), fp.y())
                     self.touch_up.emit(nx, ny)
+            else:
+                self.cancel_drag()
 
     def cancel_drag(self) -> bool:
         """Cancel a pending/active touch drag (Escape precedence — mirrors C#
@@ -886,9 +889,15 @@ class FrameWidget(QWidget):
         event.ignore()
 
     def leaveEvent(self, _event):
+        self.cancel_drag()
         self._hover_idx = None
         if self._ed_open:
             self.update()
+
+    def event(self, event):
+        if event.type() in (QEvent.Type.UngrabMouse, QEvent.Type.WindowDeactivate):
+            self.cancel_drag()
+        return super().event(event)
 
     # ── Touch marker ──────────────────────────────────────────────────────────
 
@@ -1551,6 +1560,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         _setup_logging(settings.debug_logging)
 
         self._receiver: Optional[StreamReceiver] = None
+        self._session_generation = 0
         self._palette:  list[PaletteEntry] = []
         self._overrides = Models.storage.load_overrides()
         self._locked    = Models.storage.load_locks()
@@ -1574,6 +1584,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         self._daemon_booting  = True       # fail-safe default until the first STATE poll
         self._help_active    = False
         self._kbd_capture   = False
+        self._instant_keys: Set[int] = set()
         self._kbd_send_en   = True
         self._shift_held    = False
 
@@ -2344,6 +2355,8 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
     # ── Connection ─────────────────────────────────────────────────────────────
 
     def _trigger_reconnect(self):
+        if not self._prepare_transport_shutdown():
+            return
         host = self._settings.kronos_host
         if not host:
             text, ok = QInputDialog.getText(self, "Connect", "Kronos host/IP:", text="192.168.100.15")
@@ -2375,46 +2388,56 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         return True
 
     def _connect_async(self):
-        if self._connecting or not self._host:
+        if self._connecting or not self._host or self._shutting_down:
             return
         if not self._ensure_ftp_credentials():
             return
-        self._connecting = True
+        if not self._disconnect(quiet=True):
+            return
         self._auto_reconnect_enabled = True
-        self._disconnect(quiet=True)
+        self._connecting = True
         self._set_conn_state("connecting", f"Connecting to {self._host}…")
         self._act_disconnect.setEnabled(False)
-        threading.Thread(target=self._connect_bg, daemon=True, name="Connect").start()
+        rx = self._new_stream_receiver()
+        threading.Thread(target=self._connect_bg, args=(rx, self._session_generation),
+                         daemon=True, name="Connect").start()
 
-    def _connect_bg(self):
+    def _new_stream_receiver(self):
+        return StreamReceiver(self._host, self._stream_port, self._pull_mode, self._fps,
+                              self._settings.ftp_username, self._settings.ftp_password)
+
+    def _connect_bg(self, rx, generation, reconnecting=False):
         """Background: performs the blocking handshake; marshals result to main thread.
 
         QTimer.singleShot calls all pass `self` as the context object so Qt
         delivers the callback on the main thread's event loop, not the caller's
         (threading.Thread has no Qt event loop and the callback would never fire).
         """
-        rx = StreamReceiver(self._host, self._stream_port, self._pull_mode, self._fps,
-                            self._settings.ftp_username, self._settings.ftp_password)
         try:
             rx.connect_to_host()
-        except PermissionError as e:
-            rx.deleteLater()
+        except Exception as e:
+            QTimer.singleShot(0, self, lambda error=e:
+                              self._on_connect_failed(rx, generation, error, reconnecting))
+            return
+        QTimer.singleShot(0, self, lambda: self._apply_new_receiver(rx, generation))
+
+    def _on_connect_failed(self, rx, generation, error, reconnecting):
+        rx.dispose()
+        rx.deleteLater()
+        if generation != self._session_generation or self._shutting_down:
+            return
+        self._connecting = False
+        if isinstance(error, PermissionError):
             self._settings.ftp_username = ""
             self._settings.ftp_password = ""
-            self._connecting = False
-            QTimer.singleShot(0, self, lambda: Models.storage.save_settings(self._settings))
-            QTimer.singleShot(0, self, lambda: self._set_conn_state(
-                "disconnected", "Authentication failed — re-enter credentials in Settings"))
-            return
-        except Exception as e:
-            rx.deleteLater()
-            self._connecting = False
-            msg = str(e)
-            QTimer.singleShot(0, self, lambda m=msg: self._set_conn_state(
-                "disconnected", f"Connection failed: {m}"))
-            QTimer.singleShot(0, self, lambda m=msg: self._show_connection_failed_dialog(m))
-            return
-        QTimer.singleShot(0, self, lambda: self._apply_new_receiver(rx))
+            Models.storage.save_settings(self._settings)
+            self._set_conn_state("disconnected", "Authentication failed — re-enter credentials in Settings")
+        elif reconnecting:
+            self._set_conn_state("connecting", "Reconnect failed — retrying in 5 s…")
+            QTimer.singleShot(5000, self, lambda: self._schedule_reconnect(generation))
+        else:
+            self._set_conn_state("disconnected", f"Connection failed: {error}")
+            self._show_connection_failed_dialog(str(error))
 
     def _show_connection_failed_dialog(self, error_msg: str):
         """Port of C#'s OnSessionConnectionFailed dialog step: a single "can't
@@ -2431,7 +2454,21 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         if dlg.open_settings:
             self._open_settings("Connection")
 
+    def _prepare_transport_shutdown(self) -> bool:
+        lib = self._librarian_shell_win
+        if lib is not None and not lib.request_shutdown():
+            QMessageBox.warning(self, "Librarian push in progress",
+                                "Wait for the hardware push to finish before disconnecting or quitting. "
+                                "Interrupting it could leave a reformatted bank incomplete.")
+            return False
+        return True
+
     def _disconnect(self, quiet: bool = False):
+        if not self._prepare_transport_shutdown():
+            return False
+        self._session_generation += 1
+        self._connecting = False
+        self._frame_w.cancel_drag()
         if not quiet:
             self._auto_reconnect_enabled = False  # explicit user disconnect — no auto-reconnect
         self._reset_boot_state()
@@ -2474,11 +2511,14 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         if not quiet:
             self._set_conn_state("disconnected", "Disconnected")
             self.setWindowTitle(f"{_APP_TITLE} — disconnected")
+        return True
 
     # ── Frame handling ─────────────────────────────────────────────────────────
 
     @Slot(bytes)
     def _on_frame(self, raw: bytes):
+        if self.sender() is not None and self.sender() is not self._receiver:
+            return
         self._raw_frame = raw
         self._frame_w.on_frame(raw, self._palette, self._overrides, self._locked)
 
@@ -2583,6 +2623,9 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
 
     @Slot()
     def _on_disconnected(self):
+        if self.sender() is not None and self.sender() is not self._receiver:
+            return
+        self._session_generation += 1
         self._reset_boot_state()
         self._frame_w._is_connected    = False
         self._frame_w._frame_pixmap    = None
@@ -2615,51 +2658,41 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         if self._auto_reconnect_enabled and self._host:
             self._set_conn_state("connecting", "Connection lost — reconnecting in 3 s…")
             self.setWindowTitle(f"{_APP_TITLE} — reconnecting")
-            QTimer.singleShot(3000, self._schedule_reconnect)
+            generation = self._session_generation
+            QTimer.singleShot(3000, self, lambda: self._schedule_reconnect(generation))
         else:
             self._set_conn_state("disconnected", "Connection lost")
             self.setWindowTitle(f"{_APP_TITLE} — disconnected")
 
-    def _schedule_reconnect(self):
+    def _schedule_reconnect(self, generation=None):
         """Called 3 s after an unexpected disconnect; tries to reconnect in a background thread."""
-        if self._receiver or self._connecting or not self._host or not self._auto_reconnect_enabled:
+        if (self._receiver or self._connecting or not self._host or
+                not self._auto_reconnect_enabled or self._shutting_down or
+                generation is not None and generation != self._session_generation):
+            return
+        lib = self._librarian_shell_win
+        if lib is not None and lib.hardware_transaction_active:
+            QTimer.singleShot(3000, self, lambda: self._schedule_reconnect(generation))
+            return
+        if lib is not None and not lib.request_shutdown():
+            QTimer.singleShot(3000, self, lambda: self._schedule_reconnect(generation))
             return
         self._connecting = True
         self._set_conn_state("connecting", f"Reconnecting to {self._host}…")
-        threading.Thread(target=self._reconnect_bg, daemon=True, name="Reconnect").start()
+        rx = self._new_stream_receiver()
+        threading.Thread(target=self._connect_bg, args=(rx, self._session_generation, True),
+                         daemon=True, name="Reconnect").start()
 
-    def _reconnect_bg(self):
-        """Background: performs the blocking handshake; marshals result to main thread."""
-        rx = StreamReceiver(self._host, self._stream_port, self._pull_mode, self._fps,
-                            self._settings.ftp_username, self._settings.ftp_password)
-        try:
-            rx.connect_to_host()
-        except PermissionError:
-            rx.deleteLater()
-            self._settings.ftp_username = ""
-            self._settings.ftp_password = ""
-            self._connecting = False
-            QTimer.singleShot(0, self, lambda: Models.storage.save_settings(self._settings))
-            QTimer.singleShot(0, self, lambda: self._set_conn_state(
-                "disconnected", "Auth failed — re-enter credentials in Settings then reconnect"))
-            return
-        except Exception:
-            rx.deleteLater()
-            self._connecting = False
-            QTimer.singleShot(0, self, lambda: self._set_conn_state(
-                "connecting", "Reconnect failed — retrying in 5 s…"))
-            QTimer.singleShot(5000, self, self._schedule_reconnect)
-            return
-        QTimer.singleShot(0, self, lambda: self._apply_new_receiver(rx))
-
-    def _apply_new_receiver(self, rx: StreamReceiver):
+    def _apply_new_receiver(self, rx: StreamReceiver, generation=None):
         """Main thread: wire up the newly connected receiver (after a successful connect)."""
         logging.debug("_apply_new_receiver: receiver already set=%s", self._receiver is not None)
-        self._connecting = False
-        if self._receiver:  # user already reconnected manually between the two calls
+        if (self._shutting_down or self._receiver is not None or
+                generation is not None and generation != self._session_generation):
             logging.info("discarding duplicate receiver — the daemon will log a client disconnect")
             rx.dispose()
+            rx.deleteLater()
             return
+        self._connecting = False
         self._receiver = rx
         self._palette  = list(rx.palette)
         self._frame_w._palette = self._palette
@@ -2732,17 +2765,27 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         transition off of it."""
         import threading
         host, port = self._host, self._ctrl_port
+        generation, receiver = self._session_generation, self._receiver
 
         def fetch():
             resp = self._ctrl.query(host, port, "MODEL", timeout_ms=1500)
             try:
-                QTimer.singleShot(0, self, lambda: self._apply_device_family(resp))
+                QTimer.singleShot(0, self, lambda: self._apply_device_family(
+                    resp, generation, receiver, (host, port)))
             except RuntimeError:
                 pass  # window closed before the query finished
 
         threading.Thread(target=fetch, daemon=True, name="ModelQuery").start()
 
-    def _apply_device_family(self, model_resp: Optional[str]):
+    def _session_is_current(self, generation, receiver, endpoint=None):
+        return (not self._shutting_down and generation == self._session_generation
+                and receiver is not None and receiver is self._receiver
+                and (endpoint is None or endpoint == (self._host, self._ctrl_port)))
+
+    def _apply_device_family(self, model_resp: Optional[str], generation=None,
+                             receiver=None, endpoint=None):
+        if generation is not None and not self._session_is_current(generation, receiver, endpoint):
+            return
         if model_resp is None:
             # No response (daemon older than 3.0.2, or the connection has
             # already moved on) — UNKNOWN is treated the same as Kronos
@@ -3075,14 +3118,16 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         self._poll_in_progress = True
         host = self._host
         port = self._ctrl_port
-        threading.Thread(target=self._poll_mode_bg, args=(host, port),
+        threading.Thread(target=self._poll_mode_bg,
+                         args=(host, port, self._session_generation, self._receiver),
                          daemon=True, name="ModePoll").start()
 
-    def _poll_mode_bg(self, host: str, port: int):
+    def _poll_mode_bg(self, host: str, port: int, generation, receiver):
         try:
             resp = self._ctrl.query_state(host, port, timeout_ms=800)
             if not resp:
-                self._daemon_state_ok = False
+                QTimer.singleShot(0, self, lambda: self._mode_poll_finished(
+                    generation, receiver, unavailable=True))
                 return
             mode = 0
             edit_ctx = 0
@@ -3110,18 +3155,27 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
                 elif part.startswith("PAGE_LIT="):
                     page_lit = part[9:] == "1"
             QTimer.singleShot(0, self, lambda m=mode, e=edit_ctx, b=boot, ml=mode_lit, pl=page_lit:
-                              self._apply_daemon_state(m, e, b, ml, pl))
+                              self._apply_daemon_state(m, e, b, ml, pl,
+                                                       generation, receiver, (host, port)))
         finally:
+            QTimer.singleShot(0, self, lambda: self._mode_poll_finished(generation, receiver))
+
+    def _mode_poll_finished(self, generation, receiver, unavailable=False):
+        if self._session_is_current(generation, receiver):
             self._poll_in_progress = False
+            if unavailable:
+                self._daemon_state_ok = False
 
     def _apply_daemon_state(self, mode: int, edit_ctx: int, boot: int,
                             mode_lit: Optional[bool] = None,
-                            page_lit: Optional[bool] = None) -> None:
+                            page_lit: Optional[bool] = None, generation=None,
+                            receiver=None, endpoint=None) -> None:
         """Port of MainWindow.Streaming.cs's ApplyDaemonState + boot gate handling:
         BOOT=1 keeps the boot phase up (daemon's own authoritative gate); MODE/EDITCTX
         only apply once boot clears. EDITCTX (program-edit-from-Combi/Sequence) drives
         the flashing-Program/origin-button state."""
-        if self._host is None or self._receiver is None:
+        if (self._host is None or self._receiver is None or
+                generation is not None and not self._session_is_current(generation, receiver, endpoint)):
             return
         self._daemon_state_ok = True
         self._frame_w._daemon_authoritative = True
@@ -3273,6 +3327,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
 
     def _release_kbd_capture(self):
         self._kbd_capture = False
+        self._instant_keys.clear()
         self._stop_kbd_repeat()   # never leave a repeat running after capture ends
         self._update_kbd_indicator()
 
@@ -3294,16 +3349,17 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
 
         if event.isAutoRepeat():
             return
+        if self._dispatch_user_macro(event):
+            return
 
         # ── Kronos capture mode ─────────────────────────────────────────────
         # eventFilter already forwarded this key and consumed it; this branch
         # is a belt-and-suspenders fallback in case a key event slips through.
-        # Ctrl+V/Ctrl+A are local actions even while capturing (C# gates them on
-        # capture+send-enabled rather than forwarding them as raw keystrokes) —
-        # eventFilter already let these two through, so fall into the normal
-        # Ctrl-shortcut handling below instead of being swallowed here too.
+        # Function keys and reserved Ctrl shortcuts stay local during capture.
         if self._kbd_capture and not (
-                (mods & Qt.ControlModifier) and key in (Qt.Key_V, Qt.Key_A)):
+                Qt.Key_F1 <= key <= Qt.Key_F12 or
+                (mods & Qt.ControlModifier) and
+                (key in (Qt.Key_V, Qt.Key_A, Qt.Key_K, Qt.Key_S) or key in _WINDOW_SIZE_CTRL_KEYS)):
             if self._kbd_send_en:
                 self._forward_key(event, pressed=True)
             return  # always block local shortcuts when captured
@@ -3336,12 +3392,6 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
                 self._set_window_size(_WINDOW_SIZE_CTRL_KEYS[key]); return
             if key == Qt.Key_A and self._kbd_capture and self._kbd_send_en:
                 self._macro_select_all(); return
-
-        # Macro trigger check (triggers must include a modifier)
-        macro = self._settings.get_macro_for_trigger(key, _mods_to_int(mods))
-        if macro:
-            threading.Thread(target=self._play_macro, args=(macro,), daemon=True).start()
-            return
 
         # Numpad: front-panel BUTTON on Kronos, real KEY forward on Nautilus —
         # see _send_numpad_key.
@@ -3434,6 +3484,11 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
     def keyReleaseEvent(self, event: QKeyEvent):
         if event.isAutoRepeat():
             return
+        if event.key() in self._instant_keys:
+            self._instant_keys.discard(event.key())
+            return
+        if self._kbd_capture and Qt.Key_F1 <= event.key() <= Qt.Key_F12:
+            return
         if self._kbd_capture:
             if self._kbd_send_en:
                 self._forward_key(event, pressed=False)
@@ -3442,6 +3497,20 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         name = _numpad_btn(event.key(), event.modifiers())
         if name:
             self._send_numpad_key(name, event.key(), pressed=False)
+
+    def _dispatch_user_macro(self, event: QKeyEvent) -> bool:
+        if (event.isAutoRepeat() or not _mods_to_int(event.modifiers()) or
+                self._frame_w._cal_mode or self._frame_w._ed_open):
+            return False
+        if (event.modifiers() & Qt.ControlModifier and
+                (event.key() in (Qt.Key_V, Qt.Key_K, Qt.Key_S) or event.key() in _WINDOW_SIZE_CTRL_KEYS)):
+            return False
+        macro = self._settings.get_macro_for_trigger(event.key(), _mods_to_int(event.modifiers()))
+        if not macro or (self._kbd_capture and not self._kbd_send_en):
+            return False
+        self._instant_keys.add(event.key())
+        threading.Thread(target=self._play_macro, args=(macro,), daemon=True).start()
+        return True
 
     # ── Tap tempo flash ──────────────────────────────────────────────────────
     # One tap = one front-panel TAP TEMPO press; the Kronos does its own averaging
@@ -3732,6 +3801,8 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             a.setEnabled(False)
 
     def _connect_to_recent(self, host: str):
+        if not self._prepare_transport_shutdown():
+            return
         self._settings.kronos_host = host
         self._host = host
         cred = self._settings.host_credentials.get(host)
@@ -3818,17 +3889,22 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
 
     def _fetch_unit_calibration(self):
         host, port = self._host, self._ctrl_port
+        generation, receiver = self._session_generation, self._receiver
 
         def fetch():
             resp = self._ctrl.query(host, port, "CAL_GET", timeout_ms=1500)
             try:
-                QTimer.singleShot(0, self, lambda: self._apply_unit_calibration(resp))
+                QTimer.singleShot(0, self, lambda: self._apply_unit_calibration(
+                    resp, generation, receiver, (host, port)))
             except RuntimeError:
                 pass  # window closed before the query finished
 
         threading.Thread(target=fetch, daemon=True, name="CalGet").start()
 
-    def _apply_unit_calibration(self, resp: Optional[str]):
+    def _apply_unit_calibration(self, resp: Optional[str], generation=None,
+                                receiver=None, endpoint=None):
+        if generation is not None and not self._session_is_current(generation, receiver, endpoint):
+            return
         fw = self._frame_w
         if fw._cal_mode:
             self._act_cal.setChecked(False)
@@ -4123,12 +4199,39 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         whether from the Settings dialog's OK button or an Import Settings…
         round-trip — persists to disk and pushes each changed value out to the
         live connection/UI it affects."""
+        old_connection = (self._host, self._ctrl_port, self._stream_port, self._pull_mode, self._fps)
+        new_connection = (self._settings.kronos_host, self._settings.ctrl_port,
+                          self._settings.stream_port, self._settings.pull_mode, self._settings.max_fps)
+        changed = old_connection != new_connection
+        if self._receiver is not None:
+            changed |= (getattr(self._receiver, "_username", self._settings.ftp_username),
+                        getattr(self._receiver, "_password", self._settings.ftp_password)) != (
+                            self._settings.ftp_username, self._settings.ftp_password)
+        reconnect = changed and (self._receiver is not None or self._connecting)
+        stopping_midi = not self._settings.midi_monitor_enabled and self._sysex_service.bridge is not None
+        if (reconnect or stopping_midi) and not self._prepare_transport_shutdown():
+            for field, value in zip(("kronos_host", "ctrl_port", "stream_port", "pull_mode", "max_fps"),
+                                    old_connection):
+                setattr(self._settings, field, value)
+            if self._receiver is not None:
+                self._settings.ftp_username = getattr(self._receiver, "_username", self._settings.ftp_username)
+                self._settings.ftp_password = getattr(self._receiver, "_password", self._settings.ftp_password)
+            if stopping_midi:
+                self._settings.midi_monitor_enabled = True
+            Models.storage.save_settings(self._settings)
+            self._apply_midi_monitor_menu_state()
+            return
+        if reconnect:
+            if not self._disconnect(quiet=True):
+                return
         Models.storage.save_settings(self._settings)
         self._host        = self._settings.kronos_host
         self._ctrl_port   = self._settings.ctrl_port
         self._stream_port = self._settings.stream_port
         self._pull_mode   = self._settings.pull_mode
         self._fps         = self._settings.max_fps
+        if changed:
+            self._ctrl.set_endpoint(self._host, self._ctrl_port)
         self._update_conn_mode_label()
         # Apply zoom default
         self._zoom_level = self._settings.zoom_default_level
@@ -4151,6 +4254,9 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             if self._settings.screensaver_timeout != ss_before:
                 self._ctrl_send(f"SS_TIMEOUT {self._settings.screensaver_timeout}")
         self._apply_midi_settings()
+        self._ctrl_surface._reverse_scroll = self._settings.reverse_scrolling
+        if reconnect:
+            self._connect_async()
         # Update perf window host if open
         if self._perf_window:
             self._perf_window.update_host(self._host, self._ctrl_port)
@@ -4362,6 +4468,10 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             svc.start(self._host)
             svc.set_device_family(self._is_nautilus)   # start() resets to the Kronos default
         elif not self._settings.midi_monitor_enabled and running:
+            if not self._prepare_transport_shutdown():
+                self._settings.midi_monitor_enabled = True
+                Models.storage.save_settings(self._settings)
+                return
             svc.stop()
             self._set_midi_badge(False)
             self._on_performance_changed("")
@@ -4763,7 +4873,15 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         self._stop_audio_capture()
         self._audio_capture = AudioCapture(device_id, self)
         self._audio_capture.levels_updated.connect(self._vu_widget.update_levels)
+        self._audio_capture.capture_failed.connect(self._on_audio_capture_failed)
         self._audio_capture.start()
+
+    @Slot(str)
+    def _on_audio_capture_failed(self, message: str):
+        if self.sender() is not self._audio_capture or self._shutting_down:
+            return
+        self._vu_widget.reset()
+        self._notify(message, is_error=True)
 
     def _stop_audio_capture(self):
         if self._audio_capture is not None:
@@ -4779,6 +4897,11 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
     def closeEvent(self, event):
         if self._shutting_down:
             event.accept()
+            return
+        lib = self._librarian_shell_win
+        if lib is not None and lib.hardware_transaction_active:
+            self._prepare_transport_shutdown()
+            event.ignore()
             return
         if self._frame_w._cal_dirty:
             r = QMessageBox.question(
@@ -4805,9 +4928,13 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             if r != QMessageBox.Yes:
                 event.ignore()
                 return
+        if not self._prepare_transport_shutdown():
+            event.ignore()
+            return
         event.ignore()
         self._shutting_down = True
         overlay = _ShutdownOverlay(self)
+        self._shutdown_overlay = overlay
         overlay.show()
         overlay.raise_()
         overlay.repaint()
@@ -4815,6 +4942,14 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         QTimer.singleShot(0, self._do_shutdown)
 
     def _do_shutdown(self):
+        if not self._prepare_transport_shutdown():
+            self._shutting_down = False
+            self._shutdown_overlay.close()
+            return
+        self._session_generation += 1
+        self._auto_reconnect_enabled = False
+        self._connecting = False
+        self._frame_w.cancel_drag()
         if self._tray_icon:
             self._tray_icon.hide()
         self._stop_ping()
@@ -4842,6 +4977,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             audio.wait(500)
             self._audio_capture = None
 
+        self._sysex_service.stop()
         self._ctrl.stop_persistent()
         self._settings.window_maximized = self.isMaximized()
         if not self.isMaximized():
@@ -4885,13 +5021,19 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
                 # Only intercept events aimed at widgets inside our window
                 # (not child dialogs, which have their own window()).
                 if isinstance(watched, QWidget) and watched.window() is self:
-                    # Ctrl+V/Ctrl+A are local actions even while capturing (C#
-                    # gates them on capture+send-enabled instead of forwarding
-                    # them as raw keystrokes) — let these two fall through to
-                    # keyPressEvent's normal Ctrl-shortcut handling instead of
-                    # being swallowed and forwarded here.
+                    if t == QEvent.Type.KeyRelease and event.key() in self._instant_keys:
+                        self._instant_keys.discard(event.key())
+                        return True
+                    if Qt.Key_F1 <= event.key() <= Qt.Key_F12:
+                        return t == QEvent.Type.KeyRelease
+                    if t == QEvent.Type.KeyPress and self._dispatch_user_macro(event):
+                        return True
+                    # Local Ctrl shortcuts precede typing; a user Ctrl+A macro
+                    # has already had priority above, like C#.
                     if (t == QEvent.Type.KeyPress and (event.modifiers() & Qt.ControlModifier)
-                            and event.key() in (Qt.Key_V, Qt.Key_A)):
+                            and (event.key() in (Qt.Key_V, Qt.Key_A, Qt.Key_K, Qt.Key_S)
+                                 or event.key() in _WINDOW_SIZE_CTRL_KEYS)):
+                        self._instant_keys.add(event.key())
                         return False
                     # Escape is front-panel EXIT injection on Kronos, never a
                     # raw keystroke there — runs the same precedence chain as

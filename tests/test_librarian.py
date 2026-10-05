@@ -76,7 +76,9 @@ def make(settings=None, fake=None):
 
 
 def mark_dirty(w, number=5):
-    h_old = w._blobs.put(b"OLD" + bytes([number]))
+    old = (b"OLD" + bytes([number]) + bytes(4960))[:4960]
+    w._service.objs.setdefault((OBJ_PROGRAM, 0x00), {})[number] = (1, old)
+    h_old = w._blobs.put(old)
     h_new = w._blobs.put((b"NEW" + bytes([number]) + bytes(4960))[:4960])
     w._index.set_entry(OBJ_PROGRAM, 0x00, number, LocalIndexEntry(
         version=1, baseline_hash=h_old, current_hash=h_new, display_name=f"P{number}",

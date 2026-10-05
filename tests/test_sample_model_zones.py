@@ -9,7 +9,7 @@ from Core.sample_editor_model.markers import nearest_zero_crossing
 from Core.sample_editor_model.tree import enumerate_nodes
 from Data.ksf_sample import KsfSample
 
-FIX = r"Z:\KronosScreenRemote\SampleFixtures"
+from fixture_paths import SAMPLE_FIXTURES as FIX
 fails = []
 
 

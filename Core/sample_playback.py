@@ -3,7 +3,7 @@ Sample Editor audition playback — port of Core/Sample/SamplePlayback.cs.
 
 Works on host-order int16 numpy arrays (NOT KsfPcm's big-endian on-disk bytes). Every playback path
 runs through one shared chain — provider -> software volume/boost -> equal-power pan -> peak metering
--> a WASAPI shared-mode stream — so volume and the VU meter behave identically for one-shot, looped and
+-> a native audio output stream — so volume and the VU meter behave identically for one-shot, looped and
 stereo playback.
 
   * Volume is a pure in-process multiply, deliberately NOT the OS session volume (which Windows ramps,
@@ -20,10 +20,13 @@ cost real bugs in C# (SamplePhase8/16/20SelfTests) — are testable without an a
 from __future__ import annotations
 
 import math
+import logging
 import threading
 from typing import Callable, List, Optional, Tuple
 
 import numpy as np
+
+log = logging.getLogger(__name__)
 
 BOOST_OFF_ATTENUATION = 0.2511886      # 10^(-12/20): applied when the sample's boost flag is OFF
 _MIN_RATE, _MAX_RATE = 1000, 384000
@@ -183,16 +186,19 @@ def pan_gains(pan: int) -> Tuple[float, float]:
 
 
 def list_playback_devices() -> List[Tuple[str, str]]:
-    """[(id, name)] of WASAPI render endpoints. The id IS the device name (sounddevice has no stable
-    endpoint GUID); empty id = the system default."""
+    """Output endpoints, preferring WASAPI on Windows; names are the saved IDs."""
     try:
         import sounddevice as sd
-        wasapi = [h for h in sd.query_hostapis() if "WASAPI" in h["name"]]
-        if not wasapi:
-            return []
-        return [(d["name"], d["name"]) for d in (sd.query_devices(i) for i in range(len(sd.query_devices())))
-                if d["hostapi"] == sd.query_hostapis().index(wasapi[0]) and d["max_output_channels"] > 0]
+        wasapi_idx = next((i for i, h in enumerate(sd.query_hostapis())
+                           if "WASAPI" in h["name"]), None)
+        return [(d["name"], d["name"]) for d in sd.query_devices()
+                if d["max_output_channels"] > 0
+                and (wasapi_idx is None or d["hostapi"] == wasapi_idx)]
+    except ImportError:
+        log.warning("Sample playback unavailable: sounddevice is not installed")
+        return []
     except Exception:
+        log.exception("Could not enumerate sample playback devices")
         return []
 
 
@@ -374,19 +380,18 @@ class SamplePlayback:
         stream.start()
 
     def _resolve_device(self):
-        """The chosen WASAPI endpoint, falling back to the default when none is chosen or the saved one
-        no longer exists (unplugged since the setting was saved) — playback must never die over a stale id."""
+        """Resolve a saved output name, falling back to the native system default."""
         import sounddevice as sd
-        extra = sd.WasapiSettings(auto_convert=True)       # any declared rate: WASAPI converts, like WasapiOut
-        try:
-            wasapi_idx = next(i for i, h in enumerate(sd.query_hostapis()) if "WASAPI" in h["name"])
-        except StopIteration:
-            return None, None
+        apis = sd.query_hostapis()
+        wasapi_idx = next((i for i, h in enumerate(apis) if "WASAPI" in h["name"]), None)
+        extra = sd.WasapiSettings(auto_convert=True) if wasapi_idx is not None else None
         if self.output_device_id:
             for i, d in enumerate(sd.query_devices()):
-                if d["hostapi"] == wasapi_idx and d["max_output_channels"] > 0 and d["name"] == self.output_device_id:
+                if (d["max_output_channels"] > 0 and d["name"] == self.output_device_id
+                        and (wasapi_idx is None or d["hostapi"] == wasapi_idx)):
                     return i, extra
-        return sd.query_hostapis(wasapi_idx)["default_output_device"], extra
+            log.info("Playback output %r unavailable; using system default", self.output_device_id)
+        return (apis[wasapi_idx]["default_output_device"], extra) if wasapi_idx is not None else (None, None)
 
     def stop(self) -> None:
         self._generation += 1                    # retires whatever is currently playing

@@ -329,6 +329,8 @@ class StreamReceiver(QThread):
     def dispose(self):
         self.stop()
         self.wait(3000)
+        if not self.isRunning() and self._sock is not None:
+            self._sock.close()
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────

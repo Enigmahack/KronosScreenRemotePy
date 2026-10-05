@@ -97,7 +97,10 @@ L._ObjectInfoDialog.exec = lambda self_: info_calls.append((self_.windowTitle())
 w._show_dependency_info(w._deps_list.item(0)); assert info_calls == ["Object Info"]
 
 # ---- Merge gap rows (always first) + Search a PCG
-pcg_files = [f for f in glob.glob(r"Z:\PCG EXAMPLES\**\*.PCG", recursive=True) if "BBPB" in f.upper()][:1]
+from pathlib import Path
+from fixture_paths import PCG_EXAMPLES
+pcg_files = [str(f) for f in sorted(Path(PCG_EXAMPLES).rglob("*"))
+             if f.suffix.lower() == ".pcg" and "BBPB" in str(f).upper()][:1]
 assert pcg_files, "need a real PCG"
 pcg_path = pcg_files[0]
 pcg = open_pcg(open(pcg_path, "rb").read())

@@ -123,12 +123,10 @@ what changed and what is STILL cut:
     out), and (b) a Continue/Cancel confirmation at Merge->Local placement time, when the
     object being placed references something not yet present locally (accepting adds a
     SessionDependencyEntry per missing reference, which is what makes (a) eventually fire).
-  * write_to_hardware's wire signature (changeset_sync.WriteToHardware) does not carry a
-    version byte through to the hardware writer, so this module falls back to
-    librarian_sysex.OBJ_VERSION's per-type default when pushing — the same fallback
-    librarian_sysex.py's own module docstring already documents as acceptable ("Program
-    version depends on HD-1 vs EXi; both are 5 today"). Fixing this would mean changing
-    changeset_sync's already-committed public signature, out of scope for a UI-layer task.
+  * prepare_hardware captures each plan entry's version and pre-images, arms the live bank
+    digests, and checks staleness once before mutation. write_to_hardware sends only volatile
+    writes; store_bank commits each affected bank once after the complete write burst.
+    Hardware transactions veto window/transport shutdown until bookkeeping has finished.
   * Whole-bank HD-1<->EXi reformat: _get_live_bank_type plugs into changeset_sync.
     build_changeset's get_live_bank_type parameter the same way _get_live_digest/
     _get_bank_objects/_write_to_hardware already adapt SysExService for the rest of this
@@ -142,7 +140,7 @@ what changed and what is STILL cut:
     directly (behind a confirmation dialog spelling out the func-0x7C whole-bank
     erase/reformat), `index.get_pending_bank_type_change` is passed straight through as
     build_changeset's `pending_bank_type_change` callable (the exact shape that method's own
-    docstring says it exists for), and `_write_bank_type_change` (new) is the
+    docstring says it exists for), and     `_write_bank_type_change` is the
     WriteBankTypeChange adapter — it sends a REAL func-0x7C Change Program Bank Type: neither
     a wire-format builder nor a SysExService method for 0x7C existed ANYWHERE in this codebase
     before this pass (grepped first, confirmed empty), so both were added
@@ -168,10 +166,10 @@ what changed and what is STILL cut:
     trades a brief UI freeze per navigation for a much smaller dialog; Sync/Commit/Merge-
     pull (the operations that can take a long time) DO run on background threads.
 
-Threading: Sync Library, Commit Changes, and PCG-pull-into-Merge run on a daemon worker
-thread, matching librarian_window.py's own QThread-free `threading.Thread` + Qt Signal
-pattern; sysex_service.SysExService's own docstrings require its blocking calls run off
-the GUI thread. Purely-local operations (Erase, Rename, Local<->Local swap, Clear
+Threading: write-capable Sync Library and Commit Changes use non-daemon workers;
+read-only pulls use daemon workers. Qt signals marshal results to the GUI thread.
+Protected hardware transactions veto window close and transport shutdown until complete.
+Purely-local operations (Erase, Rename, Local<->Local swap, Clear
 Changes, opening a local .pcg file) are cheap disk/CPU work and run synchronously.
 """
 from __future__ import annotations
@@ -1146,8 +1144,11 @@ class LibrarianShellWindow(QDialog):
         # work; only the commands that talk to hardware are disabled.
         self._sysex_unavailable = True
         self._probe_running = False
-        # Per-run arm-time bank digests for a force-destructive push (see _write_to_hardware).
+        # Arm-time digests are checked once, before any reformat or volatile write.
         self._armed_digests: Dict[str, str] = {}
+        self._transaction_lock = threading.RLock()
+        self._hardware_transaction_active = False
+        self._pending_write_versions: Dict[Tuple[int, int, int], int] = {}
         self._run_mode = SYNC_TWO_WAY
         self._run_force = False
         self._run_full = False
@@ -4133,59 +4134,69 @@ class LibrarianShellWindow(QDialog):
         return out
 
     def _write_to_hardware(self, obj_type: int, bank: int, number: int, body: bytes) -> bool:
-        """Port of ApplyMoveAsync's per-object safety wrapping around a Sync/Commit
-        write: staleness re-check right before the write (catches a front-panel
-        edit landing in the narrow window after changeset_sync's earlier, coarser
-        bank-level pre-scan), then a pre-image backup to a .syx file so a bad push
-        is recoverable. Both are best-effort around the write itself: a failed
-        backup logs and proceeds (nothing to protect if the dump comes back
-        empty), but a stale bank digest hard-aborts the write, matching
-        ApplyMoveAsync's own abort-before-any-Store behavior.
-
-        After a successful write, the bank's digest baseline is refreshed to the
-        post-write value. Without this, a SECOND dirty object in the SAME bank
-        later in this same Sync/Commit batch would falsely trip the staleness
-        check on its own predecessor's write (Store changes the bank's real
-        digest immediately) and get spuriously aborted as if a front-panel edit
-        had landed — a self-conflict, not a real one."""
-        loc = ObjLoc(obj_type, bank, number)
-        bank_key = LocalLibraryIndex.bank_key(obj_type, bank)
-        # Force-destructive: compare against the arm-time digest, not the (allowed-stale) pull
-        # baseline; otherwise every write would abort as 'changed since the last pre-scan'.
-        baseline = self._armed_digests.get(bank_key) or self._index.bank_digest_baseline.get(bank_key)
-        if baseline is not None:
-            fresh_hex = self._get_live_digest(bank_key)
-            if fresh_hex is not None and fresh_hex != baseline:
-                self._log(f"ABORT: {loc.label()}'s bank changed on hardware since the "
-                         "last pre-scan (edited at the panel?) — write skipped to avoid "
-                         "clobbering a concurrent edit.")
-                return False
-
-        pre_image = self._service.dump_object_parsed(obj_type, bank, number)
-        if pre_image is not None:
-            try:
-                stamp = _now_iso().replace(":", "").replace("-", "").replace(".", "")
-                backup_path = str(Models.storage.backup_dir() / f"{stamp}_sync_{loc.label()}.syx"
-                                  .replace(" ", "_").replace(":", ""))
-                self._service.backup_objects(
-                    [WriteOp(obj_type, bank, number, pre_image.version, pre_image.body)],
-                    backup_path)
-            except Exception as e:  # pragma: no cover - defensive, backup is best-effort
-                self._log(f"CHECK: pre-write backup of {loc.label()} failed ({e}) — proceeding anyway.")
-
-        version = OBJ_VERSION.get(obj_type, 0)
+        """Only the volatile 0x73 write; backups/gating precede the entire burst."""
+        if not self.hardware_transaction_active:
+            raise RuntimeError("Hardware writes require a prepared Librarian transaction")
+        version = self._pending_write_versions.get(
+            (obj_type, bank, number), OBJ_VERSION.get(obj_type, 0))
         op = WriteOp(obj_type, bank, number, version, body)
-        rc = self._service.write_object(op)
-        if rc != 0:
+        return self._service.write_object(op) == 0
+
+    def _store_hardware_bank(self, obj_type: int, bank: int) -> bool:
+        if not self.hardware_transaction_active:
+            raise RuntimeError("Bank Stores require a prepared Librarian transaction")
+        return self._service.store_bank(obj_type, bank) == 0
+
+    def _prepare_hardware(self, plan: ChangesetPlan) -> bool:
+        """Protect shutdown, capture pre-images, then gate before the first mutation."""
+        with self._transaction_lock:
+            if self._closed or self._sync_cancelled():
+                return False
+            self._hardware_transaction_active = True
+        try:
+            self._arm_banks(plan)
+            self._pending_write_versions = {
+                (e.obj_type, e.bank, e.number): e.version for e in plan.entries}
+            slots = {(e.obj_type, e.bank, e.number) for e in plan.entries}
+            erased_banks = {bank for bank, _ in plan.bank_type_changes}
+            for bank in erased_banks:
+                slots.update((OBJ_PROGRAM, bank, n) for n in range(SLOT_COUNT[OBJ_PROGRAM]))
+            pre_images = []
+            for obj_type, bank, number in sorted(slots):
+                if self._sync_cancelled():
+                    return False
+                dump = self._service.dump_object_parsed(obj_type, bank, number)
+                if dump is None:
+                    raise RuntimeError(
+                        f"Cannot back up {ObjLoc(obj_type, bank, number).label()}; no object reply")
+                pre_images.append(WriteOp(obj_type, bank, number, dump.version, dump.body))
+            if pre_images:
+                stamp = _now_iso().replace(":", "").replace("-", "").replace(".", "")
+                backup_path = str(Models.storage.backup_dir() / f"{stamp}_sync.syx")
+                self._service.backup_objects(pre_images, backup_path)
+                self._log(f"Backed up {len(pre_images)} pre-image object(s) to {backup_path}.")
+            if self._sync_cancelled():
+                return False
+            for obj_type, bank in plan.banks:
+                key = LocalLibraryIndex.bank_key(obj_type, bank)
+                armed = self._armed_digests.get(key)
+                fresh = self._get_live_digest(key)
+                if armed is not None and fresh != armed:
+                    raise RuntimeError(
+                        f"Bank {key} changed or stopped answering since arm — nothing was written")
+                if armed is None:
+                    if obj_type == OBJ_PROGRAM and bank in erased_banks:
+                        raise RuntimeError(f"No digest for bank {key}; refusing an unprotected reformat")
+                    plan.warnings.append(f"CHECK: no digest for bank {key}; staleness protection unavailable.")
+            # Unsolicited Store counters are not exposed by this transport yet.
+            plan.warnings.append(
+                "CHECK: panel Stores during the write burst cannot be detected; "
+                "do not edit or Store at the instrument until this push finishes.")
+            return not self._sync_cancelled()
+        except Exception as ex:
+            plan.warnings.append(f"REFUSE: hardware preparation failed: {ex}")
+            self._log(plan.warnings[-1])
             return False
-        rc2 = self._service.store_bank(obj_type, bank)
-        if rc2 != 0:
-            return False
-        if baseline is not None:
-            fresh_after = self._get_live_digest(bank_key)
-            if fresh_after is not None:
-                self._index.set_bank_digest_baseline(obj_type, bank, fresh_after)
-        return True
 
     def _get_live_bank_type(self, bank: int) -> Optional[bool]:
         """changeset_sync.build_changeset's get_live_bank_type adapter — same "adapt
@@ -4224,8 +4235,21 @@ class LibrarianShellWindow(QDialog):
     #     source has been deleted" and killed the thread mid-sync, and
     #   * more seriously, until it died the worker carried on WRITING OBJECTS TO
     #     THE INSTRUMENT for a window the user had already closed.
-    # _sync_cancel stops the pipeline at its next bank/entry boundary; the
-    # _emit_* helpers make any report that still arrives harmless.
+    # Cancellation stops pull/preparation. Once mutation starts, the protected
+    # transaction must finish before a window or transport may shut down.
+
+    @property
+    def hardware_transaction_active(self) -> bool:
+        with self._transaction_lock:
+            return self._hardware_transaction_active
+
+    def request_shutdown(self) -> bool:
+        """MainWindow must call this before closing or stopping/replacing the bridge."""
+        with self._transaction_lock:
+            if self._hardware_transaction_active:
+                return False
+            self._sync_cancel.set()
+            return True
 
     def _sync_cancelled(self) -> bool:
         """changeset_sync/library_pull_pipeline `cancel` callable."""
@@ -4253,32 +4277,37 @@ class LibrarianShellWindow(QDialog):
         except RuntimeError:
             self._closed = True
 
-    def closeEvent(self, event) -> None:   # noqa: N802 - Qt override
-        """Cancel any in-flight Sync/Commit before letting the window go.
+    def done(self, result: int) -> None:
+        """Escape/accept/reject can finish a QDialog without invoking closeEvent."""
+        if not self.request_shutdown():
+            return
+        self._closed = True
+        self._auto_fill_timer.stop()
+        super().done(result)
 
-        Confirms first: a Sync is a hardware operation the user may not realise
-        is still running, and silently abandoning it half-written is worse than
-        asking. Answering "no" keeps the window open and the sync running. The
-        worker is NOT joined — it can be sitting in a multi-second SysEx timeout,
-        and blocking the GUI thread on that is the freeze this whole round of
-        work is about; it unwinds on its own at the next cancel check, and the
-        _emit_* guards make its remaining reports no-ops."""
+    def closeEvent(self, event) -> None:   # noqa: N802 - Qt override
+        """Cancel read-only work, but never close during a hardware transaction."""
+        if self.hardware_transaction_active:
+            QMessageBox.warning(self, "Librarian push in progress",
+                                "Wait for the hardware push to finish before closing. "
+                                "Interrupting it could leave a reformatted bank incomplete.")
+            event.ignore()
+            return
         if self._sync_thread_running and not self._sync_cancelled():
             answer = QMessageBox.question(
                 self, "Close Librarian",
                 "A Sync/Commit is still running.\n\n"
-                "Close anyway? It will stop at the next safe point. Objects "
-                "already written to the Kronos stay written; the rest keep their "
-                "pending changes for the next Sync.",
+                "Close anyway? Read-only work will be cancelled. A hardware "
+                "push that has already started must finish before closing.",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No)
             if answer != QMessageBox.StandardButton.Yes:
                 event.ignore()
                 return
-            self._sync_cancel.set()
-            log.info("Librarian closed with a sync in flight — cancelling")
+        if not self.request_shutdown():
+            event.ignore()
+            return
         self._closed = True
-        self._sync_cancel.set()      # also stops the Auto-Fill-free background paths
         self._auto_fill_timer.stop()
         super().closeEvent(event)
 
@@ -4433,14 +4462,11 @@ class LibrarianShellWindow(QDialog):
         self._sync_cancel.clear()
         self._sync_thread_running = True
 
-    def _arm_banks(self) -> None:
-        """Force-destructive only: the per-write staleness check must compare against the bank's
-        digest as of NOW (C# ArmPlanAsync), not against the pull baseline — in that mode the
-        baseline is allowed to be stale, so comparing against it would abort every write."""
+    def _arm_banks(self, plan: ChangesetPlan) -> None:
+        """Capture live arm-time digests after planning, never compare after our writes."""
         self._armed_digests = {}
-        keys = {LocalLibraryIndex.bank_key(*_parse_key(k)[:2])
-                for k, e in self._index.entries.items() if e.is_dirty or e.pending_delete}
-        for bank_key in keys:
+        for obj_type, bank in plan.banks:
+            bank_key = LocalLibraryIndex.bank_key(obj_type, bank)
             fresh = self._get_live_digest(bank_key)
             if fresh is not None:
                 self._armed_digests[bank_key] = fresh
@@ -4450,7 +4476,7 @@ class LibrarianShellWindow(QDialog):
             self._set_status(_MSG_CANCELLED_PENDING_DEPS)
             return
         self._begin_run(SYNC_TWO_WAY, "Syncing...", self._force_destructive())
-        threading.Thread(target=self._sync_worker, daemon=True, name="LibShellSync").start()
+        threading.Thread(target=self._sync_worker, daemon=False, name="LibShellSync").start()
 
     def _start_push_only(self, force_override: bool = False) -> None:
         if not force_override and not self._show_sync_gate_dialog_if_blocked():
@@ -4459,7 +4485,7 @@ class LibrarianShellWindow(QDialog):
         force = force_override or self._force_destructive()
         self._begin_run(SYNC_PUSH_ONLY, _MSG_PUSH_OVERWRITING if force_override else "Committing...", force)
         self._run_is_overwrite_retry = force_override
-        threading.Thread(target=self._sync_worker, daemon=True, name="LibShellCommit").start()
+        threading.Thread(target=self._sync_worker, daemon=False, name="LibShellCommit").start()
 
     def _discard_pending_for_pull(self) -> int:
         """Pull Only makes the library a mirror of the instrument, so EVERY pending local change
@@ -4523,15 +4549,14 @@ class LibrarianShellWindow(QDialog):
         mode, full, force = self._run_mode, self._run_full, self._run_force
         pull_result = plan = result = None
         try:
-            if force and mode in (SYNC_TWO_WAY, SYNC_PUSH_ONLY):
-                self._arm_banks()
-            else:
-                self._armed_digests = {}
+            self._armed_digests = {}
             common = dict(
                 get_live_bank_type=self._get_live_bank_type,
                 pending_bank_type_change=self._index.get_pending_bank_type_change,
                 write_bank_type_change=self._write_bank_type_change,
-                cancel=self._sync_cancelled)
+                cancel=self._sync_cancelled,
+                prepare_hardware=self._prepare_hardware,
+                store_bank=self._store_hardware_bank)
             if mode == SYNC_TWO_WAY:
                 pull_result, plan, result = sync_library(
                     self._index, self._blobs, self._clipboard,
@@ -4559,6 +4584,26 @@ class LibrarianShellWindow(QDialog):
                     get_live_digest=self._get_live_digest, resolver=self._local_resolver,
                     write_to_hardware=self._write_to_hardware,
                     force_destructive_write=force, **common)
+            if result is not None:
+                for bank in result.completed_bank_type_changes:
+                    self._index.clear_pending_bank_type_change(bank)
+                    rewritten = {e.number for e in plan.entries
+                                 if (e.obj_type, e.bank) == (OBJ_PROGRAM, bank)}
+                    for key in list(self._index.entries):
+                        obj_type, cached_bank, number = _parse_key(key)
+                        if (obj_type, cached_bank) == (OBJ_PROGRAM, bank) and number not in rewritten:
+                            self._index.delete(obj_type, cached_bank, number)
+                    # Reformat erased slots outside this plan too; the next pull
+                    # must rediscover their INIT contents rather than skip the bank.
+                    self._index.bank_digest_baseline.pop(
+                        LocalLibraryIndex.bank_key(OBJ_PROGRAM, bank), None)
+                if plan is not None:
+                    for obj_type, bank in result.committed_banks:
+                        if obj_type == OBJ_PROGRAM and bank in result.completed_bank_type_changes:
+                            continue
+                        fresh = self._get_live_digest(LocalLibraryIndex.bank_key(obj_type, bank))
+                        if fresh is not None:
+                            self._index.set_bank_digest_baseline(obj_type, bank, fresh)
             self._index.save()
         except LocalLibraryWriteError as e:
             # Distinguished from a generic failure because the fix is completely different:
@@ -4576,9 +4621,12 @@ class LibrarianShellWindow(QDialog):
             return
         finally:
             self._armed_digests = {}
+            self._pending_write_versions = {}
             # The window may have been closed (and its C++ object destroyed) while this ran;
             # the thread itself must still finish tidily.
-            self._sync_thread_running = False
+            with self._transaction_lock:
+                self._hardware_transaction_active = False
+                self._sync_thread_running = False
         if result is not None and result.cancelled:
             status = "CANCELLED"
         elif plan is not None and plan.is_refusable:
@@ -4622,13 +4670,6 @@ class LibrarianShellWindow(QDialog):
             self._log(f"Push: {result.written} written, {result.erased} erased, "
                       f"{result.deleted} local-only delete(s), {result.failed} failed, "
                       f"{result.reformatted} bank(s) reformatted.")
-            # Committed whole-bank type changes are now realized on hardware — clear the staged
-            # intent so a later, unrelated push to the same bank doesn't re-issue the (erasing)
-            # func 0x7C. Only after the WHOLE push succeeded (SyncPipeline.cs).
-            if plan.bank_type_changes and result.reformatted == len(plan.bank_type_changes):
-                for bank, _ in plan.bank_type_changes:
-                    self._index.clear_pending_bank_type_change(bank)
-                self._index.save()
 
         warning = "; ".join(plan.warnings) if plan.warnings else ""
         status_text = status

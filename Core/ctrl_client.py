@@ -125,13 +125,18 @@ class CtrlClient:
         self._port: int = CTRL_PORT
         self._queue: queue.Queue = queue.Queue()
         self._pending_move: Optional[str] = None
+        self._pending_move_token = None
         self._pending_move_lock = threading.Lock()
         self._sock: Optional[socket.socket] = None
-        self._sock_lock = threading.Lock()
+        self._sock_lock = threading.RLock()
+        self._connect_lock = threading.Lock()
+        self._generation = 0
+        self._accept_commands = True
+        self._cancelled = threading.Event()
         self._line_listeners: List[Callable[[bytes], None]] = []
         self._listeners_lock = threading.Lock()
         # Supervisor state — see start_persistent().
-        self._keep_lock = threading.Lock()
+        self._keep_lock = self._sock_lock
         self._keep_alive = False
         self._keep_wake = threading.Event()
         self._thread = threading.Thread(target=self._send_loop, daemon=True, name="CtrlClient")
@@ -151,9 +156,9 @@ class CtrlClient:
         send_existing_only() found no socket to ride and every STATE poll paid a
         full one-shot connect/close — and once the session did drop, nothing
         rebuilt it until the user happened to touch something again."""
-        with self._keep_lock:
-            self._host = host
-            self._port = port
+        with self._sock_lock:
+            self.set_endpoint(host, port)
+            self._accept_commands = True
             self._keep_alive = True
         self._keep_wake.set()
 
@@ -162,10 +167,18 @@ class CtrlClient:
         shutdown). Must be used instead of a bare reset() wherever the intent is
         "stay disconnected" — reset() alone is now re-established by the
         supervisor within a second."""
-        with self._keep_lock:
+        with self._sock_lock:
             self._keep_alive = False
+            self._accept_commands = False
+            self.reset()
         self._keep_wake.set()
-        self.reset()
+
+    def set_endpoint(self, host: str, port: int):
+        """Invalidate the socket and queued input before changing endpoints."""
+        with self._sock_lock:
+            if (host, port) != (self._host, self._port):
+                self.reset()
+                self._host, self._port = host, port
 
     @property
     def is_persistent_connected(self) -> bool:
@@ -173,20 +186,23 @@ class CtrlClient:
             return self._sock is not None
 
     def send(self, host: str, port: int, cmd: str):
-        self._host = host
-        self._port = port
-
-        if cmd.startswith("TOUCH_MOVE "):
+        with self._sock_lock:
+            if not self._accept_commands:
+                return
+            self.set_endpoint(host, port)
+            generation = self._generation
             with self._pending_move_lock:
-                self._pending_move = cmd
-            self._queue.put(_FLUSH_MOVE)
-        else:
-            # Flush any pending move first to preserve ordering
-            with self._pending_move_lock:
-                pm, self._pending_move = self._pending_move, None
-            if pm is not None:
-                self._queue.put(pm)
-            self._queue.put(cmd)
+                if cmd.startswith("TOUCH_MOVE "):
+                    if self._pending_move is None:
+                        self._pending_move_token = object()
+                        self._queue.put((generation, (_FLUSH_MOVE, self._pending_move_token)))
+                    self._pending_move = cmd
+                else:
+                    pm, self._pending_move = self._pending_move, None
+                    self._pending_move_token = None
+                    if pm is not None:
+                        self._queue.put((generation, pm))
+                    self._queue.put((generation, cmd))
 
     def send_chord(self, host: str, port: int, names: List[str], hold_ms: int = 0) -> None:
         """BTN_DOWN each button in order, hold, BTN_UP in reverse (docs/api.md BTN / BTN_DOWN / BTN_UP). The hold is a
@@ -196,18 +212,22 @@ class CtrlClient:
         cmds = chord_commands(names)
         half = len(names)
         hold = max(0, min(5000, int(hold_ms)))
-        self._host = host
-        self._port = port
-        with self._pending_move_lock:
-            pm, self._pending_move = self._pending_move, None
-        if pm is not None:
-            self._queue.put(pm)
-        for c in cmds[:half]:
-            self._queue.put(c)
-        if hold:
-            self._queue.put((_SLEEP, hold / 1000.0))
-        for c in cmds[half:]:
-            self._queue.put(c)
+        with self._sock_lock:
+            if not self._accept_commands:
+                return
+            self.set_endpoint(host, port)
+            generation = self._generation
+            with self._pending_move_lock:
+                pm, self._pending_move = self._pending_move, None
+                self._pending_move_token = None
+            if pm is not None:
+                self._queue.put((generation, pm))
+            for c in cmds[:half]:
+                self._queue.put((generation, c))
+            if hold:
+                self._queue.put((generation, (_SLEEP, hold / 1000.0)))
+            for c in cmds[half:]:
+                self._queue.put((generation, c))
 
     def send_existing_only(self, host: str, port: int, cmd: str) -> bool:
         """Queue `cmd` to be sent only if a persistent session is established.
@@ -220,12 +240,10 @@ class CtrlClient:
         connect. Goes through the same queue as send() so the socket keeps a
         single writer and command ordering is preserved.
         """
-        self._host = host
-        self._port = port
         with self._sock_lock:
-            if self._sock is None:
+            if self._sock is None or (host, port) != (self._host, self._port):
                 return False
-        self._queue.put((_ONLY_IF_CONNECTED, cmd))
+            self._queue.put((self._generation, (_ONLY_IF_CONNECTED, cmd)))
         return True
 
     def reset(self):
@@ -236,8 +254,18 @@ class CtrlClient:
         which is what a host change/reconnect wants. Use stop_persistent() when
         the intent is to stay down."""
         with self._sock_lock:
+            self._generation += 1
+            self._cancelled.set()
+            self._cancelled = threading.Event()
+            with self._pending_move_lock:
+                self._pending_move = None
+                self._pending_move_token = None
             s, self._sock = self._sock, None
         if s:
+            try:
+                s.shutdown(socket.SHUT_RDWR)
+            except Exception:
+                pass
             try:
                 s.close()
             except Exception:
@@ -359,28 +387,43 @@ class CtrlClient:
 
     def _send_loop(self):
         while True:
-            item = self._queue.get()
+            self._send_item(self._queue.get())
 
-            if item is _FLUSH_MOVE:
+    def _send_item(self, queued):
+        generation, item = queued
+        with self._sock_lock:
+            if generation != self._generation or not self._accept_commands:
+                return
+            cancelled = self._cancelled
+            if isinstance(item, tuple) and item[0] is _FLUSH_MOVE:
                 with self._pending_move_lock:
+                    if item[1] is not self._pending_move_token:
+                        return
                     cmd, self._pending_move = self._pending_move, None
+                    self._pending_move_token = None
                 if cmd is None:
-                    continue
-                self._send_one(cmd)
+                    return
             elif isinstance(item, tuple) and item[0] is _SLEEP:
-                time.sleep(item[1])
+                cmd = None
             elif isinstance(item, tuple) and item[0] is _ONLY_IF_CONNECTED:
-                self._send_one(item[1], allow_connect=False)
+                cmd = item[1]
             else:
-                self._send_one(item)
+                cmd = item
+        if cmd is None:
+            cancelled.wait(item[1])
+        else:
+            existing_only = isinstance(item, tuple) and item[0] is _ONLY_IF_CONNECTED
+            self._send_one(cmd, allow_connect=not existing_only, generation=generation)
 
-    def _send_one(self, cmd: str, allow_connect: bool = True):
-        if not self._host:
-            return
+    def _send_one(self, cmd: str, allow_connect: bool = True, generation=None):
         data = (cmd + "\n").encode("ascii")
 
         # Try existing socket first
         with self._sock_lock:
+            if generation is None:
+                generation = self._generation
+            if not self._host or not self._accept_commands or generation != self._generation:
+                return
             sock = self._sock
 
         if sock is not None:
@@ -394,37 +437,54 @@ class CtrlClient:
             return
 
         # Need a new persistent connection
-        sock = self._connect_persistent()
+        sock = self._connect_persistent(generation)
         if sock is None:
             return
+        with self._sock_lock:
+            if generation != self._generation:
+                return
         try:
             sock.sendall(data)
         except OSError:
             self._drop_socket(sock)
 
-    def _connect_persistent(self) -> Optional[socket.socket]:
-        if not self._host:
-            return None
-        try:
-            s = socket.create_connection((self._host, self._port),
-                                         timeout=_CONNECT_TIMEOUT_S)
-            # create_connection's timeout stays on the socket afterwards. Leaving
-            # it there made every 2 s of daemon silence look like a fatal recv
-            # error in _drain_loop and tore the session down; the session is
-            # meant to outlive arbitrary idle periods, so go back to blocking.
-            s.settimeout(None)
-            s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            _enable_keepalive(s)
-            _set_send_timeout(s, _SEND_TIMEOUT_S)
-            s.sendall(_PERSIST_HEADER)
+    def _connect_persistent(self, generation=None) -> Optional[socket.socket]:
+        # The keeper and command writer share exactly one connection attempt.
+        with self._connect_lock:
             with self._sock_lock:
-                self._sock = s
-            threading.Thread(target=self._drain_loop, args=(s,), daemon=True,
-                             name="CtrlDrain").start()
-            return s
-        except Exception as e:
-            log.warning("persistent connect failed: %s", e)
-            return None
+                if generation is None:
+                    generation = self._generation
+                if not self._host or not self._accept_commands or generation != self._generation:
+                    return None
+                if self._sock is not None:
+                    return self._sock
+                endpoint = (self._host, self._port)
+            s = None
+            try:
+                s = socket.create_connection(endpoint, timeout=_CONNECT_TIMEOUT_S)
+                with self._sock_lock:
+                    if generation != self._generation or not self._accept_commands:
+                        s.close()
+                        return None
+                # Clear the connect deadline: an idle receive is not a disconnect.
+                s.settimeout(None)
+                s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                _enable_keepalive(s)
+                _set_send_timeout(s, _SEND_TIMEOUT_S)
+                s.sendall(_PERSIST_HEADER)
+                with self._sock_lock:
+                    if generation != self._generation or not self._accept_commands:
+                        s.close()
+                        return None
+                    self._sock = s
+                threading.Thread(target=self._drain_loop, args=(s,), daemon=True,
+                                 name="CtrlDrain").start()
+                return s
+            except Exception as e:
+                if s is not None:
+                    s.close()
+                log.warning("persistent connect failed: %s", e)
+                return None
 
     def _drain_loop(self, sock: socket.socket):
         """Line-buffer replies so the server's send buffer never fills, and
@@ -451,7 +511,10 @@ class CtrlClient:
                         break
                     line = bytes(buf[:nl])
                     del buf[:nl + 1]
-                    self._dispatch_line(line)
+                    with self._sock_lock:
+                        current = self._sock is sock
+                    if current:
+                        self._dispatch_line(line)
         except Exception:
             pass
         finally:
@@ -526,7 +589,15 @@ def play_macro(host: str, port: int, steps: List[str], step_delay_ms: int):
     if not host or not steps:
         return
     client = get()
+    with client._sock_lock:
+        if client._host is not None and (client._host, client._port) != (host, port):
+            return
+        client.set_endpoint(host, port)
+        generation = client._generation
     for i, step in enumerate(steps):
         if i:
             time.sleep(step_delay_ms / 1000.0)
-        client.send(host, port, step)
+        with client._sock_lock:
+            if generation != client._generation:
+                return
+            client.send(host, port, step)
