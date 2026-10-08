@@ -198,16 +198,17 @@ from PySide6.QtWidgets import (
 from Commands.batch_clipboard import BatchClipboard, ClipboardMode
 from Data.blank_template_store import BlankTemplateStore
 import Tools.dependency_scanner as depscan
+import Data.object_types as object_types
 import Objects.erase_body as erase_body
 import Core.kronos_sysex as ksx
 import Objects.object_body as object_body
 from Data.changeset_sync import ChangesetPlan, SyncResult, commit_changes, sync_library
 from Data.librarian_model import (
     BatchPlacement, LibraryCatalog, ObjLoc, SequentialFillItem, WriteOp,
-    _READONLY_PROGRAM_BANKS, plan_batch_move, plan_move, resolve_sequential_fill,
+    _READONLY_PROGRAM_BANKS, apply_ref_patch, encode_ref, plan_batch_move, plan_move, resolve_sequential_fill,
 )
 from Data.librarian_sysex import (
-    OBJ_COMBI, OBJ_PROGRAM, OBJ_SET_LIST, OBJ_VERSION, ObjectDump,
+    OBJ_COMBI, OBJ_DRUM_KIT, OBJ_PROGRAM, OBJ_SET_LIST, OBJ_VERSION, OBJ_WAVE_SEQ, ObjectDump,
     obj_bank_to_func33, set_combi_timbre_ref, set_setlist_slot_ref,
 )
 import Data.library_pull_pipeline as pull_pipeline
@@ -236,8 +237,31 @@ import Utils.theme as T
 # _leaf_payload()/_selected_payloads() already understand.
 _DND_MIME = "application/x-kronos-librarian-payload"
 
-_ROOT_LABEL = {OBJ_PROGRAM: "Programs", OBJ_COMBI: "Combis", OBJ_SET_LIST: "Set Lists"}
-_ROOT_ORDER = (OBJ_PROGRAM, OBJ_COMBI, OBJ_SET_LIST)
+_ROOT_LABEL = {t: d.plural_name for t, d in object_types.REGISTRY.items()}
+_ROOT_ORDER = object_types.TYPE_ORDER
+#: Placement order: referenced objects before the objects that reference them (a Program's
+#: oscillator zones point at Drum Kits / Wave Sequences), so a referrer's dependencies already
+#: exist when it lands (LibrarianShellViewModel.Placement.cs's own order).
+_PLACE_ORDER = (OBJ_DRUM_KIT, OBJ_WAVE_SEQ, OBJ_PROGRAM, OBJ_COMBI, OBJ_SET_LIST)
+
+
+def _referrer_types_for(*target_types: int) -> frozenset:
+    """Object types whose bodies can hold a reference TO any of `target_types` — the only ones a
+    catalog needs to load to answer referrers_of for them (a Program's referrers are Combis, Set
+    Lists and other Programs; a Drum Kit / Wave Sequence's are Programs only; a Combi's are Set
+    Lists only; nothing references a Set List)."""
+    table = {OBJ_PROGRAM: (OBJ_COMBI, OBJ_SET_LIST, OBJ_PROGRAM), OBJ_COMBI: (OBJ_SET_LIST,),
+             OBJ_DRUM_KIT: (OBJ_PROGRAM,), OBJ_WAVE_SEQ: (OBJ_PROGRAM,), OBJ_SET_LIST: ()}
+    return frozenset(t for target in target_types for t in table.get(target, ()))
+
+
+def _name_writer(obj_type: int):
+    """The per-type 'write the 24-byte name' function (all of them are Librarian.BuildRenamedBody)."""
+    return {OBJ_PROGRAM: object_body.write_program_name,
+            OBJ_COMBI: object_body.write_combi_name,
+            OBJ_SET_LIST: object_body.write_setlist_name,
+            OBJ_DRUM_KIT: object_body.write_drum_kit_name,
+            OBJ_WAVE_SEQ: object_body.write_wave_seq_name}[obj_type]
 
 
 def _now_iso() -> str:
@@ -265,6 +289,8 @@ def _bank_label(obj_type: int, bank: int) -> str:
         return ksx.program_label(bank)
     if obj_type == OBJ_COMBI:
         return ksx.combi_label(bank)
+    if obj_type in (OBJ_DRUM_KIT, OBJ_WAVE_SEQ):
+        return object_types.label_for(obj_type, bank)
     return ""
 
 
@@ -274,11 +300,11 @@ def _bank_label(obj_type: int, bank: int) -> str:
 def _group_local(entries: Dict[str, LocalIndexEntry]
                   ) -> Dict[int, Dict[int, List[Tuple[int, str, LocalIndexEntry]]]]:
     """{obj_type: {bank: [(number, key, entry), ...]}}, sorted by number within
-    each bank. Always has all three obj_type keys present (Local pane keeps all
-    three type roots even when empty, matching ObjectTreeScaffold's
+    each bank. Always has every registry obj_type key present (Local pane keeps all
+    the type roots even when empty, matching ObjectTreeScaffold's
     keepEmptyRoots=True for the Local pane)."""
     groups: Dict[int, Dict[int, List[Tuple[int, str, LocalIndexEntry]]]] = {
-        OBJ_PROGRAM: {}, OBJ_COMBI: {}, OBJ_SET_LIST: {}}
+        t: {} for t in object_types.TYPE_ORDER}
     for key, entry in entries.items():
         obj_type, bank, number = _parse_key(key)
         groups.setdefault(obj_type, {}).setdefault(bank, []).append((number, key, entry))
@@ -305,7 +331,7 @@ def _group_pcg(objects: List[PcgObjectEntry]) -> Dict[int, Dict[int, List[PcgObj
 def _group_merge(entries: List[MergeEntry]) -> Dict[int, List[MergeEntry]]:
     """{obj_type: [MergeEntry, ...]} — bag-based, so no bank grouping (MergeCache
     has no address space until placement; see merge_cache.py's own docstring)."""
-    groups: Dict[int, List[MergeEntry]] = {OBJ_PROGRAM: [], OBJ_COMBI: [], OBJ_SET_LIST: []}
+    groups: Dict[int, List[MergeEntry]] = {t: [] for t in object_types.TYPE_ORDER}
     for e in entries:
         groups.setdefault(e.obj_type, []).append(e)
     for lst in groups.values():
@@ -598,10 +624,10 @@ class _DestinationDialog(QDialog):
         v.addWidget(QLabel(heading))
         row = QHBoxLayout()
         self._bank_combo = QComboBox()
+        self._obj_type = obj_type
         if obj_type != OBJ_SET_LIST:
-            label_fn = ksx.program_label if obj_type == OBJ_PROGRAM else ksx.combi_label
             for b in EDITABLE_BANKS[obj_type]:
-                self._bank_combo.addItem(label_fn(b), b)
+                self._bank_combo.addItem(object_types.label_for(obj_type, b), b)
         else:
             self._bank_combo.addItem("Set Lists", 0)
             self._bank_combo.setEnabled(False)
@@ -609,13 +635,20 @@ class _DestinationDialog(QDialog):
         row.addWidget(self._bank_combo)
         row.addWidget(QLabel("Number:"))
         self._number_spin = QSpinBox()
-        self._number_spin.setRange(0, (MAX_COUNT - 1) if obj_type == OBJ_SET_LIST else 127)
         row.addWidget(self._number_spin)
+        # Slot count is per BANK for Drum Kit / Wave Sequence (INT and User differ).
+        self._bank_combo.currentIndexChanged.connect(self._sync_number_range)
+        self._sync_number_range()
         v.addLayout(row)
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         btns.accepted.connect(self.accept)
         btns.rejected.connect(self.reject)
         v.addWidget(btns)
+
+    def _sync_number_range(self) -> None:
+        bank = self._bank_combo.currentData()
+        count = object_types.slot_count(self._obj_type, int(bank) if bank is not None else 0)
+        self._number_spin.setRange(0, count - 1)
 
     def selected(self) -> Tuple[int, int]:
         return int(self._bank_combo.currentData()), self._number_spin.value()
@@ -725,7 +758,7 @@ class _RemoteFilePickerDialog(QDialog):
 
     def __init__(self, ftp_worker, start_path: str = "/", parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Pull PCG from Kronos")
+        self.setWindowTitle("Pull PCG from Instrument")
         self.resize(560, 420)
         self.setStyleSheet(f"QDialog {{ background-color: {T.BG}; color: {T.TEXT}; }}")
         self._ftp = ftp_worker
@@ -925,32 +958,32 @@ class _PaneTreeWidget(QTreeWidget):
 SYNC_TWO_WAY, SYNC_PULL_ONLY, SYNC_PUSH_ONLY = "TwoWay", "PullOnly", "PushOnly"
 _SYNC_LABEL = {SYNC_PULL_ONLY: "Pull Only", SYNC_PUSH_ONLY: "Push Only", SYNC_TWO_WAY: "2-Way Sync"}
 _SYNC_TOOLTIP = {
-    SYNC_PULL_ONLY: "Replace the keyboard library with what is on the Kronos. Pending local changes "
+    SYNC_PULL_ONLY: "Replace the keyboard library with what is on the instrument. Pending local changes "
                     "are discarded (you are asked first).",
-    SYNC_PUSH_ONLY: "Write every pending local change to the Kronos. If the Kronos has changed since "
+    SYNC_PUSH_ONLY: "Write every pending local change to the instrument. If the instrument has changed since "
                     "the last sync you are asked before overwriting it.",
     SYNC_TWO_WAY:   "Pull the library, then push every pending local change.",
 }
 _MSG_SYSEX_OFF_BANNER = (
-    "The Kronos is not answering SysEx. Keyboard Library, the Merge Window and PCG files still work; "
+    "The instrument is not answering SysEx. Keyboard Library, the Merge Window and PCG files still work; "
     "Sync is disabled until it answers. " + pull_pipeline.SYSEX_OFF_FIX)
-_MSG_SYNC_DISABLED_TOOLTIP = "Disabled - the Kronos is not answering SysEx."
-_MSG_DESTRUCTIVE_ARMED = ("Force destructive write is ON - 2-Way Sync overwrites the Kronos without "
+_MSG_SYNC_DISABLED_TOOLTIP = "Disabled - the instrument is not answering SysEx."
+_MSG_DESTRUCTIVE_ARMED = ("Force destructive write is ON - 2-Way Sync overwrites the instrument without "
                           "conflict checks.")
 _MSG_CANCELLED_PENDING_DEPS = "Cancelled - unresolved dependencies still pending."
 _MSG_PULL_ONLY_CANCELLED = "Pull cancelled - nothing was changed."
-_MSG_PUSH_OVERWRITING = "Overwriting Kronos from keyboard library..."
+_MSG_PUSH_OVERWRITING = "Overwriting instrument from keyboard library..."
 _MSG_COMMIT_FAILED = "Commit failed - see warning."
-_MSG_RESOLVE_TOOLTIP = "Push your copy over the Kronos for every conflicted object."
+_MSG_RESOLVE_TOOLTIP = "Push your copy over the instrument for every conflicted object."
 _MSG_CHECK_RESOLVE_NO_DIGEST = ("CHECK: some banks gave no digest - their conflicts were left in place "
                                 "rather than cleared without a working baseline. Try again once the "
-                                "Kronos is answering.")
+                                "instrument is answering.")
 
 
 def _msg_conflict_banner(count: int) -> str:
-    return (f"{count} local change(s) can't be pushed - their banks changed on the Kronos since this "
+    return (f"{count} local change(s) can't be pushed - their banks changed on the instrument since this "
             "library last pulled them. Sync Library to pull those banks, or Resolve Conflicts to "
-            "push your copy over what's on the Kronos.")
+            "push your copy over what's on the instrument.")
 
 
 def _msg_conflicts_resolved(objects: int, rebased: int, banks: int) -> str:
@@ -958,11 +991,11 @@ def _msg_conflicts_resolved(objects: int, rebased: int, banks: int) -> str:
 
 
 def _msg_resolve_confirm(count: int, banks: str) -> str:
-    return (f"Push this library's copy of {count} conflicted object(s) over the Kronos?\n\n"
+    return (f"Push this library's copy of {count} conflicted object(s) over the instrument?\n\n"
             f"Banks affected: {banks}\n\n"
-            "Those banks changed on the Kronos since this library last pulled them. Continuing "
+            "Those banks changed on the instrument since this library last pulled them. Continuing "
             "means the next push overwrites whatever changed there with your local copy.\n\n"
-            "To keep the Kronos copy instead, cancel and run Sync Library in 2-Way or Pull Only.")
+            "To keep the instrument copy instead, cancel and run Sync Library in 2-Way or Pull Only.")
 
 
 def _msg_sync_result(fetched: int, conflicts: int, written: int, deleted: int, not_pushed: int = 0) -> str:
@@ -993,23 +1026,23 @@ def _msg_pull_only_result(fetched: int, discarded: int) -> str:
 
 
 def _msg_pull_discard_prompt(count: int) -> str:
-    return ("Pull Only replaces the keyboard library with what is on the Kronos.\n\n"
+    return ("Pull Only replaces the keyboard library with what is on the instrument.\n\n"
             f"{count} pending local change(s) - edits and slots marked for deletion - will be "
             "DISCARDED. This cannot be undone.\n\nContinue?")
 
 
 def _msg_push_conflict_summary(count: int) -> str:
-    return f"{count} object(s) changed on the Kronos since the last sync."
+    return f"{count} object(s) changed on the instrument since the last sync."
 
 
 def _msg_push_overwrite_prompt(reason: str) -> str:
     return ("Push Only could not write safely:\n\n" + reason + "\n\n"
-            "Overwrite the Kronos with the keyboard library anyway? This is DESTRUCTIVE - "
+            "Overwrite the instrument with the keyboard library anyway? This is DESTRUCTIVE - "
             "whatever is on the instrument for those objects is replaced.")
 
 
 def _msg_conflicted_not_pushed(count: int, banks: str) -> str:
-    return (f"CHECK: {count} object(s) in {banks} were NOT pushed - those banks changed on the Kronos "
+    return (f"CHECK: {count} object(s) in {banks} were NOT pushed - those banks changed on the instrument "
             "since this library last pulled them, so overwriting them would clobber whatever changed. "
             "Sync Library to pull them, or use Resolve Conflicts to push your copy anyway.")
 
@@ -1297,7 +1330,7 @@ class LibrarianShellWindow(QDialog):
         sync_row.addSpacing(8)
         self._chk_force_full = QCheckBox("Force Full Sync")
         self._chk_force_full.setToolTip("Instead of syncing changes, forces a complete sync for all "
-                                        "programs/combis/set lists on the Kronos.")
+                                        "programs/combis/set lists on the instrument.")
         sync_row.addWidget(self._chk_force_full)
         self._btn_undo = QPushButton("Undo")
         self._btn_undo.setToolTip("Nothing to undo")
@@ -1416,7 +1449,7 @@ class LibrarianShellWindow(QDialog):
         # — a fresh install, or the exe run from a folder with no library beside it.
         # No bare type-root headers appear until the first Sync populates the library.
         self._empty_hint = QLabel("Your local library is empty.\nClick \"Sync Library\" to "
-                                  "pull it from your Kronos.")
+                                  "pull it from your instrument.")
         self._empty_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._empty_hint.setWordWrap(True)
         self._empty_hint.setStyleSheet(f"color: {T.ACCENT}; font-style: italic;")
@@ -1483,7 +1516,7 @@ class LibrarianShellWindow(QDialog):
             "Place everything staged here into the next free slots of its own type in "
             "Keyboard Library - Programs first, then Combis, then Set Lists, so each one's "
             "dependencies are already placed and its references point at where they "
-            "actually landed. Nothing is sent to the Kronos: this only stages, exactly "
+            "actually landed. Nothing is sent to the instrument: this only stages, exactly "
             "like dragging items across yourself. Review the result, then Commit Changes "
             "to push.")
         self._btn_auto_fill.clicked.connect(self._auto_fill_to_library)
@@ -1567,8 +1600,8 @@ class LibrarianShellWindow(QDialog):
         btn_open.setToolTip("Open a .pcg file from this computer")
         btn_open.clicked.connect(self._open_pcg_from_computer)
         row.addWidget(btn_open)
-        self._btn_pull_kronos = QPushButton("From Kronos")
-        self._btn_pull_kronos.setToolTip("Pull a .pcg file from the Kronos over FTP")
+        self._btn_pull_kronos = QPushButton("From Instrument")
+        self._btn_pull_kronos.setToolTip("Pull a .pcg file from the instrument over FTP")
         self._btn_pull_kronos.clicked.connect(self._open_pcg_from_kronos)
         row.addWidget(self._btn_pull_kronos)
         row.addStretch(1)
@@ -1617,6 +1650,8 @@ class LibrarianShellWindow(QDialog):
         if item is None:
             return
         menu = QMenu(self)
+        menu.addAction("More Info...", self._show_pcg_properties)
+        menu.addSeparator()
         menu.addAction("Move to Merge Window", self._pull_pcg_selected_into_merge)
         self._add_expand_collapse(menu, self._tree_pcg, item)
         menu.exec(self._tree_pcg.viewport().mapToGlobal(local_pos))
@@ -1888,7 +1923,7 @@ class LibrarianShellWindow(QDialog):
             with open(path, "rb") as fh:
                 pcg = open_pcg(fh.read())
             if pcg is None:
-                return [], _MSG_SEARCH_FAILED(f"{file_name} is not a recognizable Kronos .pcg file.")
+                return [], _MSG_SEARCH_FAILED(f"{file_name} is not a recognizable instrument .pcg file.")
             by_addr = {(e.obj_type, e.bank.obj_bank if e.bank is not None else 0, e.index): e
                        for e in pcg.objects}
             found = [loc for loc in missing if (loc.obj_type, loc.bank, loc.number) in by_addr]
@@ -2235,6 +2270,13 @@ class LibrarianShellWindow(QDialog):
             return [f"Category: {info.category}   Sub-Category: {info.sub_category}"], None
         if obj_type == OBJ_SET_LIST:
             return [], self._setlist_slot_rows(body)
+        if obj_type == OBJ_DRUM_KIT:
+            refs = list(object_body.iter_drum_kit_sample_refs(body))
+            return [f"Populated sample zones: {len(refs)}  (across "
+                    f"{len({n for n, _z, _u, _i in refs})} of {object_body.DRUM_KIT_NOTE_COUNT} notes)"], None
+        if obj_type == OBJ_WAVE_SEQ:
+            refs = list(object_body.iter_wave_seq_sample_refs(body))
+            return [f"Multisample steps: {len(refs)}  (of {object_body.WAVE_SEQ_STEP_COUNT})"], None
         return [], None
 
     def _setlist_slot_rows(self, body: bytes) -> List[str]:
@@ -2297,7 +2339,7 @@ class LibrarianShellWindow(QDialog):
         "a real Kronos ships INT Combi banks I-E/I-F/I-G as init placeholders,
         which HasContent correctly reads as free". None when every slot in
         this bank holds real content."""
-        limit = MAX_COUNT if obj_type == OBJ_SET_LIST else 128
+        limit = object_types.slot_count(obj_type, bank)
         for i in range(limit):
             entry = self._index.get(obj_type, bank, i)
             if entry is None:
@@ -2326,13 +2368,7 @@ class LibrarianShellWindow(QDialog):
     def _is_init_body(self, obj_type: int, body: bytes) -> bool:
         """InitObjects.IsInit routed through object_body.py — name signal for
         Program, name-or-all-defaults for Combi, aggregate for Set List."""
-        if obj_type == OBJ_PROGRAM:
-            return object_body.program_body_is_init(body)
-        if obj_type == OBJ_COMBI:
-            return object_body.combi_body_is_init(body)
-        if obj_type == OBJ_SET_LIST:
-            return object_body.setlist_body_is_init(body)
-        return False
+        return object_body.is_init(obj_type, body)
 
     def _slot_has_content(self, obj_type: int, content_hash: str) -> bool:
         """"This slot holds something real" (LocalLibraryCache.HasContent), memoized
@@ -2377,11 +2413,11 @@ class LibrarianShellWindow(QDialog):
         category_choice, setlist_slots = self._object_body_editable_fields(obj_type, body)
         dependencies = None
         on_scan_pcg = None
-        if obj_type in (OBJ_COMBI, OBJ_SET_LIST) and body is not None:
+        if body is not None:
             requires_rows = self._walk_local_deps(obj_type, body, 0, set())
             used_by_rows = [
                 f"{loc.label()}  used by  {ObjLoc(ref.ref_obj, ref.ref_bank, ref.ref_index).label()}"
-                for ref in self._build_local_catalog().referrers_of(loc)]
+                for ref in self._build_local_catalog(_referrer_types_for(obj_type)).referrers_of(loc)]
             dependencies = (requires_rows or ["(none)"], used_by_rows or ["(none)"])
             on_scan_pcg = self._scan_dependencies_for_selected
         dlg = _PropertiesDialog(f"Properties — {loc.label()}", entry.display_name,
@@ -2464,9 +2500,7 @@ class LibrarianShellWindow(QDialog):
         new_body = body
         changes: List[str] = []
         if dlg.new_name and dlg.new_name != current_name:
-            writer = (object_body.write_program_name if obj_type == OBJ_PROGRAM
-                     else object_body.write_combi_name)
-            new_body = writer(new_body, dlg.new_name)
+            new_body = _name_writer(obj_type)(new_body, dlg.new_name)
             changes.append(f'name to "{dlg.new_name}"')
         if dlg.new_category is not None:
             cat, sub = dlg.new_category
@@ -2487,18 +2521,23 @@ class LibrarianShellWindow(QDialog):
         if scope is not None:
             scope.dispose()
 
-    def _build_local_catalog(self) -> LibraryCatalog:
+    def _build_local_catalog(self, obj_types=None) -> LibraryCatalog:
+        """`obj_types`: restrict to the referrer types the caller actually needs (see
+        _referrer_types_for) — a cold catalog reads every Program blob, which is slow over a share."""
+        wanted = obj_types if obj_types is not None else (OBJ_COMBI, OBJ_SET_LIST, OBJ_PROGRAM)
         cat = LibraryCatalog()
         for key, entry in self._index.entries.items():
             obj_type, bank, number = _parse_key(key)
-            if obj_type not in (OBJ_COMBI, OBJ_SET_LIST):
-                continue
+            if obj_type not in wanted:
+                continue   # Drum Kits / Wave Sequences only ever get referenced, never reference
             body = self._blobs.get(entry.current_hash)
             if body is None:
                 continue
             dump = ObjectDump(obj_type, bank, number, entry.version, body)
             if obj_type == OBJ_COMBI:
                 cat.add_combi(dump)
+            elif obj_type == OBJ_PROGRAM:
+                cat.add_program(dump)
             else:
                 cat.add_setlist(dump)
         return cat
@@ -2530,7 +2569,7 @@ class LibrarianShellWindow(QDialog):
             self._log("Swap aborted: missing blob content for source or destination.")
             return False
 
-        catalog = self._build_local_catalog()
+        catalog = self._build_local_catalog(_referrer_types_for(src.obj_type))
         src_dump = ObjectDump(src.obj_type, src.bank, src.number, src_entry.version, src_body)
         dst_dump = ObjectDump(dst.obj_type, dst.bank, dst.number, dst_entry.version, dst_body)
         plan = plan_move(catalog, src, src_dump, dst, dst_dump)
@@ -2706,10 +2745,7 @@ class LibrarianShellWindow(QDialog):
         body = self._blobs.get(entry.current_hash)
         if body is None:
             return
-        writer = (object_body.write_program_name if obj_type == OBJ_PROGRAM
-                  else object_body.write_combi_name if obj_type == OBJ_COMBI
-                  else object_body.write_setlist_name)
-        new_body = writer(body, new_name.strip())
+        new_body = _name_writer(obj_type)(body, new_name.strip())
         self._write_local_body_edit(loc, new_body, f'name to "{new_name.strip()}"')
         self._local_status_label.setText(
             f"Renamed {loc.label()} to \"{new_name.strip()}\"")
@@ -2719,7 +2755,7 @@ class LibrarianShellWindow(QDialog):
         """Port of ConfirmDeleteDependency: warn before deleting something other Combis/
         Set Lists depend on, listing up to 8 referrers. Returns True to proceed."""
         dependents: List[str] = []
-        catalog = self._build_local_catalog()
+        catalog = self._build_local_catalog(_referrer_types_for(*{l.obj_type for l in locs}))
         for loc in locs:
             for ref in catalog.referrers_of(loc):
                 dependents.append(
@@ -2748,8 +2784,7 @@ class LibrarianShellWindow(QDialog):
             self._local_status_label.setText("Select one or more Keyboard Library items to delete/restore.")
             return
         # Skip read-only GM/g rows (browse-only, never writable).
-        locs = [l for l in selected_locs
-                if not (l.obj_type == OBJ_PROGRAM and l.bank in _READONLY_PROGRAM_BANKS)]
+        locs = [l for l in selected_locs if not object_types.is_read_only(l.obj_type, l.bank)]
         if not locs:
             self._local_status_label.setText("Read-only bank - cannot delete.")
             return
@@ -2880,13 +2915,13 @@ class LibrarianShellWindow(QDialog):
         a_move = menu.addAction("Move to Merge Window", self._stage_local_selected_to_merge)
         a_move.setToolTip("Stage this (and its dependencies) in the Merge Window to rearrange "
                           "and push it somewhere else.")
-        if is_leaf and payload[1] in (OBJ_COMBI, OBJ_SET_LIST):
+        if is_leaf and payload[1] in (OBJ_PROGRAM, OBJ_COMBI, OBJ_SET_LIST):
             a_scan = menu.addAction("Scan PCG for dependencies...", self._scan_dependencies_for_selected)
             a_scan.setToolTip("Pick a .pcg file and stage whatever it holds of this object's "
                               "missing dependencies into the Merge Window.")
         menu.addSeparator()
         a_rename = menu.addAction("Rename...", self._rename_local_selected)
-        a_props = menu.addAction("Properties...", self._show_local_properties)
+        a_props = menu.addAction("More Info...", self._show_local_properties)
         menu.addSeparator()
         a_delete = menu.addAction("Delete", self._toggle_delete_local_selected)
         # Restore label when every selected item is already pending-delete (C# parity).
@@ -2927,6 +2962,8 @@ class LibrarianShellWindow(QDialog):
         if item is None:
             return
         menu = QMenu(self)
+        menu.addAction("More Info...", self._show_merge_properties)
+        menu.addSeparator()
         menu.addAction("Remove", self._remove_merge_selected)
         self._add_expand_collapse(menu, self._tree_merge, item)
         menu.exec(self._tree_merge.viewport().mapToGlobal(local_pos))
@@ -2939,7 +2976,7 @@ class LibrarianShellWindow(QDialog):
         """Port of ScanPcgForDependencies: pick a .pcg and stage whatever it holds of the
         selected Combi/Set List's missing dependencies into the Merge Window."""
         payload = self._leaf_payload(self._tree_local)
-        if payload is None or payload[0] != "local" or payload[1] == OBJ_PROGRAM:
+        if payload is None or payload[0] != "local" or payload[1] in (OBJ_DRUM_KIT, OBJ_WAVE_SEQ):
             return
         _, obj_type, bank, number = payload
         entry = self._index.get(obj_type, bank, number)
@@ -2965,7 +3002,7 @@ class LibrarianShellWindow(QDialog):
         pcg = open_pcg(data)
         if pcg is None:
             QMessageBox.warning(self, "Scan PCG", f"{os.path.basename(path)} is not a "
-                                "recognizable Kronos .pcg file.")
+                                "recognizable instrument .pcg file.")
             return
         wanted = {(r.ref.obj_type, r.ref.bank, r.ref.number) for r in missing}
         found = 0
@@ -3066,7 +3103,7 @@ class LibrarianShellWindow(QDialog):
             # RESOLVED body (references repointed at local reality, exactly as placement itself
             # would write it) is what makes "scan duplicates and reuse" actually fire for the
             # re-copied-PCG case (port of LibrarianShellViewModel.FindExistingLocalCopy).
-            if existing_loc is None and entry.obj_type == OBJ_COMBI and entry.ref_sites:
+            if existing_loc is None and entry.ref_sites:
                 resolved_probe, _ = self._merge.resolve_references_for_placement(entry, self._local_lookup)
                 resolved_probe_hash = BlobStore.compute_hash(resolved_probe)
                 if resolved_probe_hash != entry.content_hash:
@@ -3102,7 +3139,7 @@ class LibrarianShellWindow(QDialog):
         if existing is not None and existing.current_hash != entry.content_hash:
             occupied_body = self._blobs.get(existing.current_hash)
             if occupied_body is not None and not self._is_init_body(entry.obj_type, occupied_body):
-                catalog = self._build_local_catalog()
+                catalog = self._build_local_catalog(_referrer_types_for(entry.obj_type))
                 displaced_refs = catalog.referrers_of(dst)
                 if displaced_refs:
                     if not self._chk_force_overwrite.isChecked():
@@ -3156,7 +3193,7 @@ class LibrarianShellWindow(QDialog):
     def _auto_fill_to_library(self) -> None:
         """Port of AutoFillToLibraryAsync/AutoFillFromMergeAsync: places every item
         currently staged in the Merge Window into the next free Local Library slot of
-        its own type - Programs first, then Combis, then Set Lists (_ROOT_ORDER), so
+        its own type - Drum Kits, Wave Sequences, Programs, Combis, then Set Lists (_PLACE_ORDER), so
         a Combi/Set List's dependencies are already placed by the time it's Auto-
         Filled and its references resolve to where they actually landed. Reuses
         _place_merge_entry_at per item, which already runs resolve_references_for_
@@ -3193,7 +3230,7 @@ class LibrarianShellWindow(QDialog):
         # equivalent and linear. Reset per sweep, never cached across one.
         self._auto_fill_cursor: Dict[int, Tuple[int, int]] = {}
         self._auto_fill_queue: List[MergeEntry] = []
-        for obj_type in _ROOT_ORDER:
+        for obj_type in _PLACE_ORDER:
             # A snapshot per type - _place_merge_entry_at mutates self._merge as it goes
             # (removes on write, or on a dedup-reuse), so this list must not be a live view.
             self._auto_fill_queue.extend(
@@ -3303,10 +3340,10 @@ class LibrarianShellWindow(QDialog):
         cursor is left pointing AT the candidate, not past it — see
         _advance_auto_fill_cursor for why."""
         banks = EDITABLE_BANKS.get(obj_type, [])
-        limit = SLOT_COUNT.get(obj_type, 128)
         start_bank, start_slot = self._auto_fill_cursor.get(obj_type, (0, 0))
         for bank_pos in range(start_bank, len(banks)):
             bank = banks[bank_pos]
+            limit = object_types.slot_count(obj_type, bank)
             first = start_slot if bank_pos == start_bank else 0
             for i in range(first, limit):
                 entry = self._index.get(obj_type, bank, i)
@@ -3426,7 +3463,7 @@ class LibrarianShellWindow(QDialog):
         hash_by_label = hash_by_label or {}
         unresolved_by_label = unresolved_by_label or {}
         scope = self._undo.begin(description)
-        catalog = self._build_local_catalog()
+        catalog = self._build_local_catalog(_referrer_types_for(obj_type))
         occupants = self._dest_occupants_for(placed)
         plan = plan_batch_move(catalog, obj_type, placed, occupants, divert_displaced=False,
                                bank_type_of=self._local_bank_type_of,
@@ -3537,7 +3574,7 @@ class LibrarianShellWindow(QDialog):
     def _open_pcg_from_computer(self) -> None:
         # Only .pcg files are offered/selectable (req 8): the Kronos PCG format is the sole
         # format this pane understands, so attempting anything else isn't an option.
-        path, _ = QFileDialog.getOpenFileName(self, "Open PCG File", "", "Kronos PCG (*.pcg)")
+        path, _ = QFileDialog.getOpenFileName(self, "Open PCG File", "", "Instrument PCG (*.pcg)")
         if not path:
             return
         if not path.lower().endswith(".pcg"):
@@ -3557,7 +3594,7 @@ class LibrarianShellWindow(QDialog):
             QApplication.restoreOverrideCursor()
         if pcg is None:
             QMessageBox.warning(self, "Open PCG", f"{os.path.basename(path)} is not a recognizable "
-                                "Kronos .pcg file.")
+                                "instrument .pcg file.")
             return
         self._pcg = pcg
         self._pcg_source_label = os.path.basename(path)
@@ -3585,7 +3622,7 @@ class LibrarianShellWindow(QDialog):
         (unwritable/absent temp directory) for no benefit."""
         if not self._ftp_username:
             QMessageBox.information(self, "Pull PCG", "Set up FTP credentials (File Manager or "
-                                    "Settings) before pulling a PCG file from the Kronos.")
+                                    "Settings) before pulling a PCG file from the instrument.")
             return
         if self._pcg_pull_active:
             return
@@ -3631,12 +3668,12 @@ class LibrarianShellWindow(QDialog):
             expected = picker.selected_size or 0
         except Exception as e:                        # noqa: BLE001 - reported to the user
             worker.disconnect()
-            QMessageBox.warning(self, "Pull PCG", f"Could not browse the Kronos: {e}")
+            QMessageBox.warning(self, "Pull PCG", f"Could not browse the instrument: {e}")
             return
 
         self._pcg_pull_active = True
         self._refresh_enable()
-        self._log(f"Pulling {remote_path} from the Kronos…")
+        self._log(f"Pulling {remote_path} from the instrument…")
         dlg = _TransferProgressDialog("Pull PCG", f"Downloading {os.path.basename(remote_path)}…",
                                       expected, self)
         state: Dict[str, object] = {}
@@ -3694,10 +3731,10 @@ class LibrarianShellWindow(QDialog):
         pcg = state.get("pcg")
         if pcg is None:
             QMessageBox.warning(self, "Pull PCG", f"{os.path.basename(remote_path)} is not a "
-                                "recognizable Kronos .pcg file.")
+                                "recognizable instrument .pcg file.")
             return
         self._pcg = pcg
-        self._pcg_source_label = f"Kronos:{remote_path}"
+        self._pcg_source_label = f"Instrument:{remote_path}"
         self._log(f"Pulled {self._pcg_source_label}: {len(pcg.objects)} object(s), "
                  f"{len(pcg.rejected_banks)} rejected bank(s).")
         self._pcg_status_label.setText(
@@ -3931,7 +3968,7 @@ class LibrarianShellWindow(QDialog):
             if quiet:
                 return False
             QMessageBox.warning(self, "Librarian Shell", "Not connected / MIDI monitoring off — "
-                                "Sync/Commit need a live Kronos connection.")
+                                "Sync/Commit need a live instrument connection.")
             return False
         return True
 
@@ -3950,18 +3987,13 @@ class LibrarianShellWindow(QDialog):
         body = self._blobs.get(referrer.current_hash)
         if body is None:
             return False
-        type_for_func33 = 1 if entry.missing_ref.obj_type == OBJ_PROGRAM else 0
-        func33_bank = obj_bank_to_func33(type_for_func33, new_bank)
-        if func33_bank < 0:
+        new_loc = ObjLoc(entry.missing_ref.obj_type, new_bank, new_number)
+        kind = depscan.canonical_kind(entry.ref_kind)
+        enc = encode_ref(kind, new_loc) if kind else None
+        if enc is None or (kind != "osc_zone" and enc[0] < 0):
             return False
         mutable = bytearray(body)
-        if entry.ref_kind == "combi_timbre":
-            set_combi_timbre_ref(mutable, entry.site, func33_bank=func33_bank, number=new_number)
-        elif entry.ref_kind == "setlist_slot":
-            set_setlist_slot_ref(mutable, entry.site, func33_bank=func33_bank, index=new_number)
-        else:
-            return False
-        new_loc = ObjLoc(entry.missing_ref.obj_type, new_bank, new_number)
+        apply_ref_patch(mutable, kind, entry.site, enc[0], enc[1])
         self._write_local_body_edit(entry.required_by, bytes(mutable),
                                     f"repointed {entry.ref_kind} to {new_loc.label()}")
         return True
@@ -4124,11 +4156,12 @@ class LibrarianShellWindow(QDialog):
         return d.hex() if d is not None else None
 
     def _get_bank_objects(self, obj_type: int, bank: int) -> Dict[int, Tuple[int, bytes]]:
-        slot_count = SLOT_COUNT.get(obj_type, 128)
+        slot_count = object_types.slot_count(obj_type, bank)
         out: Dict[int, Tuple[int, bytes]] = {}
+        # Set Lists (69 KB) and Drum Kits (38 KB) are big replies; the rest are a few KB.
+        timeout_ms = 6000 if obj_type in (OBJ_SET_LIST, OBJ_DRUM_KIT) else 3000
         for number in range(slot_count):
-            d = self._service.dump_object_parsed(obj_type, bank, number,
-                                                 no_response_ms=6000 if obj_type == OBJ_SET_LIST else 3000)
+            d = self._service.dump_object_parsed(obj_type, bank, number, no_response_ms=timeout_ms)
             if d is not None:
                 out[number] = (d.version, d.body)
         return out
@@ -4662,7 +4695,7 @@ class LibrarianShellWindow(QDialog):
                       + (" (cancelled early)" if pull_result.cancelled else ""))
         if result is not None and result.cancelled:
             self._log("Sync/Commit was cancelled. Anything already written to the "
-                      "Kronos is written; everything else still has its pending "
+                      "instrument is written; everything else still has its pending "
                       "changes and will go out on the next Sync.")
         for w in plan.warnings:
             self._log("  ! " + w)
@@ -4704,7 +4737,7 @@ class LibrarianShellWindow(QDialog):
             if (not self._run_force and not was_overwrite_retry
                     and (plan.is_refusable or plan.conflicted)):
                 reason = warning or _msg_push_conflict_summary(len(plan.conflicted))
-                r = QMessageBox.warning(self, "Overwrite the Kronos?", _msg_push_overwrite_prompt(reason),
+                r = QMessageBox.warning(self, "Overwrite the instrument?", _msg_push_overwrite_prompt(reason),
                                         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                                         QMessageBox.StandardButton.No)
                 if r == QMessageBox.StandardButton.Yes:
@@ -4809,7 +4842,7 @@ def _selftest() -> None:
             baseline_hash="d", current_hash="d", display_name="C0", created_utc=now, modified_utc=now),
     }
     groups = _group_local(entries)
-    check("group-local-all-roots", set(groups.keys()) == {OBJ_PROGRAM, OBJ_COMBI, OBJ_SET_LIST})
+    check("group-local-all-roots", set(groups.keys()) == set(object_types.TYPE_ORDER))
     check("group-local-setlist-empty", groups[OBJ_SET_LIST] == {})
     prog_bank0 = groups[OBJ_PROGRAM][0x00]
     check("group-local-sorted-by-number", [t[0] for t in prog_bank0] == [2, 5])

@@ -60,7 +60,7 @@ class KscCollection:
         if target_file_name is not None and target_file_name.upper().endswith("_USERBANK.KSC"):
             raise ValueError(
                 "Refusing to write a _UserBank.KSC via normal-mode to_bytes()/save() — that "
-                "format (plain filename list + #uuid:) is real Kronos-generated output only. "
+                "format (plain filename list + #uuid:) is real instrument-generated output only. "
                 "Use to_user_bank_bytes()/save_user_bank() for the dedicated #>>uuid:-reference format.")
 
         if self.bank_uuid is None:

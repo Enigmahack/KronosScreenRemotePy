@@ -19,7 +19,7 @@ from datetime import datetime
 from typing import List, Optional, Tuple
 
 from PySide6.QtCore import QMimeData, QPoint, Qt, QTimer, Signal, Slot
-from PySide6.QtGui import QDrag, QKeyEvent
+from PySide6.QtGui import QColor, QDrag, QKeyEvent
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDialog,
     QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit, QMainWindow,
@@ -38,10 +38,16 @@ class FileEntry:
     is_directory: bool
     size: int
     modified: Optional[datetime]
+    read_only: bool = False
+    is_parent: bool = False   # the ".." row; full_path is the parent folder
 
     @property
     def display_name(self) -> str:
         return f"\U0001F4C1 {self.name}" if self.is_directory else self.name
+
+    @property
+    def size_text_or_blank(self) -> str:
+        return "" if self.is_parent else self.size_text
 
     @property
     def size_text(self) -> str:
@@ -55,7 +61,7 @@ class FileEntry:
 
     @property
     def date_text(self) -> str:
-        if not self.modified:
+        if self.is_parent or not self.modified:
             return ""
         return self.modified.strftime("%Y-%m-%d %H:%M")
 
@@ -130,6 +136,12 @@ _SORT_DATE = 2
 
 
 def _sort_entries(entries: List[FileEntry], col: int, ascending: bool) -> List[FileEntry]:
+    """Sorted view with the ".." row, if present, always pinned first."""
+    parent = [e for e in entries if e.is_parent]
+    return parent + _sort_plain([e for e in entries if not e.is_parent], col, ascending)
+
+
+def _sort_plain(entries: List[FileEntry], col: int, ascending: bool) -> List[FileEntry]:
     if col == _SORT_SIZE:
         key = lambda e: (0 if e.is_directory else 1, e.size)
     elif col == _SORT_DATE:
@@ -218,14 +230,14 @@ class FtpTopLevelPathError(Exception):
     top-level Kronos storage volume (SSD1/SSD2/SSD3/...)."""
     def __init__(self, path: str, action: str = "rename/move"):
         super().__init__(
-            f"Refusing to {action} '{path}' — top-level Kronos storage "
+            f"Refusing to {action} '{path}' — top-level instrument storage "
             "volumes (SSD1/SSD2/SSD3/...) can never be renamed, moved, or deleted.")
 
 
 class FtpPathTooLongError(Exception):
     def __init__(self, path: str):
         super().__init__(
-            f"That would make the remote path {len(path)} characters long — the Kronos's "
+            f"That would make the remote path {len(path)} characters long — the instrument's "
             f"own filesystem refuses anything over {_MAX_REMOTE_PATH_LENGTH}. Try a shorter "
             "name, or a shallower destination folder.")
 
@@ -286,7 +298,11 @@ class _FtpWorker:
                     except ValueError:
                         pass
                 full = f"{path.rstrip('/')}/{name}"
-                entries.append(FileEntry(name, full, is_dir, size, modified))
+                perm = facts.get("perm")
+                # RFC 3659 perm facts: files carry 'w'/'a' when writable, directories 'c'/'m'/'p'. Only a
+                # non-empty fact that lacks all of them counts as evidence.
+                ro = bool(perm) and not any(c in perm for c in ("cmp" if is_dir else "wa"))
+                entries.append(FileEntry(name, full, is_dir, size, modified, read_only=ro))
         except Exception:
             entries = self._list_dir_fallback(path)
         return entries
@@ -307,7 +323,9 @@ class _FtpWorker:
             is_dir = line.startswith("d")
             size = int(parts[4]) if not is_dir else 0
             full = f"{path.rstrip('/')}/{name}"
-            entries.append(FileEntry(name, full, is_dir, size, None))
+            # Unix mode string: read-only only if nobody (owner/group/other) can write.
+            ro = len(parts[0]) == 10 and "w" not in parts[0][1:]
+            entries.append(FileEntry(name, full, is_dir, size, None, read_only=ro))
         return entries
 
     def upload(self, local_path: str, remote_path: str):
@@ -604,7 +622,7 @@ class FileManagerWindow(QMainWindow):
     # ── UI construction ───────────────────────────────────────────────────────
 
     def _setup_ui(self):
-        self.setWindowTitle("File Manager — Kronos")
+        self.setWindowTitle("File Manager — Instrument")
         self.resize(960, 600)
         self.setMinimumSize(640, 400)
         self.setStyleSheet(_STYLE)
@@ -655,7 +673,7 @@ class FileManagerWindow(QMainWindow):
         self._btn_remote_up.setToolTip("Parent directory — drag files here to move up")
         self._btn_remote_up.setAcceptDrops(True)
         rn_lay.addWidget(self._btn_remote_up)
-        lbl_remote = QLabel("Kronos: ")
+        lbl_remote = QLabel("Instrument: ")
         lbl_remote.setStyleSheet("color: #88AADD; font-weight: bold;")
         rn_lay.addWidget(lbl_remote)
         self._remote_path_box = QLineEdit()
@@ -670,7 +688,7 @@ class FileManagerWindow(QMainWindow):
         splitter.setHandleWidth(4)
 
         self._local_tree = self._make_tree(False, "Name (Local)", "Size", "Modified")
-        self._remote_tree = self._make_tree(True, "Name (Kronos)", "Size", "Modified")
+        self._remote_tree = self._make_tree(True, "Name (Instrument)", "Size", "Modified")
         splitter.addWidget(self._local_tree)
         splitter.addWidget(self._remote_tree)
         splitter.setSizes([480, 480])
@@ -688,8 +706,8 @@ class FileManagerWindow(QMainWindow):
         lt_lay = QHBoxLayout(local_tb)
         lt_lay.setContentsMargins(6, 4, 6, 4)
         lt_lay.setSpacing(4)
-        self._btn_upload = QPushButton("→ Send to Kronos")
-        self._btn_upload.setToolTip("Upload selected local files to Kronos")
+        self._btn_upload = QPushButton("→ Send to Instrument")
+        self._btn_upload.setToolTip("Upload selected local files to the instrument")
         self._btn_local_new = QPushButton("New Folder")
         self._btn_local_del = QPushButton("Delete")
         self._btn_local_ren = QPushButton("Rename")
@@ -708,7 +726,7 @@ class FileManagerWindow(QMainWindow):
         rt_lay.setContentsMargins(6, 4, 6, 4)
         rt_lay.setSpacing(4)
         self._btn_download = QPushButton("← Send to PC")
-        self._btn_download.setToolTip("Download selected Kronos files to local")
+        self._btn_download.setToolTip("Download selected instrument files to local")
         self._btn_remote_new = QPushButton("New Folder")
         self._btn_remote_del = QPushButton("Delete")
         self._btn_remote_ren = QPushButton("Rename")
@@ -784,7 +802,7 @@ class FileManagerWindow(QMainWindow):
     def _initial_connect(self):
         self._populate_drives()
         self._refresh_local()
-        self._set_status("Connecting to Kronos FTP…")
+        self._set_status("Connecting to the instrument FTP…")
         self._run_bg(self._bg_connect)
 
     def _bg_connect(self):
@@ -846,18 +864,22 @@ class FileManagerWindow(QMainWindow):
             p = pathlib.Path(self._local_path)
             for d in sorted(p.iterdir()):
                 try:
-                    if d.is_dir():
-                        entries.append(FileEntry(d.name, str(d), True, 0,
-                                                 datetime.fromtimestamp(d.stat().st_mtime)))
-                    else:
-                        st = d.stat()
-                        entries.append(FileEntry(d.name, str(d), False, st.st_size,
-                                                 datetime.fromtimestamp(st.st_mtime)))
+                    st = d.stat()
+                    is_dir = d.is_dir()
+                    # Windows sets the READONLY attribute on customised folders (Documents, Desktop…),
+                    # so it only means "read-only" for files.
+                    ro = not is_dir and (bool(getattr(st, "st_file_attributes", 0) & 0x1)
+                                         or not os.access(d, os.W_OK))
+                    entries.append(FileEntry(d.name, str(d), is_dir, 0 if is_dir else st.st_size,
+                                             datetime.fromtimestamp(st.st_mtime), read_only=ro))
                 except PermissionError:
                     continue
+            parent = str(p.parent)
+            if parent != self._local_path:
+                entries.append(FileEntry("..", parent, True, 0, None, is_parent=True))
             self._local_entries = _sort_entries(entries, self._local_sort_col, self._local_sort_asc)
             self._populate_tree(self._local_tree, self._local_entries)
-            self._set_status(f"{len(entries)} item(s) in {self._local_path}")
+            self._set_status(f"{sum(not e.is_parent for e in entries)} item(s) in {self._local_path}")
         except Exception as e:
             self._set_status(f"Error listing local: {e}")
 
@@ -876,17 +898,20 @@ class FileManagerWindow(QMainWindow):
 
     @Slot(list)
     def _on_remote_listing(self, entries: List[FileEntry]):
+        parent = _ftp_parent(self._remote_path)
+        if parent != self._remote_path:
+            entries = entries + [FileEntry("..", parent, True, 0, None, is_parent=True)]
         self._remote_entries = _sort_entries(entries, self._remote_sort_col, self._remote_sort_asc)
         self._remote_path_box.setText(self._remote_path)
         self._populate_tree(self._remote_tree, self._remote_entries)
-        self._set_status(f"{len(entries)} item(s) in {self._remote_path}")
+        self._set_status(f"{sum(not e.is_parent for e in entries)} item(s) in {self._remote_path}")
 
     def _populate_tree(self, tree: QTreeWidget, entries: List[FileEntry]):
         tree.clear()
         for entry in entries:
-            item = QTreeWidgetItem([entry.display_name, entry.size_text, entry.date_text])
-            if entry.is_directory:
-                item.setForeground(0, Qt.GlobalColor.cyan)
+            item = QTreeWidgetItem([entry.display_name, entry.size_text_or_blank, entry.date_text])
+            if entry.read_only:
+                item.setForeground(0, QColor("#8FB8E8"))
             tree.addTopLevelItem(item)
 
     # ── Upload ────────────────────────────────────────────────────────────────
@@ -918,7 +943,7 @@ class FileManagerWindow(QMainWindow):
             return
         items = self._selected_files(self._remote_tree, self._remote_entries)
         if not items:
-            self._set_status("Select one or more Kronos files to download.")
+            self._set_status("Select one or more instrument files to download.")
             return
         self._set_busy(True, f"Downloading {len(items)} file(s)…")
         self._run_bg(self._bg_download, items, False)
@@ -973,6 +998,8 @@ class FileManagerWindow(QMainWindow):
         if not items:
             self._set_status("Select items to delete.")
             return
+        if self._refuse_read_only(items):
+            return
         r = QMessageBox.question(self, "Delete",
                                  f"Delete {len(items)} item(s)?",
                                  QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
@@ -998,6 +1025,8 @@ class FileManagerWindow(QMainWindow):
         if not items:
             self._set_status("Select items to delete.")
             return
+        if self._refuse_read_only(items):
+            return
         # A top-level entry is a Kronos storage volume (SSD1/SSD2/...), not a
         # user folder — deleting one would recursively wipe the whole volume.
         # Refused outright, not just warned about: a generic "Delete N item(s)?"
@@ -1007,11 +1036,11 @@ class FileManagerWindow(QMainWindow):
         top_level = [e for e in items if _is_top_level_ftp_path(e.full_path)]
         if top_level:
             names = ", ".join(e.name for e in top_level)
-            self._set_status(f"Cannot delete {names} — top-level Kronos storage "
+            self._set_status(f"Cannot delete {names} — top-level instrument storage "
                              "volumes can never be deleted.")
             return
         r = QMessageBox.question(self, "Delete",
-                                 f"Delete {len(items)} item(s) from Kronos?",
+                                 f"Delete {len(items)} item(s) from the instrument?",
                                  QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if r != QMessageBox.Yes:
             return
@@ -1040,6 +1069,8 @@ class FileManagerWindow(QMainWindow):
         if len(items) != 1:
             self._set_status("Select exactly one item to rename.")
             return
+        if self._refuse_read_only(items):
+            return
         entry = items[0]
         new_name, ok = QInputDialog.getText(self, "Rename", "New name:", text=entry.name)
         if not ok or not new_name.strip() or new_name.strip() == entry.name:
@@ -1059,13 +1090,15 @@ class FileManagerWindow(QMainWindow):
         if len(items) != 1:
             self._set_status("Select exactly one item to rename.")
             return
+        if self._refuse_read_only(items):
+            return
         entry = items[0]
         # Checked here, ahead of even prompting for a new name, so the context
         # menu's own disabled state isn't the only thing standing between the
         # user and this — _FtpWorker.rename's guard is the last line of
         # defense, not the first (matches C#'s OnRemoteRename).
         if _is_top_level_ftp_path(entry.full_path):
-            self._set_status(f"Cannot rename '{entry.name}' — top-level Kronos storage "
+            self._set_status(f"Cannot rename '{entry.name}' — top-level instrument storage "
                              "volumes can never be renamed or moved.")
             return
         new_name, ok = QInputDialog.getText(self, "Rename", "New name:", text=entry.name)
@@ -1098,6 +1131,7 @@ class FileManagerWindow(QMainWindow):
         # INTO the volume) is unaffected.
         remote_top_level_selected = is_remote and any(
             _is_top_level_ftp_path(e.full_path) for e in entries)
+        read_only_selected = any(e.read_only for e in entries)
 
         menu = QMenu(self)
 
@@ -1105,7 +1139,7 @@ class FileManagerWindow(QMainWindow):
             a = menu.addAction("Open")
             a.triggered.connect(lambda: self._ctx_open(entry, is_remote))
         else:
-            label = "← Send to PC" if is_remote else "→ Send to Kronos"
+            label = "← Send to PC" if is_remote else "→ Send to Instrument"
             a = menu.addAction(label)
             a.setEnabled(has_files)
             a.triggered.connect(self._on_download if is_remote else self._on_upload)
@@ -1113,11 +1147,11 @@ class FileManagerWindow(QMainWindow):
         menu.addSeparator()
 
         a = menu.addAction("Cut")
-        a.setEnabled(has_selection and not remote_top_level_selected)
+        a.setEnabled(has_selection and not remote_top_level_selected and not read_only_selected)
         a.triggered.connect(lambda: self._do_cut(tree, is_remote))
 
         a = menu.addAction("Copy")
-        a.setEnabled(has_selection and not remote_top_level_selected)
+        a.setEnabled(has_selection and not remote_top_level_selected and not read_only_selected)
         a.triggered.connect(lambda: self._do_copy(tree, is_remote))
 
         a = menu.addAction("Paste")
@@ -1127,11 +1161,12 @@ class FileManagerWindow(QMainWindow):
         menu.addSeparator()
 
         a = menu.addAction("Rename")
-        a.setEnabled(is_single and entry is not None and not remote_top_level_selected)
+        a.setEnabled(is_single and entry is not None and not remote_top_level_selected
+                     and not read_only_selected)
         a.triggered.connect(self._on_remote_rename if is_remote else self._on_local_rename)
 
         a = menu.addAction("Delete")
-        a.setEnabled(has_selection and not remote_top_level_selected)
+        a.setEnabled(has_selection and not remote_top_level_selected and not read_only_selected)
         a.triggered.connect(self._on_remote_delete if is_remote else self._on_local_delete)
 
         menu.addSeparator()
@@ -1156,9 +1191,17 @@ class FileManagerWindow(QMainWindow):
 
     # ── Clipboard (cut/copy/paste) ────────────────────────────────────────────
 
+    def _refuse_read_only(self, items: List[FileEntry]) -> bool:
+        if any(e.read_only for e in items):
+            self._set_status("Read-only item(s) can't be cut, copied, renamed or deleted.")
+            return True
+        return False
+
     def _do_cut(self, tree: QTreeWidget, is_remote: bool):
         items = self._selected_entries(tree, self._remote_entries if is_remote else self._local_entries)
         if not items:
+            return
+        if self._refuse_read_only(items):
             return
         self._clipboard = ClipboardPayload(is_cut=True, from_remote=is_remote, items=items)
         self._set_status(f"Cut {len(items)} item(s) — paste to move.")
@@ -1166,6 +1209,8 @@ class FileManagerWindow(QMainWindow):
     def _do_copy(self, tree: QTreeWidget, is_remote: bool):
         items = self._selected_entries(tree, self._remote_entries if is_remote else self._local_entries)
         if not items:
+            return
+        if self._refuse_read_only(items):
             return
         self._clipboard = ClipboardPayload(is_cut=False, from_remote=is_remote, items=items)
         self._set_status(f"Copied {len(items)} item(s) — paste to copy.")
@@ -1253,6 +1298,8 @@ class FileManagerWindow(QMainWindow):
 
     def _handle_same_pane_drop(self, is_remote: bool, items: List[FileEntry],
                                target_folder: Optional[FileEntry]):
+        if self._refuse_read_only(items):
+            return
         if is_remote:
             dest = target_folder.full_path if target_folder else self._remote_path
             source_dir = _ftp_parent(items[0].full_path) if items else self._remote_path
@@ -1350,7 +1397,8 @@ class FileManagerWindow(QMainWindow):
                 return
             if key == Qt.Key_Return or key == Qt.Key_Enter:
                 entries = self._selected_entries(
-                    tree, self._remote_entries if is_remote else self._local_entries)
+                    tree, self._remote_entries if is_remote else self._local_entries,
+                    include_parent=True)
                 if len(entries) == 1 and entries[0].is_directory:
                     if is_remote:
                         self._remote_path = entries[0].full_path
@@ -1389,7 +1437,7 @@ class FileManagerWindow(QMainWindow):
             (self._local_tree, self._local_sort_col, self._local_sort_asc,
              ["Name (Local)", "Size", "Modified"]),
             (self._remote_tree, self._remote_sort_col, self._remote_sort_asc,
-             ["Name (Kronos)", "Size", "Modified"]),
+             ["Name (Instrument)", "Size", "Modified"]),
         ):
             model = tree.headerItem()
             for i, base in enumerate(base_names):
@@ -1455,11 +1503,12 @@ class FileManagerWindow(QMainWindow):
         return None
 
     def _selected_entries(self, tree: QTreeWidget,
-                          entries: List[FileEntry]) -> List[FileEntry]:
+                          entries: List[FileEntry],
+                          include_parent: bool = False) -> List[FileEntry]:
         result = []
         for item in tree.selectedItems():
             e = self._entry_from_item(item, entries)
-            if e:
+            if e and (include_parent or not e.is_parent):
                 result.append(e)
         return result
 

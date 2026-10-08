@@ -27,11 +27,12 @@ from Data.librarian_sysex import OBJ_COMBI, OBJ_PROGRAM, OBJ_SET_LIST
 import Tools.dependency_scanner as depscan
 import Tools.sample_reference_walker as samples
 
-ROM_ALWAYS_AVAILABLE = "ROM bank, always available on the Kronos"
+ROM_ALWAYS_AVAILABLE = "ROM bank, always available on the instrument"
 INIT_PLACEHOLDER_SUFFIX = "(INIT placeholder)"
 NOT_STAGED_CHILDREN = "Not staged - what this object itself references can't be known until it's found."
 
-_TYPE_NAMES = {OBJ_PROGRAM: "Program", OBJ_COMBI: "Combi", OBJ_SET_LIST: "Set List"}
+from Data.object_types import REGISTRY as _OBJECT_TYPES
+_TYPE_NAMES = {t: d.display_name for t, d in _OBJECT_TYPES.items()}
 
 
 def type_name(obj_type: int) -> str:

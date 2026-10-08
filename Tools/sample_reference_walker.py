@@ -9,9 +9,8 @@ filesystem content that can never be content-hashed, pulled, placed or repointed
 into the object-reference walker would make every Program touching a non-ROM sample
 permanently "unresolved". This walker is DISPLAY ONLY.
 
-Scope note: Drum Kit and Wave Sequence bodies also carry sample refs in C#
-(DrumKitBody.IterSampleZoneRefs / WaveSequenceBody.IterSampleStepRefs); Python's library has no
-Drum Kit / Wave Sequence object type yet, so only Programs are walked here.
+Drum Kit and Wave Sequence bodies carry sample refs too (Objects.object_body.
+iter_drum_kit_sample_refs / iter_wave_seq_sample_refs); all three object types are walked here.
 
 Byte layout hardware-confirmed 2026-08-27 against real Kronos-saved test programs (see the C#
 file header for the corpus evidence):
@@ -24,7 +23,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, Iterator, List, Optional, Tuple
 
-from Data.librarian_sysex import OBJ_PROGRAM
+from Data.librarian_sysex import OBJ_DRUM_KIT, OBJ_PROGRAM, OBJ_WAVE_SEQ
 from Data.pcg_file import WIRE_SIZE_EXI, WIRE_SIZE_HD1
 
 # Bucket names match the C# BankBucket enum (also what the panel's colour table keys on).
@@ -122,11 +121,11 @@ def iter_exi_pcm_high_slot_candidates(body: bytes) -> Iterator[Tuple[str, bytes,
 
 
 def walk(obj_type: int, body: bytes) -> List[SampleDependencyRow]:
-    """Port of SampleReferenceWalker.Walk (Program only — see module docstring)."""
-    if obj_type != OBJ_PROGRAM:
+    """Port of SampleReferenceWalker.Walk."""
+    if obj_type not in (OBJ_PROGRAM, OBJ_DRUM_KIT, OBJ_WAVE_SEQ):
         return []
-    from Objects.object_body import program_body_is_init
-    if program_body_is_init(body):
+    from Objects.object_body import is_init
+    if is_init(obj_type, body):
         return []   # an untouched slot references nothing meaningful
 
     groups: Dict[str, Tuple[str, int, str]] = {}
@@ -143,7 +142,15 @@ def walk(obj_type: int, body: bytes) -> List[SampleDependencyRow]:
         if c is not None:
             add(*c)
 
-    if len(body) == WIRE_SIZE_HD1:
+    if obj_type == OBJ_DRUM_KIT:
+        from Objects.object_body import iter_drum_kit_sample_refs
+        for _n, _z, uuid, _i in iter_drum_kit_sample_refs(body):
+            add_legacy(uuid)
+    elif obj_type == OBJ_WAVE_SEQ:
+        from Objects.object_body import iter_wave_seq_sample_refs
+        for _st, uuid, _sel in iter_wave_seq_sample_refs(body):
+            add_legacy(uuid)
+    elif len(body) == WIRE_SIZE_HD1:
         for _o, _z, uuid, _n in iter_program_sample_zone_refs(body):
             add_legacy(uuid)
     elif len(body) == WIRE_SIZE_EXI:

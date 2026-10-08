@@ -87,14 +87,14 @@ class IoMixin:
             return
         remote = self._remote_map.get(p)
         if remote is None:
-            self.status_text = "This sample wasn't pulled from the Kronos - nowhere to push it back to."
+            self.status_text = "This sample wasn't pulled from the instrument - nowhere to push it back to."
             return
         # Eva's own Save can write a zero-frame .KSF for a sample that was loaded but never fully read; pushing
         # one over a good on-Kronos sample would silently destroy it.
         if s.is_header_only:
             self.status_text = "Refusing to push: this sample has no audio data (header-only)."
             return
-        self.status_text = "Pushing to Kronos..."
+        self.status_text = "Pushing to the instrument..."
         self.status_text = source.push(p, remote).status_message
 
     def push_selected_multisample(self, source) -> None:
@@ -110,9 +110,9 @@ class IoMixin:
             return
         remote = self._remote_map.get(path)
         if remote is None:
-            self.status_text = "This multisample wasn't pulled from the Kronos - nowhere to push it back to."
+            self.status_text = "This multisample wasn't pulled from the instrument - nowhere to push it back to."
             return
-        self.status_text = "Pushing to Kronos..."
+        self.status_text = "Pushing to the instrument..."
         self.status_text = source.push(path, remote).status_message
 
     def push_collection_to_kronos(self, source) -> None:
@@ -122,7 +122,7 @@ class IoMixin:
         if self.has_unsaved_changes:
             self.status_text = "Save changes locally first (use Save Changes), then push."
             return
-        self.status_text = "Pushing to Kronos..."
+        self.status_text = "Pushing to the instrument..."
         self.status_text = source.pick_folder_and_push_collection(self._collection_path, self._collection).status_message
 
     # ── saving ─────────────────────────────────────────────────────────────────────────────

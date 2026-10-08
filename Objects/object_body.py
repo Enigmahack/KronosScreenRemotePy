@@ -364,6 +364,125 @@ def write_setlist_slot_comments(body: bytes, slot_index: int, comments: str) -> 
     return bytes(b)
 
 
+# ── Drum Kit (obj 0x04) / Wave Sequence (obj 0x05) ───────────────────────────
+# Ports of DrumKitBody.cs / WaveSequenceBody.cs: name plus per-zone / per-step SAMPLE reference
+# decoding (kronosology pcg_file_format.md §6/§7, corpus-confirmed). Full per-note / per-step
+# editing has no consumer.
+
+DRUM_KIT_BODY_SIZE = 38424       # BlankTemplateStore.LooksBlank's wire length for a Drum Kit
+WAVE_SEQ_BODY_SIZE = 2216        # ... and for a Wave Sequence
+
+
+def drum_kit_name_is_init(name: str) -> bool:
+    t = name.strip().upper()
+    return "INIT" in t and "DRUM" in t
+
+
+def wave_seq_name_is_init(name: str) -> bool:
+    t = name.strip().upper()
+    return "INIT" in t and "WAVE" in t
+
+
+def drum_kit_body_is_init(body: bytes) -> bool:
+    return drum_kit_name_is_init(ksx._ascii_trim(body, 0, 24))
+
+
+def wave_seq_body_is_init(body: bytes) -> bool:
+    return wave_seq_name_is_init(ksx._ascii_trim(body, 0, 24))
+
+
+def write_drum_kit_name(body: bytes, name: str) -> bytes:
+    return _build_renamed_body(body, name)
+
+
+def write_wave_seq_name(body: bytes, name: str) -> bytes:
+    return _build_renamed_body(body, name)
+
+
+# Drum Kit §6: 24-byte name, then 128 Notes x 300 bytes, each 8 Zones x 34 bytes. Zone: +0 Sample
+# On/Off, +1..+16 Bank UUID, +17 reserved (the same 1-byte gap found at every reference site),
+# +18/+19 Sample Id (LE u16). A kit can hold up to 1024 zones, so callers must dedupe by bank
+# identity rather than show a row per zone.
+_DK_NOTE_BASE, _DK_NOTE_STRIDE, _DK_ZONES_PER_NOTE, _DK_ZONE_STRIDE = 24, 300, 8, 34
+_DK_ID_OFS = 18
+DRUM_KIT_NOTE_COUNT = 128
+
+
+def iter_drum_kit_sample_refs(body: bytes):
+    """Yields (note, zone, uuid16, sample_id) for every zone whose Sample On/Off gate is set."""
+    for note in range(DRUM_KIT_NOTE_COUNT):
+        note_base = _DK_NOTE_BASE + note * _DK_NOTE_STRIDE
+        for zone in range(_DK_ZONES_PER_NOTE):
+            zb = note_base + zone * _DK_ZONE_STRIDE
+            if zb + _DK_ID_OFS + 1 >= len(body):
+                return
+            if body[zb] == 0:
+                continue
+            yield note, zone, bytes(body[zb + 1:zb + 17]), body[zb + _DK_ID_OFS] | (body[zb + _DK_ID_OFS + 1] << 8)
+
+
+def set_drum_kit_sample_id(body: bytearray, note: int, zone: int, new_id: int) -> None:
+    o = _DK_NOTE_BASE + note * _DK_NOTE_STRIDE + zone * _DK_ZONE_STRIDE + _DK_ID_OFS
+    body[o] = new_id & 0xFF
+    body[o + 1] = (new_id >> 8) & 0xFF
+
+
+# Wave Sequence §7: 24-byte name, 16-byte Common (24-39), then 64 Steps x 34 bytes from offset 40.
+# Step: +0 Step Type (bits 1-0; 0 = Multisample — Rest/Tie reference nothing), +1..+16 Bank UUID,
+# +17 reserved, +18/+19 Multisample Select (LE u16).
+_WS_STEP_BASE, _WS_STEP_STRIDE, _WS_SEL_OFS = 40, 34, 18
+WAVE_SEQ_STEP_COUNT = 64
+
+
+def iter_wave_seq_sample_refs(body: bytes):
+    """Yields (step, uuid16, select) for every Multisample-type step."""
+    for step in range(WAVE_SEQ_STEP_COUNT):
+        sb = _WS_STEP_BASE + step * _WS_STEP_STRIDE
+        if sb + _WS_SEL_OFS + 1 >= len(body):
+            return
+        if (body[sb] & 0x03) != 0:
+            continue
+        yield step, bytes(body[sb + 1:sb + 17]), body[sb + _WS_SEL_OFS] | (body[sb + _WS_SEL_OFS + 1] << 8)
+
+
+def set_wave_seq_step_select(body: bytearray, step: int, new_select: int) -> None:
+    o = _WS_STEP_BASE + step * _WS_STEP_STRIDE + _WS_SEL_OFS
+    body[o] = new_select & 0xFF
+    body[o + 1] = (new_select >> 8) & 0xFF
+
+
+# ── Generic init dispatch (port of InitObjects.IsInit / IsInitName) ──────────
+
+def is_init(obj_type: int, body: bytes) -> bool:
+    """True for a placeholder object (nothing real in the slot). Mirrors InitObjects.IsInit."""
+    import Data.librarian_sysex as lsx
+    if obj_type == lsx.OBJ_PROGRAM:
+        return program_body_is_init(body)
+    if obj_type == lsx.OBJ_COMBI:
+        return combi_body_is_init(body)
+    if obj_type == lsx.OBJ_SET_LIST:
+        return setlist_body_is_init(body)
+    if obj_type == lsx.OBJ_DRUM_KIT:
+        return drum_kit_body_is_init(body)
+    if obj_type == lsx.OBJ_WAVE_SEQ:
+        return wave_seq_body_is_init(body)
+    return False
+
+
+def is_init_name(obj_type: int, name: str) -> bool:
+    """Name-only sibling (InitObjects.IsInitName); Set Lists always False."""
+    import Data.librarian_sysex as lsx
+    if obj_type == lsx.OBJ_PROGRAM:
+        return program_name_is_init(name)
+    if obj_type == lsx.OBJ_COMBI:
+        return combi_name_is_init(name)
+    if obj_type == lsx.OBJ_DRUM_KIT:
+        return drum_kit_name_is_init(name)
+    if obj_type == lsx.OBJ_WAVE_SEQ:
+        return wave_seq_name_is_init(name)
+    return False
+
+
 # ── Self-test (run: python object_body.py) ───────────────────────────────────
 # Ports ObjectBodySelfTests.cs's actual test vectors -- both the read-only
 # checks and (now) the Write*/mutator round-trips. EraseBody/registry checks
@@ -545,6 +664,26 @@ def _selftest() -> None:
     check("setlist-slot-name-write-roundtrip", renamed_slot0 is not None and renamed_slot0.name == "RENAMED0")
     check("setlist-slot-name-write-preserves-color", renamed_slot0 is not None and renamed_slot0.color == 5)
 
+    # Drum Kit / Wave Sequence
+    dk = bytearray(DRUM_KIT_BODY_SIZE)
+    dk[0:24] = _pad_ascii("Init Drum Kit", 24)
+    check("dk-init", drum_kit_body_is_init(bytes(dk)) and is_init(0x04, bytes(dk)))
+    check("dk-not-init", not drum_kit_body_is_init(bytes(write_drum_kit_name(bytes(dk), "Rock Kit"))))
+    dk_zone = 24 + 5 * 300 + 2 * 34
+    dk[dk_zone] = 1
+    dk[dk_zone + 1:dk_zone + 17] = bytes(range(16))
+    set_drum_kit_sample_id(dk, 5, 2, 0x1234)
+    refs = list(iter_drum_kit_sample_refs(bytes(dk)))
+    check("dk-ref", refs == [(5, 2, bytes(range(16)), 0x1234)])
+    ws = bytearray(WAVE_SEQ_BODY_SIZE)
+    ws[0:24] = _pad_ascii("Init Wave Seq", 24)
+    check("ws-init", wave_seq_body_is_init(bytes(ws)) and is_init_name(0x05, "INIT WAVE"))
+    ws_step = 40 + 3 * 34
+    ws[ws_step + 1:ws_step + 17] = bytes([9] * 16)
+    set_wave_seq_step_select(ws, 3, 0x0102)
+    ws[40 + 4 * 34] = 1   # Rest step — must be skipped
+    refs = [r for r in iter_wave_seq_sample_refs(bytes(ws)) if r[0] in (3, 4)]
+    check("ws-ref-and-rest-skipped", refs == [(3, bytes([9] * 16), 0x0102)])
     if fails:
         print("FAIL:", ", ".join(fails))
         sys.exit(1)

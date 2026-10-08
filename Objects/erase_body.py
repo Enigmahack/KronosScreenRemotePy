@@ -42,6 +42,10 @@ def build(obj_type: int, existing_body: bytes) -> bytes:
         return _build_combi(existing_body)
     if obj_type == lsx.OBJ_PROGRAM:
         return _build_program(existing_body)
+    if obj_type == lsx.OBJ_DRUM_KIT:
+        return ob.write_drum_kit_name(existing_body, "Init Drum Kit")
+    if obj_type == lsx.OBJ_WAVE_SEQ:
+        return ob.write_wave_seq_name(existing_body, "Init Wave Sequence")
     return bytes(existing_body)
 
 

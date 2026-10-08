@@ -29,10 +29,13 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 import Data.librarian_sysex as lsx
 from Data.librarian_sysex import (
-    OBJ_COMBI, OBJ_PROGRAM, OBJ_SET_LIST, ObjectDump,
-    iter_combi_timbre_refs, iter_setlist_slot_refs,
-    obj_bank_to_func33, set_combi_timbre_ref, set_setlist_slot_ref,
+    OBJ_COMBI, OBJ_DRUM_KIT, OBJ_PROGRAM, OBJ_SET_LIST, OBJ_WAVE_SEQ, ObjectDump,
+    PROGRAM_HD1_WIRE_SIZE, ZONES_PER_OSC,
+    iter_combi_timbre_refs, iter_program_zone_refs, iter_setlist_slot_refs,
+    obj_bank_to_func33, program_drum_track_on, program_drum_track_ref, program_oscillator_mode,
+    set_combi_timbre_ref, set_program_drum_track_ref, set_program_zone_number, set_setlist_slot_ref,
 )
+import Data.object_types as object_types
 import Core.kronos_sysex as ksx
 from Data.pcg_file import WIRE_SIZE_EXI, WIRE_SIZE_HD1
 
@@ -43,32 +46,36 @@ from Data.pcg_file import WIRE_SIZE_EXI, WIRE_SIZE_HD1
 @dataclass(frozen=True)
 class ObjLoc:
     """A movable object location, addressed in object-dump (header) encoding."""
-    obj_type: int   # OBJ_PROGRAM (0x00) or OBJ_COMBI (0x01)
+    obj_type: int   # OBJ_PROGRAM / OBJ_COMBI / OBJ_SET_LIST / OBJ_DRUM_KIT / OBJ_WAVE_SEQ
     bank: int       # object-dump bank byte
-    number: int     # index within bank (0-127)
+    number: int     # index within bank
 
     def label(self) -> str:
-        if self.obj_type == OBJ_PROGRAM:
-            return f"{ksx.program_label(self.bank)}:{self.number:03d}"
-        return f"{ksx.combi_label(self.bank)}:{self.number:03d}"
+        if self.obj_type == OBJ_SET_LIST:
+            return f"Set List {self.number:02d}"
+        return f"{object_types.label_for(self.obj_type, self.bank)}:{self.number:03d}"
 
 
 @dataclass(frozen=True)
 class ReferrerSite:
     """One reference *site* pointing at a movable object."""
-    kind: str          # 'combi_timbre' | 'setlist_slot'
-    ref_obj: int       # 0x01 (combi) or 0x0D (set list)
+    kind: str          # 'combi_timbre' | 'setlist_slot' | 'drum_track' | 'osc_zone'
+    ref_obj: int       # 0x01 (combi), 0x0D (set list) or 0x00 (program: drum track / osc zone)
     ref_bank: int      # object-dump bank of the REFERRING object (0 for set list)
-    ref_index: int     # combi index, or set-list number
-    site: int          # timbre 0-15, or slot 0-127
+    ref_index: int     # combi/program index, or set-list number
+    site: int          # timbre 0-15, slot 0-127, osc*8+zone, or -1 (drum track)
     cur_bank: int      # func33 bank currently stored at the site
     cur_number: int
 
     def describe(self) -> str:
-        where = (f"Combi {ksx.combi_label(self.ref_bank)}:{self.ref_index:03d} timbre {self.site + 1}"
-                 if self.kind == 'combi_timbre'
-                 else f"Set List {self.ref_index:03d} slot {self.site + 1}")
-        return where
+        if self.kind == 'combi_timbre':
+            return f"Combi {ksx.combi_label(self.ref_bank)}:{self.ref_index:03d} timbre {self.site + 1}"
+        if self.kind == 'drum_track':
+            return f"Program {ksx.program_label(self.ref_bank)}:{self.ref_index:03d} drum track"
+        if self.kind == 'osc_zone':
+            return (f"Program {ksx.program_label(self.ref_bank)}:{self.ref_index:03d} "
+                    f"OSC{self.site // ZONES_PER_OSC + 1} zone {self.site % ZONES_PER_OSC + 1}")
+        return f"Set List {self.ref_index:03d} slot {self.site + 1}"
 
 
 @dataclass
@@ -103,16 +110,63 @@ class MovePlan:
 # ── Catalog / dependency graph ───────────────────────────────────────────────
 
 
+def _loc_to_linear(loc: ObjLoc) -> Optional[int]:
+    """Linear 'MS number' an HD-1 oscillator zone uses to address a Drum Kit / Wave Sequence."""
+    if loc.obj_type == OBJ_DRUM_KIT:
+        return object_types.drum_kit_loc_to_linear(loc.bank, loc.number)
+    if loc.obj_type == OBJ_WAVE_SEQ:
+        return object_types.wave_seq_loc_to_linear(loc.bank, loc.number)
+    return None
+
+
+def encode_ref(kind: str, target: ObjLoc) -> Optional[Tuple[int, int]]:
+    """(bank_field, number) a reference site of `kind` must hold to point at `target`, or None when
+    the target can't be encoded there (e.g. a Drum Kit bank outside the linear map). For an
+    'osc_zone' the bank field is unused (0) and number is the linear MS number."""
+    if kind in ('combi_timbre', 'drum_track'):
+        return obj_bank_to_func33(1, target.bank), target.number
+    if kind == 'osc_zone':
+        lin = _loc_to_linear(target)
+        return None if lin is None else (0, lin)
+    ref_type = object_types.get(target.obj_type).func33_ref_type
+    return obj_bank_to_func33(0 if ref_type is None else ref_type, target.bank), target.number
+
+
+def apply_ref_patch(body: bytearray, kind: str, site: int, new_bank: int, new_number: int) -> None:
+    """Write one already-encoded reference (see encode_ref) at its site."""
+    if kind == 'combi_timbre':
+        set_combi_timbre_ref(body, site, new_bank, new_number)
+    elif kind == 'drum_track':
+        set_program_drum_track_ref(body, new_bank, new_number)
+    elif kind == 'osc_zone':
+        set_program_zone_number(body, site // ZONES_PER_OSC, site % ZONES_PER_OSC, new_number)
+    else:  # setlist_slot — preserve type/color/transpose bits
+        set_setlist_slot_ref(body, site, new_bank, new_number, type_=None)
+
+
+def _referrer_base_dump(catalog: 'LibraryCatalog', ref_obj: int, ref_bank: int,
+                        ref_index: int) -> Optional[ObjectDump]:
+    if ref_obj == OBJ_COMBI:
+        return catalog.combis.get((ref_bank, ref_index))
+    if ref_obj == OBJ_PROGRAM:
+        return catalog.programs.get((ref_bank, ref_index))
+    if ref_obj == OBJ_SET_LIST:
+        return catalog.setlists.get(ref_index)
+    return None
+
+
 # Object-dump banks that a program can NEVER be moved into (read-only).
 _READONLY_PROGRAM_BANKS = set([0x10] + list(range(0x11, 0x1B)))  # GM, g(1)..g(d)
 
 
 class LibraryCatalog:
-    """Reverse index over dumped Combis and Set Lists."""
+    """Reverse index over dumped Combis, Set Lists and Programs (Programs carry Drum Track and
+    oscillator-zone references to other Programs / Drum Kits / Wave Sequences)."""
 
     def __init__(self) -> None:
         self.combis: Dict[Tuple[int, int], ObjectDump] = {}   # (bank, index) -> dump
         self.setlists: Dict[int, ObjectDump] = {}             # number -> dump
+        self.programs: Dict[Tuple[int, int], ObjectDump] = {}  # (bank, index) -> dump
 
     # -- population -----------------------------------------------------------
     def add_combi(self, dump: ObjectDump) -> None:
@@ -125,31 +179,62 @@ class LibraryCatalog:
             raise ValueError("not a set-list dump")
         self.setlists[dump.index] = dump
 
+    def add_program(self, dump: ObjectDump) -> None:
+        if dump.obj != OBJ_PROGRAM:
+            raise ValueError("not a program dump")
+        self.programs[(dump.bank, dump.index)] = dump
+
     # -- queries --------------------------------------------------------------
     def referrers_of(self, loc: ObjLoc) -> List[ReferrerSite]:
         """Every reference site that currently points at `loc`."""
         out: List[ReferrerSite] = []
         if loc.obj_type == OBJ_SET_LIST:
             return out   # nothing ever references a Set List
-        # func33 type: program refs use type 1, combi refs use type 0 — and the
-        # set-list slot `type` field uses the same 0=combi/1=prog convention.
-        ref_type = 1 if loc.obj_type == OBJ_PROGRAM else 0
-        want_bank = obj_bank_to_func33(ref_type, loc.bank)
-        if want_bank < 0:
-            return out
 
         if loc.obj_type == OBJ_PROGRAM:
-            for (bank, index), dump in self.combis.items():
-                for t, fbank, num in iter_combi_timbre_refs(dump.body):
-                    if fbank == want_bank and num == loc.number:
-                        out.append(ReferrerSite('combi_timbre', OBJ_COMBI, bank,
-                                                index, t, fbank, num))
-        # Set-list slots (both program and combi moves land here, gated on slot type)
-        for number, dump in self.setlists.items():
-            for s, slot_type, fbank, idx in iter_setlist_slot_refs(dump.body):
-                if slot_type == ref_type and fbank == want_bank and idx == loc.number:
-                    out.append(ReferrerSite('setlist_slot', OBJ_SET_LIST, 0,
-                                            number, s, fbank, idx))
+            want_bank = obj_bank_to_func33(1, loc.bank)
+            if want_bank >= 0:
+                for (bank, index), dump in self.combis.items():
+                    for t, fbank, num in iter_combi_timbre_refs(dump.body):
+                        if fbank == want_bank and num == loc.number:
+                            out.append(ReferrerSite('combi_timbre', OBJ_COMBI, bank,
+                                                    index, t, fbank, num))
+                for (bank, index), dump in self.programs.items():
+                    if not program_drum_track_on(dump.body):
+                        continue
+                    dt_bank, dt_num = program_drum_track_ref(dump.body)
+                    if dt_bank == want_bank and dt_num == loc.number:
+                        out.append(ReferrerSite('drum_track', OBJ_PROGRAM, bank, index, -1,
+                                                dt_bank, dt_num))
+        elif loc.obj_type in (OBJ_DRUM_KIT, OBJ_WAVE_SEQ):
+            want_linear = _loc_to_linear(loc)
+            if want_linear is not None:
+                for (bank, index), dump in self.programs.items():
+                    # HD-1 wire format only — EXi bodies have no oscillator zones.
+                    if len(dump.body) != PROGRAM_HD1_WIRE_SIZE:
+                        continue
+                    osc_mode = program_oscillator_mode(dump.body)
+                    for osc, zone, ms_type, number in iter_program_zone_refs(dump.body):
+                        if loc.obj_type == OBJ_WAVE_SEQ:
+                            match = ms_type == 2 and number == want_linear
+                        else:
+                            match = ms_type == 1 and osc_mode in (4, 5) and number == want_linear
+                        if match:
+                            out.append(ReferrerSite('osc_zone', OBJ_PROGRAM, bank, index,
+                                                    osc * ZONES_PER_OSC + zone, 0, number))
+
+        # A Set List slot can only address a type that HAS a func-33 selector. This is a positive
+        # gate, not an early return: without it a Drum Kit / Wave Sequence loc fell through as a
+        # combi and matched every slot pointing at the Combi sharing its bank/number.
+        ref_type = object_types.get(loc.obj_type).func33_ref_type
+        if ref_type is not None:
+            want_bank = obj_bank_to_func33(ref_type, loc.bank)
+            if want_bank >= 0:
+                for number, dump in self.setlists.items():
+                    for s, slot_type, fbank, idx in iter_setlist_slot_refs(dump.body):
+                        if slot_type == ref_type and fbank == want_bank and idx == loc.number:
+                            out.append(ReferrerSite('setlist_slot', OBJ_SET_LIST, 0,
+                                                    number, s, fbank, idx))
         return out
 
     def usage_count(self, loc: ObjLoc) -> int:
@@ -188,8 +273,8 @@ class RefIndex:
 
     def referrers_of(self, loc: ObjLoc) -> List[ReferrerSite]:
         out: List[ReferrerSite] = []
-        if loc.obj_type == OBJ_SET_LIST:
-            return out   # nothing ever references a Set List
+        if loc.obj_type in (OBJ_SET_LIST, OBJ_DRUM_KIT, OBJ_WAVE_SEQ):
+            return out   # nothing references a Set List; Drum Kit / Wave Seq refs live in Programs, which this index doesn't hold
         ref_type = 1 if loc.obj_type == OBJ_PROGRAM else 0
         want_bank = obj_bank_to_func33(ref_type, loc.bank)
         if want_bank < 0:
@@ -256,7 +341,8 @@ def plan_move(catalog: LibraryCatalog, src: ObjLoc, src_dump: ObjectDump,
 
     ref_type = 1 if src.obj_type == OBJ_PROGRAM else 0
 
-    # New reference targets after the swap.
+    # New reference targets after the swap (combi-timbre live-preview path only; every other site
+    # kind is encoded per site by encode_ref).
     dst_func33 = obj_bank_to_func33(ref_type, dst.bank)
     src_func33 = obj_bank_to_func33(ref_type, src.bank)
 
@@ -268,12 +354,14 @@ def plan_move(catalog: LibraryCatalog, src: ObjLoc, src_dump: ObjectDump,
     # Group patches by the referring object so each object is written once.
     # key -> list of (site, kind, new_func33, new_number)
     grouped: Dict[Tuple[int, int, int], List[Tuple[int, str, int, int]]] = {}
-    for r in src_referrers:
-        grouped.setdefault((r.ref_obj, r.ref_bank, r.ref_index), []).append(
-            (r.site, r.kind, dst_func33, dst.number))
-    for r in dst_referrers:
-        grouped.setdefault((r.ref_obj, r.ref_bank, r.ref_index), []).append(
-            (r.site, r.kind, src_func33, src.number))
+    for referrers, target in ((src_referrers, dst), (dst_referrers, src)):
+        for r in referrers:
+            enc = encode_ref(r.kind, target)
+            if enc is None:
+                warnings.append(f"REFUSE: {r.describe()} cannot be pointed at {target.label()}")
+                continue
+            grouped.setdefault((r.ref_obj, r.ref_bank, r.ref_index), []).append(
+                (r.site, r.kind, enc[0], enc[1]))
 
     writes: List[WriteOp] = []
     pre_images: List[WriteOp] = []
@@ -291,8 +379,7 @@ def plan_move(catalog: LibraryCatalog, src: ObjLoc, src_dump: ObjectDump,
 
     # (2) Patched referrer objects (pre-image = the unpatched original body).
     for (ref_obj, ref_bank, ref_index), patches in grouped.items():
-        base_dump = (catalog.combis.get((ref_bank, ref_index)) if ref_obj == OBJ_COMBI
-                     else catalog.setlists.get(ref_index))
+        base_dump = _referrer_base_dump(catalog, ref_obj, ref_bank, ref_index)
         if base_dump is None:
             warnings.append(f"REFUSE: referring object missing from catalog "
                             f"(obj {ref_obj:02X} bank {ref_bank:02X} idx {ref_index}) "
@@ -301,11 +388,8 @@ def plan_move(catalog: LibraryCatalog, src: ObjLoc, src_dump: ObjectDump,
         pre_images.append(WriteOp(ref_obj, ref_bank, ref_index, base_dump.version,
                                   base_dump.body, note="original"))
         body = bytearray(base_dump.body)
-        for site, kind, new_func33, new_number in patches:
-            if kind == 'combi_timbre':
-                set_combi_timbre_ref(body, site, new_func33, new_number)
-            else:  # setlist_slot — preserve type/color/transpose bits
-                set_setlist_slot_ref(body, site, new_func33, new_number, type_=None)
+        for site, kind, new_bank, new_number in patches:
+            apply_ref_patch(body, kind, site, new_bank, new_number)
         writes.append(WriteOp(ref_obj, ref_bank, ref_index, base_dump.version,
                               bytes(body),
                               note=f"fix {len(patches)} ref(s)"))
@@ -341,7 +425,7 @@ def plan_move(catalog: LibraryCatalog, src: ObjLoc, src_dump: ObjectDump,
 
     # Preview lines
     preview.append(f"SWAP  {src.label()}  <->  {dst.label()}  "
-                   f"({'programs' if src.obj_type == OBJ_PROGRAM else 'combis'})")
+                   f"({_type_noun(src.obj_type)})")
     preview.append(f"  references to rewrite: {len(all_referrers)}")
     for r in all_referrers:
         tgt = dst.label() if r in src_referrers else src.label()
@@ -364,7 +448,16 @@ def _store_label(obj: int, bank: int) -> str:
         return f"Combi {ksx.combi_label(bank)}"
     if obj == OBJ_SET_LIST:
         return "Set Lists"
+    if obj == OBJ_DRUM_KIT:
+        return f"Drum Kit {object_types.drum_kit_label(bank)}"
+    if obj == OBJ_WAVE_SEQ:
+        return f"Wave Seq {object_types.wave_seq_label(bank)}"
     return f"obj{obj:02X}:bank{bank:02X}"
+
+
+def _type_noun(obj_type: int) -> str:
+    d = object_types.try_get(obj_type)
+    return d.plural_name.lower() if d else f"obj{obj_type:02x}s"
 
 
 # ── Batch move planning (pure) ───────────────────────────────────────────────
@@ -485,6 +578,12 @@ def plan_batch_move(catalog: LibraryCatalog, obj_type: int,
 
     if obj_type == OBJ_PROGRAM and any(p.dst.bank in _READONLY_PROGRAM_BANKS for p in real):
         plan.warnings.append("REFUSE: a destination bank is read-only (GM/g)")
+    if obj_type == OBJ_DRUM_KIT and any(object_types.is_read_only(obj_type, p.dst.bank) for p in real):
+        plan.warnings.append("REFUSE: a destination bank is read-only (GM)")
+    if obj_type in (OBJ_DRUM_KIT, OBJ_WAVE_SEQ):
+        for p in real:
+            if p.dst.number >= object_types.slot_count(obj_type, p.dst.bank):
+                plan.warnings.append(f"REFUSE: {p.dst.label()} is past the last slot of its bank")
 
     if obj_type == OBJ_PROGRAM and bank_type_of is not None:
         for p in real:
@@ -553,14 +652,8 @@ def plan_batch_move(catalog: LibraryCatalog, obj_type: int,
         occupant_is_init = False
         if occ is not None and occ.body:
             try:
-                from Objects.object_body import (
-                    program_body_is_init, combi_body_is_init, setlist_body_is_init)
-                if obj_type == OBJ_PROGRAM:
-                    occupant_is_init = program_body_is_init(occ.body)
-                elif obj_type == OBJ_COMBI:
-                    occupant_is_init = combi_body_is_init(occ.body)
-                elif obj_type == OBJ_SET_LIST:
-                    occupant_is_init = setlist_body_is_init(occ.body)
+                from Objects.object_body import is_init
+                occupant_is_init = is_init(obj_type, occ.body)
             except Exception:
                 occupant_is_init = False
         if identical:
@@ -583,16 +676,18 @@ def plan_batch_move(catalog: LibraryCatalog, obj_type: int,
                 "source, or choose a different destination.")
 
     # (3) Referrer collection + grouping — direct generalization of plan_move's `grouped` dict.
-    ref_type = 1 if obj_type == OBJ_PROGRAM else 0
     grouped: Dict[Tuple[int, int, int], List[Tuple[int, str, int, int]]] = {}
     referrers: List[ReferrerSite] = []
     for src_loc, dst_loc in relocation.items():
         sites = catalog.referrers_of(src_loc)
         referrers.extend(sites)
-        new_func33 = obj_bank_to_func33(ref_type, dst_loc.bank)
         for r in sites:
+            enc = encode_ref(r.kind, dst_loc)
+            if enc is None:
+                plan.warnings.append(f"REFUSE: {r.describe()} cannot be pointed at {dst_loc.label()}")
+                continue
             grouped.setdefault((r.ref_obj, r.ref_bank, r.ref_index), []).append(
-                (r.site, r.kind, new_func33, dst_loc.number))
+                (r.site, r.kind, enc[0], enc[1]))
 
     # (4) Placement writes + pre-images. Source stays UNTOUCHED — no write at src, ever.
     writes: List[WriteOp] = []
@@ -623,8 +718,7 @@ def plan_batch_move(catalog: LibraryCatalog, obj_type: int,
 
     # (6) Grouped referrer-patch writes — identical shape to plan_move's step 2.
     for (ref_obj, ref_bank, ref_index), patches in grouped.items():
-        base_dump = (catalog.combis.get((ref_bank, ref_index)) if ref_obj == OBJ_COMBI
-                     else catalog.setlists.get(ref_index) if ref_obj == OBJ_SET_LIST else None)
+        base_dump = _referrer_base_dump(catalog, ref_obj, ref_bank, ref_index)
         if base_dump is None:
             plan.warnings.append(f"REFUSE: referring object missing from catalog "
                                  f"(obj {ref_obj:02X} bank {ref_bank:02X} idx {ref_index}) "
@@ -634,10 +728,7 @@ def plan_batch_move(catalog: LibraryCatalog, obj_type: int,
                                   note="original"))
         body = bytearray(base_dump.body)
         for site, kind, new_bank, new_number in patches:
-            if kind == 'combi_timbre':
-                set_combi_timbre_ref(body, site, new_bank, new_number)
-            else:  # setlist_slot
-                set_setlist_slot_ref(body, site, new_bank, new_number, type_=None)
+            apply_ref_patch(body, kind, site, new_bank, new_number)
         writes.append(WriteOp(ref_obj, ref_bank, ref_index, base_dump.version, bytes(body),
                               note=f"fix {len(patches)} ref(s)"))
 
@@ -647,10 +738,11 @@ def plan_batch_move(catalog: LibraryCatalog, obj_type: int,
         if key not in stores:
             stores.append(key)
 
-    type_tag = {OBJ_PROGRAM: "prog", OBJ_COMBI: "combi"}.get(obj_type, "setlist")
+    type_tag = {OBJ_PROGRAM: "prog", OBJ_COMBI: "combi", OBJ_DRUM_KIT: "drumkit",
+                OBJ_WAVE_SEQ: "waveseq"}.get(obj_type, "setlist")
     backup_label = f"batchmove_{type_tag}_{len(real)}items"
 
-    type_noun = {OBJ_PROGRAM: "programs", OBJ_COMBI: "combis"}.get(obj_type, "set lists")
+    type_noun = _type_noun(obj_type)
     preview = [f"BATCH MOVE  {len(real)} placement(s)  ({type_noun})"]
     if skipped > 0:
         preview.append(f"  ({skipped} placement(s) already at their destination — skipped)")
@@ -704,7 +796,7 @@ def plan_batch_move(catalog: LibraryCatalog, obj_type: int,
 #     `src=None`.
 
 
-BANK_SLOT_COUNT = 128   # every Program/Combi bank is exactly 128 slots (BatchMoveModel.cs's BankSlotCount)
+BANK_SLOT_COUNT = 128   # Program/Combi/Set List banks are 128 slots; Drum Kit / Wave Sequence vary per bank (object_types.slot_count)
 
 
 @dataclass(frozen=True)
@@ -765,15 +857,16 @@ def resolve_sequential_fill(items: List[SequentialFillItem], obj_type: int, dest
 
     placed: List[BatchPlacement] = []
     next_slot = start_slot
+    bank_slots = object_types.slot_count(obj_type, dest_bank) if obj_type in object_types.REGISTRY else BANK_SLOT_COUNT
     for i, it in enumerate(placeable):
         if slot_available is None:
             slot = start_slot + i
         else:
-            while next_slot < BANK_SLOT_COUNT and not slot_available(next_slot):
+            while next_slot < bank_slots and not slot_available(next_slot):
                 next_slot += 1
             slot = next_slot
             next_slot += 1
-        if slot >= BANK_SLOT_COUNT:
+        if slot >= bank_slots:
             still_pending.append((it,
                 f"destination bank full — no free slot left at or after slot {start_slot}"))
         else:

@@ -67,33 +67,33 @@ def _build_html() -> str:
         f"font-family:Segoe UI,Arial,sans-serif;margin:12px;'>",
 
         _h1("Getting Started"),
-        _p("1. Open Settings (<b>Settings → Settings…</b>) and enter your Kronos IP address."),
+        _p("1. Open Settings (<b>Settings → Settings…</b>) and enter your instrument IP address."),
         _p("2. Use <b>Connection → Connect</b>, or simply launch the app — it attempts "
            "to connect automatically."),
         _p("3. If no credentials are saved, a login dialog appears. Enter the FTP "
-           "username and password for the Kronos. The same credentials are used for "
+           "username and password for the instrument. The same credentials are used for "
            "both the screen stream and the File Manager."),
-        _p("4. Once connected, the screen panel shows the live Kronos display and the "
+        _p("4. Once connected, the screen panel shows the live instrument display and the "
            "status bar reads <b>Connected — &lt;ip&gt;</b> with a green indicator."),
-        _p("5. If the Kronos IP changes or the connection drops, use "
+        _p("5. If the instrument IP changes or the connection drops, use "
            "<b>Connection → Connect</b> to reconnect."),
 
         _h1("Screen Panel  (centre)"),
-        _p("The screen panel streams the Kronos touchscreen display. The image is "
+        _p("The screen panel streams the instrument touchscreen display. The image is "
            "always letterboxed to preserve the original 4:3 aspect ratio."),
         _kbd_table(
-            _kb_row("Click",           "Send a tap to the Kronos touchscreen at that position."),
-            _kb_row("Click and drag",  "Send a swipe gesture. Drag must exceed 8 Kronos screen "
+            _kb_row("Click",           "Send a tap to the instrument touchscreen at that position."),
+            _kb_row("Click and drag",  "Send a swipe gesture. Drag must exceed 8 instrument screen "
                                        "pixels before the touch-down is sent."),
             _kb_row("Mouse scroll",    "Turn the data wheel (works from anywhere in the window)."),
             _kb_row("Right Click",     "Access the context menu for quick actions."),
         ),
 
         _h1("Value Slider  (left panel)"),
-        _p("The left panel mirrors the Kronos front-panel <b>VALUE</b> slider and "
+        _p("The left panel mirrors the instrument front-panel <b>VALUE</b> slider and "
            "increment/decrement buttons."),
         _kbd_table(
-            _kb_row("INC / DEC buttons", "Send a single increment or decrement step to the Kronos."),
+            _kb_row("INC / DEC buttons", "Send a single increment or decrement step to the instrument."),
             _kb_row("Slider thumb",      "Drag up or down to send a continuous value (0–127). "
                                          "Top = 127, bottom = 0. The command is sent only when the "
                                          "value changes."),
@@ -103,11 +103,11 @@ def _build_html() -> str:
            "View → Hide Value Input."),
 
         _h1("Control Surface  (right panel)"),
-        _p("The right panel mirrors the physical Kronos front panel. Clicking any "
-           "button sends the corresponding hardware button press to the Kronos."),
+        _p("The right panel mirrors the physical instrument front panel. Clicking any "
+           "button sends the corresponding hardware button press to the instrument."),
         _kbd_table(
             _kb_row("Mode buttons",   "Setlist / Combi / Program / Sequence / Sampling / Global / Disk. "
-                                      "The lit button shows the current Kronos operating mode."),
+                                      "The lit button shows the current instrument operating mode."),
             _kb_row("Help / Compare", "Toggle buttons — each click presses the corresponding "
                                       "hardware button."),
             _kb_row("Number pad",     "Buttons 0–9, dash (–), and dot (.) send numeric entry."),
@@ -133,8 +133,8 @@ def _build_html() -> str:
             _kb_row("Q",           "Quit"),
             _kb_row("Z",           "Toggle Zoom Window"),
             _kb_row("=  /  −",     "Zoom in / zoom out (enables zoom automatically if off)"),
-            _kb_row("Escape",      "Send EXIT to Kronos (also dismisses overlays / exits fullscreen)"),
-            _kb_row("Enter",       "Send ENTER to Kronos"),
+            _kb_row("Escape",      "Send EXIT to Instrument (also dismisses overlays / exits fullscreen)"),
+            _kb_row("Enter",       "Send ENTER to Instrument"),
             _kb_row("Ctrl+1 – Ctrl+5", "Window size: 75% / 100% / 125% / 150% / 200%"),
             _kb_row("Ctrl+K",      "Open Command Palette"),
             _kb_row("Ctrl+S",      "Quick Save Screenshot"),
@@ -143,21 +143,21 @@ def _build_html() -> str:
             _kb_row("~ (fullscreen)", "Show / hide the menu bar while in fullscreen"),
         ),
 
-        _h1("Keyboard Capture  (forwarding keys to the Kronos)"),
+        _h1("Keyboard Capture  (forwarding keys to the instrument)"),
         _p("Clicking inside the screen panel activates keyboard capture. "
-           "While active, most keystrokes are forwarded to the Kronos as if typed "
+           "While active, most keystrokes are forwarded to the instrument as if typed "
            "on a connected USB keyboard."),
         _kbd_table(
-            _kb_row("Numpad 0–9",     "Press the matching number pad button on the Kronos. "
+            _kb_row("Numpad 0–9",     "Press the matching number pad button on the instrument. "
                                       "The on-screen button shows a brief indent for visual confirmation."),
             _kb_row("Numpad – / .",    "Press the NUM_DASH or NUM_DOT control surface buttons."),
-            _kb_row("Numpad Enter",    "Send ENTER to the Kronos."),
-            _kb_row("Escape",          "Send EXIT to the Kronos."),
-            _kb_row("Any other key",   "Forward as a USB keypress to the Kronos kernel input system."),
+            _kb_row("Numpad Enter",    "Send ENTER to the instrument."),
+            _kb_row("Escape",          "Send EXIT to the instrument."),
+            _kb_row("Any other key",   "Forward as a USB keypress to the instrument kernel input system."),
         ),
         _p("The " + _green("⌨") + " indicator in the status bar shows capture state:"),
         _kbd_table(
-            _kb_row(_green("⌨  (green)"),  "Capture active — keystrokes are forwarded to the Kronos."),
+            _kb_row(_green("⌨  (green)"),  "Capture active — keystrokes are forwarded to the instrument."),
             _kb_row(_dim("⌨/ (gray)"),     "Capture inactive — click the screen panel to enable."),
             _kb_row("<span style='color:#FF8888;'>⌨/ (red)</span>",
                     "Keyboard send disabled (Tools → Disable Remote Typing)."),
@@ -195,7 +195,7 @@ def _build_html() -> str:
            "Pressing " + _key("+") + " enables zoom automatically if it is off."),
 
         _h1("Touch Calibration"),
-        _p("Corrects for touchscreen coordinate offset on the Kronos display. "
+        _p("Corrects for touchscreen coordinate offset on the instrument display. "
            "Use this if tap positions feel consistently shifted relative to the image. "
            "Enable with " + _key("C") + " or <b>Tools → Calibration</b>. The calibration is "
            "<b>stored on the unit</b> (daemon 3.1.2 or later), not on this PC: it is read "
@@ -203,7 +203,7 @@ def _build_html() -> str:
            "connected. The bar at the bottom of the screen shows <b>[SAVED]</b> or "
            "<b>[UNSAVED]</b>."),
         _kbd_table(
-            _kb_row("Click",           "Send a touch tap to the Kronos. Current calibration applies."),
+            _kb_row("Click",           "Send a touch tap to the instrument. Current calibration applies."),
             _kb_row("Drag blue nodes", "Shift mesh nodes to correct systematic positional offsets "
                                        "(unsaved until you press S)."),
             _kb_row("Right-click",     "Add an indicator dot at that position, or remove the nearest "
@@ -221,10 +221,10 @@ def _build_html() -> str:
                 "mesh stays [UNSAVED]; quitting with unsaved changes offers to save first.")),
 
         _h1("Test Mode"),
-        _p("Access via <b>Tools → Enter Kronos Test Mode</b>. This sends the Kronos "
-           "into its built-in hardware test mode."),
+        _p("Access via <b>Settings → Debug → Enter Instrument Test Mode…</b> (Kronos only; hidden on a "
+           "Nautilus). This sends the instrument into its built-in hardware test mode."),
         _p("<span style='color:#FF8888;font-weight:bold;'>Warning:</span> "
-           "All unsaved changes on the Kronos will be lost, and the Kronos must be "
+           "All unsaved changes on the instrument will be lost, and the instrument must be "
            "restarted after testing is complete. Only use this if you understand the "
            "risk."),
 
@@ -235,7 +235,7 @@ def _build_html() -> str:
            "The default mirror setting can be changed in <b>Settings → General</b>."),
 
         _h1("Bank Select"),
-        _p("Change the Kronos bank from the <b>Bank Select</b> menu. "
+        _p("Change the instrument bank from the <b>Bank Select</b> menu. "
            "Banks I-A through I-G and U-A through U-G correspond to the internal "
            "and user bank rows. U-XX banks (U-AA, U-BB, …) send a chord of both "
            "the U and I buttons simultaneously, selecting the combined bank slot."),
@@ -244,11 +244,11 @@ def _build_html() -> str:
 
         _h1("File Manager"),
         _p("A dual-pane file browser for transferring files between your PC and the "
-           "Kronos over FTP. Uses the same credentials as the screen stream."),
+           "instrument over FTP. Uses the same credentials as the screen stream."),
         _kbd_table(
             _kb_row("Left pane",           "Local PC (starts at the Desktop folder)."),
-            _kb_row("Right pane",          "Kronos filesystem (/ by default)."),
-            _kb_row("Drag left → right",   "Upload files to the Kronos."),
+            _kb_row("Right pane",          "Instrument filesystem (/ by default)."),
+            _kb_row("Drag left → right",   "Upload files to the instrument."),
             _kb_row("Drag right → left",   "Download files to your PC."),
             _kb_row("Double-click folder", "Navigate into it."),
             _kb_row("Backspace",           "Go up to the parent folder."),
@@ -264,14 +264,14 @@ def _build_html() -> str:
         _h1("Settings"),
         _p("Open <b>Settings → Settings…</b> for full configuration:"),
         _kbd_table(
-            _kb_row("Kronos Host",            "IP address of the Kronos."),
+            _kb_row("Instrument Host",            "IP address of the instrument."),
             _kb_row("Stream Port",            "TCP port for the screen stream (default: 7373)."),
             _kb_row("Ctrl Port",              "TCP port for control commands (default: 7374)."),
-            _kb_row("Change / Pull mode",     "Change: stream only when the Kronos screen updates (recommended). "
-                                              "Pull: poll at a fixed FPS; uses slightly more Kronos CPU."),
+            _kb_row("Change / Pull mode",     "Change: stream only when the instrument screen updates (recommended). "
+                                              "Pull: poll at a fixed FPS; uses slightly more instrument CPU."),
             _kb_row("Max FPS",                "Frame-rate cap for Pull mode (1–15 fps)."),
-            _kb_row("VGA Mirror",             "Enable VGA output mirroring on the Kronos."),
-            _kb_row("Screensaver Timeout",    "Seconds before the Kronos display dims (0 = disabled)."),
+            _kb_row("VGA Mirror",             "Enable VGA output mirroring on the instrument."),
+            _kb_row("Screensaver Timeout",    "Seconds before the instrument display dims (0 = disabled)."),
             _kb_row("Prompt before quitting", "Show a confirmation dialog when closing the app."),
             _kb_row("Hide Data Input",         "Hide / show the data input panel (Full layout only)."),
             _kb_row("Hide Value Input",        "Hide / show the value input panel (Full layout only)."),
@@ -279,7 +279,7 @@ def _build_html() -> str:
             _kb_row("Debug Logging",          "Write verbose diagnostic output to the console. While it is "
                                               "ticked, the Debug tab also shows <b>Button Injector…</b> "
                                               "(send any named front-panel button; for mapping a Nautilus)."),
-            _kb_row("Input Mapping",          "Map a host key to a raw Kronos keycode (overrides the default "
+            _kb_row("Input Mapping",          "Map a host key to a raw instrument keycode (overrides the default "
                                               "key map immediately)."),
             _kb_row("Recent Connections",     "<b>Connection → Recent Connections</b> keeps the last five hosts "
                                               "and the FTP login that last worked for each."),
@@ -292,7 +292,7 @@ def _build_html() -> str:
         ),
 
         _h1("MIDI / SysEx  (status bar + Tools → MIDI Monitor…)"),
-        _p("The app listens to the Kronos' live MIDI output through the daemon's MIDI bridge "
+        _p("The app listens to the instrument's live MIDI output through the daemon's MIDI bridge "
            "(port 9875). It drives the footer performance name, program-change follow, the on-screen "
            "VALUE slider mirror and the MIDI Monitor. The footer shows <b>TCP</b> when the bridge is "
            "connected and a pair of RX / TX dots that flash on traffic; click the dots to open the "
@@ -304,38 +304,38 @@ def _build_html() -> str:
                                                  "Monitor and the footer dots are faded, and the Librarian "
                                                  "cannot sync. Takes effect immediately, while connected."),
             _kb_row("SysEx Poll on Changes",     "When a Program Change arrives that can't be decoded from the "
-                                                 "stream, ask the Kronos for the current performance (a Bank "
+                                                 "stream, ask the instrument for the current performance (a Bank "
                                                  "Select / PC burst becomes one query). A bank-storage change "
-                                                 "reported by the Kronos always refreshes."),
+                                                 "reported by the instrument always refreshes."),
             _kb_row("Pull Names on Program Change", "When you select a program/combi whose name isn't cached, "
                                                  "fetch just that name. Only where a fast scroll settles. Over "
-                                                 "the daemon this can briefly flash the Kronos display."),
+                                                 "the daemon this can briefly flash the instrument display."),
             _kb_row("Proactive SysEx Polling",   "Re-query the current performance on a fixed interval (30 / 45 "
-                                                 "/ 60 / 120 s) regardless of MIDI activity. Can slow the Kronos "
+                                                 "/ 60 / 120 s) regardless of MIDI activity. Can slow the instrument "
                                                  "during the check-in — leave off unless you need it."),
-            _kb_row("Value slider CC#",          "The controller number the Kronos' VALUE slider transmits "
+            _kb_row("Value slider CC#",          "The controller number the instrument's VALUE slider transmits "
                                                  "(default 18). The on-screen slider follows it, except while "
                                                  "you are dragging it. 0 and 32 (Bank Select) are not allowed."),
         ),
         _p(_dim("These settings are in <b>Settings → MIDI/SysEx</b>. Current performance, program-change "
-                "follow and the slider mirror read the Kronos' MIDI stream, which is not decoded for a "
-                "Nautilus yet; SysEx must be enabled on the Kronos itself (GLOBAL › MIDI). A direct USB-MIDI "
+                "follow and the slider mirror read the instrument's MIDI stream, which is not decoded for a "
+                "Nautilus yet; SysEx must be enabled on the instrument itself (GLOBAL › MIDI). A direct USB-MIDI "
                 "connection is not supported by this app — only the network bridge.")),
 
         _h1("Librarian  (Tools → Librarian…)"),
-        _p("Manages programs, combis and set lists: sync a <b>Keyboard Library</b> with the Kronos, "
+        _p("Manages programs, combis, set lists, drum kits and wave sequences: sync a <b>Keyboard Library</b> with the instrument, "
            "open .pcg files, stage objects in the <b>Merge Window</b>, and place them back with "
            "dependency tracking. Browsing, staging and editing work offline; only Sync talks to "
            "the instrument."),
         _kbd_table(
-            _kb_row("Keyboard Library", "The on-disk copy of the Kronos' objects. Cut/Copy/Paste, Rename, "
-                                        "Properties and Delete change this library only — the Kronos is "
+            _kb_row("Keyboard Library", "The on-disk copy of the instrument's objects. Cut/Copy/Paste, Rename, "
+                                        "Properties and Delete change this library only — the instrument is "
                                         "untouched until you sync."),
             _kb_row("Merge Window",     "A staging area. <b>Auto-Fill to Library</b> places everything staged "
                                         "into the next free slots of the right type; it sends nothing to the "
-                                        "Kronos. <b>Force Overwrite</b> places onto a slot another Combi or Set "
+                                        "instrument. <b>Force Overwrite</b> places onto a slot another Combi or Set "
                                         "List still references (those referrers then point at the new object)."),
-            _kb_row("Loaded PCG File",  "Open a .pcg (or pull one from the Kronos) and move objects, with "
+            _kb_row("Loaded PCG File",  "Open a .pcg (or pull one from the instrument) and move objects, with "
                                         "their dependencies, into the Merge Window."),
             _kb_row("Right-click a tree", "Expand / Collapse Selected or All, in all three panes."),
         ),
@@ -362,39 +362,39 @@ def _build_html() -> str:
                                       "under the panel). Factory ROM samples are not listed."),
         ),
         _p(_dim("EXs and 3rd-party bank names come from the EXs product catalog shipped with the app. A name "
-                "identifies the product; it does not prove the pack is installed on your Kronos. To pick up "
+                "identifies the product; it does not prove the pack is installed on your instrument. To pick up "
                 "packs released later, drop a newer <b>exs_catalog.json</b> in the data folder. Drum Kit "
                 "and Wave Sequence references are not shown yet.")),
         _h2("Sync button"),
         _p("One button whose label names what a plain click does; the <b>▾</b> beside it picks the mode, "
            "and your choice is remembered."),
         _kbd_table(
-            _kb_row("2-Way Sync", "Pull the library from the Kronos, then push every pending local change. "
+            _kb_row("2-Way Sync", "Pull the library from the instrument, then push every pending local change. "
                                   "Tick <b>Force Full Sync</b> to re-read every bank instead of only the banks "
                                   "whose digest changed."),
-            _kb_row("Pull Only",  "Make the library a mirror of the Kronos. Pending edits <i>and</i> slots "
+            _kb_row("Pull Only",  "Make the library a mirror of the instrument. Pending edits <i>and</i> slots "
                                   "marked for deletion are discarded first — you are asked before anything "
                                   "is lost, and it cannot be undone."),
-            _kb_row("Push Only",  "Write every pending local change to the Kronos without pulling. If a "
-                                  "bank changed on the Kronos since the last sync, nothing is written and "
+            _kb_row("Push Only",  "Write every pending local change to the instrument without pulling. If a "
+                                  "bank changed on the instrument since the last sync, nothing is written and "
                                   "you are asked whether to overwrite."),
         ),
         _h2("Banners"),
         _kbd_table(
-            _kb_row("Red: Kronos not answering SysEx", "Sync is disabled until it answers. On the Kronos: "
+            _kb_row("Red: Instrument not answering SysEx", "Sync is disabled until it answers. On the instrument: "
                                   "GLOBAL › MIDI, and check every MIDI Filter box. Press <b>Re-check</b> "
                                   "after fixing it."),
-            _kb_row("Amber: conflicts", "Local changes whose banks changed on the Kronos since the last "
+            _kb_row("Amber: conflicts", "Local changes whose banks changed on the instrument since the last "
                                   "pull were <b>not</b> pushed. Run a 2-Way or Pull Only sync to take the "
-                                  "Kronos copy, or <b>Resolve Conflicts</b> to push your copy over it."),
+                                  "instrument copy, or <b>Resolve Conflicts</b> to push your copy over it."),
             _kb_row("Red: force destructive write ON", "Shown while that setting is armed."),
             _kb_row("Amber: warning", "The reason a sync was refused or only partly done. ✕ dismisses it."),
         ),
         _h2("Librarian settings  (Settings → Librarian)"),
         _p("<b>Full sync on launch</b> (off by default) pulls every bank as soon as the Librarian opens — "
-           "a pull only, it never writes to the Kronos. <b>Force destructive write</b> (off by default) "
+           "a pull only, it never writes to the instrument. <b>Force destructive write</b> (off by default) "
            "treats the Keyboard Library as the source of truth: 2-Way Sync overwrites banks that changed "
-           "on the Kronos without asking. Front-panel edits made since the last pull are lost, and the "
+           "on the instrument without asking. Front-panel edits made since the last pull are lost, and the "
            "pre-write backup does not cover them. It skips only the conflict check; missing-reference "
            "and bank-type refusals still apply."),
         _p(_dim("Delete and Clear Changes affect the library only; a fresh pull restores deleted "
@@ -402,7 +402,7 @@ def _build_html() -> str:
 
         _h1("Sample Editor  (Tools → Sample Editor…)"),
         _p("View and edit .KSC / .KMP / .KSF sample content: key ranges, loop points, flags and destructive "
-           "waveform edits. Edits happen on a local copy; <b>File → Pull … from Kronos</b> brings content "
+           "waveform edits. Edits happen on a local copy; <b>File → Pull … from Instrument</b> brings content "
            "over FTP and <b>Push …</b> puts a saved file back where it came from."),
         _p("Open a .KSC with <b>File → Open</b> or drag a .KSC / .KMP onto the window; dropping an audio file "
            "imports it as a new zone. The tree on the left lists the open collections; pick a multisample "
@@ -415,9 +415,9 @@ def _build_html() -> str:
             _kb_row("SAMPLE panel",      "Index / Sample / Orig.Key / Top Key. <b>Create</b> adds an empty zone, "
                                          "<b>Import Sample…</b> decodes audio files into the collection and "
                                          "assigns the first, <b>Remove Sample</b> deletes the audio but keeps "
-                                         "the key range. <b>Link</b> shares another sample's audio instead of "
+                                         "the key range. <b>Sample Shortcut</b> shares another sample's audio instead of "
                                          "copying it."),
-            _kb_row("KRONOS panel",      "Fields written into the .KSF: Reverse, +12dB Boost, Loop Enabled, "
+            _kb_row("INSTRUMENT panel",      "Fields written into the .KSF: Reverse, +12dB Boost, Loop Enabled, "
                                          "Sample Start, Loop Start, Loop End and Loop Tune."),
             _kb_row("LOCAL EDITS panel", "Select / Move tool, Use Zero, Loop Lock, Split L/R and the destructive "
                                          "edits: Normalize, Amplify, Soften, Trim Silence, Reverse, Remove DC "
@@ -450,7 +450,7 @@ def _build_html() -> str:
            "navigating menus."),
 
         _h1("Screenshot"),
-        _p("Saves the current Kronos screen frame as a PNG file. Requires an "
+        _p("Saves the current instrument screen frame as a PNG file. Requires an "
            "active connection."),
         _kbd_table(
             _kb_row("Save Screenshot… (Ctrl+S)", "Shows a save dialog to choose filename and location."),
@@ -469,7 +469,7 @@ def _build_html() -> str:
                                            "temperature, and storage stats."),
             _kb_row("VU meter",            "Shows the level of a local audio device (e.g. your DAW output). "
                                            "Click the ▾ button to pick the device. Choice is saved."),
-            _kb_row("Mode: …",             "Current Kronos operating mode. Detected from the screen "
+            _kb_row("Mode: …",             "Current instrument operating mode. Detected from the screen "
                                            "image when reference images are available; otherwise polled "
                                            "from the daemon every 1 s."),
         ),

@@ -46,6 +46,8 @@ _EOX = 0xF7
 OBJ_PROGRAM = 0x00
 OBJ_COMBI = 0x01
 OBJ_SONG_TIMBRE = 0x02   # not moved in v1, but decoded like a combi if ever needed
+OBJ_DRUM_KIT = 0x04
+OBJ_WAVE_SEQ = 0x05
 OBJ_SET_LIST = 0x0D
 
 # Object body versions (the version byte in a 0x73/0x75 dump). Used only as a
@@ -54,6 +56,8 @@ OBJ_VERSION = {
     OBJ_COMBI: 3,
     OBJ_SONG_TIMBRE: 3,
     OBJ_SET_LIST: 0,
+    OBJ_DRUM_KIT: 3,
+    OBJ_WAVE_SEQ: 1,
     # Program version (5) depends on HD-1 vs EXi; both are 5 today, but always
     # echo the dumped version rather than trusting this table for programs.
     OBJ_PROGRAM: 5,
@@ -306,6 +310,59 @@ def iter_setlist_slot_refs(body: bytes):
             break
         type_, bank, index = setlist_slot_ref(body, s)
         yield s, type_, bank, index
+
+
+# ── Program -> Drum Track / oscillator-zone reference accessors ──────────────
+# Ports of LibRefs.cs. Drum Track (another Program) lives in the Common section both wire formats
+# share; the oscillator zone layout below exists in the HD-1 wire format only (EXi bodies have no
+# OSC1/OSC2 zones), so callers gate on len(body) == WIRE_SIZE_HD1 before iterating zones.
+
+_DT_NUM_OFS = 2688
+_DT_BANK_OFS = 2689
+_DT_ON_BYTE, _DT_ON_BIT = 1295, 0x10
+PROGRAM_HD1_WIRE_SIZE = 3706
+ZONES_PER_OSC = 8
+_OSC_ZONE_BASE = (2774, 3240)
+_ZONE_STRIDE, _ZONE_NUM_OFS = 22, 18
+_OSC_MODE_OFS = 2558
+
+
+def program_drum_track_on(body: bytes) -> bool:
+    """A never-touched Program's Drum Track bytes default to 0,0 (a valid-looking I-A:000 address),
+    so the reference only exists when its own 'Drum Track On' bit is set."""
+    return len(body) > _DT_BANK_OFS and bool(body[_DT_ON_BYTE] & _DT_ON_BIT)
+
+
+def program_drum_track_ref(body: bytes) -> Tuple[int, int]:
+    """(func33_bank, number) of the Program's Drum Track."""
+    return body[_DT_BANK_OFS], body[_DT_NUM_OFS]
+
+
+def set_program_drum_track_ref(body: bytearray, func33_bank: int, number: int) -> None:
+    body[_DT_NUM_OFS] = number & 0x7F
+    body[_DT_BANK_OFS] = func33_bank & 0x1F
+
+
+def program_oscillator_mode(body: bytes) -> int:
+    return body[_OSC_MODE_OFS] & 0x07
+
+
+def iter_program_zone_refs(body: bytes):
+    """Yield (osc, zone, ms_type, number) for each HD-1 oscillator zone. ms_type: 1 = Sample /
+    Drum Kit, 2 = Wave Sequence; number is the LINEAR MS number."""
+    for osc in (0, 1):
+        for zone in range(ZONES_PER_OSC):
+            type_ofs = _OSC_ZONE_BASE[osc] + zone * _ZONE_STRIDE
+            num_ofs = type_ofs + _ZONE_NUM_OFS
+            if num_ofs + 1 >= len(body):
+                return
+            yield osc, zone, body[type_ofs] & 0x03, body[num_ofs] | (body[num_ofs + 1] << 8)
+
+
+def set_program_zone_number(body: bytearray, osc: int, zone: int, new_number: int) -> None:
+    ofs = _OSC_ZONE_BASE[osc] + zone * _ZONE_STRIDE + _ZONE_NUM_OFS
+    body[ofs] = new_number & 0xFF
+    body[ofs + 1] = (new_number >> 8) & 0xFF
 
 
 # ── Bank digest (0x38) parsing ───────────────────────────────────────────────

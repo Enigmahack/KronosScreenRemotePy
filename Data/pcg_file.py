@@ -40,7 +40,8 @@ from typing import List, Optional, Tuple
 
 import Core.kronos_sysex as ksx
 from Core.kronos_sysex import BankId, combi_label, program_label
-from Data.librarian_sysex import OBJ_COMBI, OBJ_PROGRAM, OBJ_SET_LIST
+from Data.librarian_sysex import OBJ_COMBI, OBJ_DRUM_KIT, OBJ_PROGRAM, OBJ_SET_LIST, OBJ_WAVE_SEQ
+import Data.object_types as object_types
 
 _HEADER_SIZE = 24
 
@@ -60,22 +61,12 @@ _BANK_CHUNK_OBJ_TYPE = {
     "PBK1": OBJ_PROGRAM,
     "CBK1": OBJ_COMBI,
     "SBK1": OBJ_SET_LIST,
-}
-
-# C#'s PcgObjectExtractor.BankChunkObjType additionally recognizes DBK1 (Drum
-# Kit) and WBK1 (Wave Sequence) — this client has no Local Library object type
-# for either yet, so their records are reported as skipped (PcgRejectedBank,
-# surfaced in the Librarian's "N rejected bank(s)" UI) rather than silently
-# vanishing, which is what happened before these two tags were even searched
-# for at all.
-_UNSUPPORTED_BANK_CHUNK_NAME = {
-    "DBK1": "Drum Kit",
-    "WBK1": "Wave Sequence",
+    "DBK1": OBJ_DRUM_KIT,
+    "WBK1": OBJ_WAVE_SEQ,
 }
 
 _BANK_CHUNK_TAGS = tuple(t.encode("ascii") for t in _BANK_CHUNK_OBJ_TYPE)
-_UNSUPPORTED_BANK_CHUNK_TAGS = tuple(t.encode("ascii") for t in _UNSUPPORTED_BANK_CHUNK_NAME)
-_ALL_SCAN_TAGS = _BANK_CHUNK_TAGS + _UNSUPPORTED_BANK_CHUNK_TAGS
+_ALL_SCAN_TAGS = _BANK_CHUNK_TAGS
 
 
 # ── Bank-id decoding ─────────────────────────────────────────────────────────
@@ -117,6 +108,15 @@ def decode_combi_obj_bank(bank_id_raw: int) -> int:
     """
     idx = bank_id_raw if bank_id_raw < 0x20000 else bank_id_raw - 0x20000 + 7
     return ksx._func33_to_obj_bank(0, idx)
+
+
+def decode_drum_or_wave_obj_bank(bank_id_raw: int) -> int:
+    """.pcg on-disk Drum Kit / Wave Sequence bankId -> obj_bank: one Int bank (raw 0) plus 14 User
+    banks at 0x20000+N (pcg_file_format.md §2.4). Returns -1 if it doesn't resolve."""
+    if bank_id_raw == 0:
+        return 0
+    n = bank_id_raw - 0x20000
+    return 0x40 + n if 0 <= n <= 13 else -1
 
 
 # ── Extracted records ────────────────────────────────────────────────────────
@@ -231,50 +231,13 @@ def extract_objects(data: bytes) -> Tuple[List[PcgObjectEntry], List[PcgRejected
         if pos < consumed_to:
             continue
         tag_str = tag_bytes.decode("ascii")
-        if tag_str in _UNSUPPORTED_BANK_CHUNK_NAME:
-            consumed, reason = _try_skip_unsupported_bank(data, pos, tag_str)
-        else:
-            obj_type = _BANK_CHUNK_OBJ_TYPE[tag_str]
-            consumed, reason = _try_read_bank(data, pos, obj_type, tag_bytes == b"MBK1", results)
-        # Not mutually exclusive: _try_skip_unsupported_bank reports a reason
-        # on its success path too (consumed > 0 AND reason set), unlike
-        # _try_read_bank where the two are always exclusive.
+        obj_type = _BANK_CHUNK_OBJ_TYPE[tag_str]
+        consumed, reason = _try_read_bank(data, pos, obj_type, tag_bytes == b"MBK1", results)
         if consumed:
             consumed_to = pos + consumed
         if reason is not None:
             rejected.append(reason)
     return results, rejected
-
-
-def _try_skip_unsupported_bank(data: bytes, offset: int,
-                               tag_str: str) -> Tuple[int, Optional[PcgRejectedBank]]:
-    """DBK1/WBK1: validate the header enough to skip past the chunk's own
-    records (so their bytes aren't mistaken for spurious tag matches), but
-    never extract objects — this client has no Drum Kit/Wave Sequence object
-    type. Always reports a PcgRejectedBank on success, unlike a supported
-    chunk which only does on failure, so the count reaches the "rejected
-    bank(s)" UI. Upper bound 200, not 128, per PcgObjectExtractor.cs's own
-    comment ("largest real bank seen (WBK1 Int = 150)") — this is the one
-    chunk kind that bound was actually written for."""
-    label = _UNSUPPORTED_BANK_CHUNK_NAME[tag_str]
-    count = _read_be32(data, offset + 0x0C)
-    item_size = _read_be32(data, offset + 0x10)
-    bank_id_raw = _read_be32(data, offset + 0x14)
-
-    if not (1 <= count <= 200):
-        return 0, PcgRejectedBank(tag_str, offset, count, item_size, bank_id_raw,
-                                   f"{label}: count {count} out of range 1..200")
-    if not (64 <= item_size <= 200_000):
-        return 0, PcgRejectedBank(tag_str, offset, count, item_size, bank_id_raw,
-                                   f"{label}: itemSize {item_size} out of range 64..200000")
-    records_end = offset + _HEADER_SIZE + count * item_size
-    if records_end > len(data):
-        return 0, PcgRejectedBank(tag_str, offset, count, item_size, bank_id_raw,
-                                   f"{label}: records would run past end of file")
-
-    return records_end - offset, PcgRejectedBank(
-        tag_str, offset, count, item_size, bank_id_raw,
-        f"{label}: {count} record(s) skipped — not supported by this client yet")
 
 
 def _try_read_bank(data: bytes, offset: int, obj_type: int, is_exi: bool,
@@ -284,9 +247,10 @@ def _try_read_bank(data: bytes, offset: int, obj_type: int, is_exi: bool,
     item_size = _read_be32(data, offset + 0x10)
     bank_id_raw = _read_be32(data, offset + 0x14)
 
-    if not (1 <= count <= 128):
+    # Upper bound covers the largest real bank seen (WBK1 Int = 150).
+    if not (1 <= count <= 200):
         return 0, PcgRejectedBank(tag, offset, count, item_size, bank_id_raw,
-                                   f"count {count} out of range 1..128")
+                                   f"count {count} out of range 1..200")
     if not (64 <= item_size <= 200_000):   # sane range for a Kronos object body
         return 0, PcgRejectedBank(tag, offset, count, item_size, bank_id_raw,
                                    f"itemSize {item_size} out of range 64..200000")
@@ -304,6 +268,14 @@ def _try_read_bank(data: bytes, offset: int, obj_type: int, is_exi: bool,
             return 0, PcgRejectedBank(tag, offset, count, item_size, bank_id_raw,
                 f"bankId 0x{bank_id_raw:X} didn't decode to a valid Program bank")
         bank = BankId(1, program_label(ob), ob, 0)
+    elif obj_type in (OBJ_DRUM_KIT, OBJ_WAVE_SEQ):
+        ob = decode_drum_or_wave_obj_bank(bank_id_raw)
+        if ob < 0:
+            kind = object_types.get(obj_type).display_name
+            return 0, PcgRejectedBank(tag, offset, count, item_size, bank_id_raw,
+                f"bankId 0x{bank_id_raw:X} didn't decode to a valid {kind} bank")
+        # BankId.type carries the object type here (it is the func-33 ref type only for Program/Combi).
+        bank = BankId(obj_type, object_types.label_for(obj_type, ob), ob, 0)
     else:  # OBJ_COMBI
         ob = decode_combi_obj_bank(bank_id_raw)
         if ob < 0:

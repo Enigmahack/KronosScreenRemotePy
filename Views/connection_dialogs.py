@@ -31,7 +31,7 @@ class ConnectionFailedDialog(BaseDialog):
         layout.setSpacing(12)
 
         # Title
-        title = QLabel("Unable to connect to Kronos")
+        title = QLabel("Unable to connect to the instrument")
         title_font = QFont()
         title_font.setPointSize(11)
         title_font.setBold(True)
@@ -89,7 +89,7 @@ class ConnectionFailedDialog(BaseDialog):
 
         # Help text
         help_text = QLabel(
-            "Make sure the Kronos is powered on and connected to the network.\n"
+            "Make sure the instrument is powered on and connected to the network.\n"
             "Check the IP address and port number in the connection settings."
         )
         help_text.setStyleSheet(f"color: {T.TEXT_DIM}; font-size: 9pt;")

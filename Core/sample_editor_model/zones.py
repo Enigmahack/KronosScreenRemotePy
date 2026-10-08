@@ -343,7 +343,7 @@ class ZoneMixin:
             file_name = os.path.basename(source_ksf_path)
             if not KsfSample.is_valid_stub_target(file_name):
                 self.status_text = (f"Can't link to '{file_name}' - its filename is {len(file_name.encode('ascii', 'replace'))} characters, "
-                                    "longer than the Kronos's own 12-character SMF1 link limit. Uncheck Link to copy its audio into this zone instead.")
+                                    "longer than the instrument's own 12-character SMF1 link limit. Uncheck Sample Shortcut to copy its audio into this zone instead.")
                 return None
             self._write_linked_sample(m, kmp_path, zone, src, source_ksf_path)
             self.last_imported_zone_index = zone_index(m.zones, zone)
@@ -715,7 +715,7 @@ class ZoneMixin:
         would_remove_sibling = sibling_zones is not None and idx < len(sibling_zones)
         if len(m.zones) <= 1 or (would_remove_sibling and len(sibling_zones) <= 1):
             self.status_text = ("Can't delete the last zone - a multisample always needs at least one keymap zone, "
-                                "even with no sample assigned (the Kronos itself never allows an empty keymap).")
+                                "even with no sample assigned (the instrument itself never allows an empty keymap).")
             return None
 
         self._zone_undo.record_before_edit(ZoneListSnapshot.of(m.zones, sibling_zones))

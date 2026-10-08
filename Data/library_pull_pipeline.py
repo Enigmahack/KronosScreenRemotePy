@@ -69,12 +69,13 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Callable, Dict, List, Optional, Tuple
 
-from Data.librarian_sysex import OBJ_COMBI, OBJ_PROGRAM, OBJ_SET_LIST
+from Data.librarian_sysex import OBJ_COMBI, OBJ_DRUM_KIT, OBJ_PROGRAM, OBJ_SET_LIST, OBJ_WAVE_SEQ
+import Data.object_types as object_types
 from Data.local_library_store import BlobStore, LocalIndexEntry, LocalLibraryIndex
 from Tools.setlist_data import MAX_COUNT
 import Core.kronos_sysex as ksx
 
-_OBJ_TYPE_DISPLAY = {OBJ_PROGRAM: "Program", OBJ_COMBI: "Combi", OBJ_SET_LIST: "Set List"}
+_OBJ_TYPE_DISPLAY = {t: d.display_name for t, d in object_types.REGISTRY.items()}
 
 
 def _bank_display_label(obj_type: int, bank: int) -> str:
@@ -82,6 +83,8 @@ def _bank_display_label(obj_type: int, bank: int) -> str:
         return ksx.program_label(bank)
     if obj_type == OBJ_COMBI:
         return ksx.combi_label(bank)
+    if obj_type in (OBJ_DRUM_KIT, OBJ_WAVE_SEQ):
+        return object_types.label_for(obj_type, bank)
     return ""
 
 
@@ -104,13 +107,23 @@ EDITABLE_BANKS: Dict[int, List[int]] = {
     OBJ_PROGRAM: list(range(0x00, 0x06)) + list(range(0x40, 0x4E)),   # I-A..I-F, U-A..U-GG (20)
     OBJ_COMBI: list(range(0x00, 0x07)) + list(range(0x40, 0x47)),     # I-A..I-G, U-A..U-G  (14)
     OBJ_SET_LIST: [0],                                                # flat 128-slot pseudo-bank
+    OBJ_DRUM_KIT: list(object_types.REGISTRY[OBJ_DRUM_KIT].editable_banks),    # INT + U-A..U-GG (GM is browse-only)
+    OBJ_WAVE_SEQ: list(object_types.REGISTRY[OBJ_WAVE_SEQ].editable_banks),    # INT + U-A..U-GG
 }
 
 SLOT_COUNT: Dict[int, int] = {
     OBJ_PROGRAM: 128,
     OBJ_COMBI: 128,
     OBJ_SET_LIST: MAX_COUNT,
+    # Deliberately NO Drum Kit / Wave Sequence entry: their slot count differs PER BANK (INT vs User),
+    # and a single type-wide number would expose nonexistent slots as legal write destinations.
+    # Use slot_count_for(obj_type, bank).
 }
+
+
+def slot_count_for(obj_type: int, bank: int) -> int:
+    """Slots in one specific bank (ObjectTypeRegistry.SlotCount(bank))."""
+    return object_types.slot_count(obj_type, bank)
 
 
 @dataclass(frozen=True)
@@ -152,9 +165,9 @@ class PullResult:
 #: failure was invisible: every request times out instead of erroring.
 NO_REPLY_GIVE_UP = 4
 
-SYSEX_OFF_FIX = ("On the Kronos: GLOBAL > MIDI, and check every MIDI Filter box (Program Change, "
+SYSEX_OFF_FIX = ("On the instrument: GLOBAL > MIDI, and check every MIDI Filter box (Program Change, "
                  "Bank Change, Combi Change, After Touch, Control Change and Exclusive).")
-REFUSE_NO_INSTRUMENT_REPLY = ("REFUSE: the Kronos answered no SysEx requests, so nothing could be "
+REFUSE_NO_INSTRUMENT_REPLY = ("REFUSE: the instrument answered no SysEx requests, so nothing could be "
                               "pulled. " + SYSEX_OFF_FIX)
 
 
@@ -163,7 +176,7 @@ def all_banks() -> List[BankRef]:
     stable order (Program, then Combi, then Set List) -- mirrors
     LibraryPullPlanner.AllBanks."""
     return [BankRef(obj_type, bank)
-            for obj_type in (OBJ_PROGRAM, OBJ_COMBI, OBJ_SET_LIST)
+            for obj_type in object_types.TYPE_ORDER
             for bank in EDITABLE_BANKS[obj_type]]
 
 

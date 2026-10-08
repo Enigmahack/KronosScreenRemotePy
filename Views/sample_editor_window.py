@@ -56,11 +56,39 @@ class _Marshal(QObject):
         self.call.connect(lambda fn: fn())
 
 
+_CHECK_ICON: Optional[str] = None
+
+
+def _check_icon_url() -> str:
+    """Checkmark glyph for the styled checkbox indicator (QSS image: needs a file). Painted once into the temp dir."""
+    global _CHECK_ICON
+    if _CHECK_ICON is None:
+        import tempfile
+        from PySide6.QtCore import QPointF
+        from PySide6.QtGui import QColor, QImage, QPainter, QPen
+        img = QImage(14, 14, QImage.Format.Format_ARGB32)
+        img.fill(0)
+        p = QPainter(img)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(QPen(QColor(T.TEXT), 2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+        p.drawPolyline([QPointF(3, 7.5), QPointF(6, 10.5), QPointF(11, 3.5)])
+        p.end()
+        path = os.path.join(tempfile.gettempdir(), "ksr_checkbox_check.png")
+        img.save(path)
+        _CHECK_ICON = path.replace("\\", "/")
+    return _CHECK_ICON
+
+
 def window_stylesheet() -> str:
     """Explicit dark styling, like the app's dialogs (BaseDialog): the editor must not depend on the OS colour scheme."""
     return f"""
     QMainWindow, QScrollArea, QScrollArea > QWidget > QWidget {{ background: {T.BG}; color: {T.TEXT}; }}
     QLabel, QCheckBox {{ color: {T.TEXT}; background: transparent; }}
+    QCheckBox::indicator {{ width: 14px; height: 14px; border: 1px solid #8A8A8A; border-radius: 2px;
+                            background: {T.PANEL_ALT}; }}
+    QCheckBox::indicator:hover {{ border-color: {T.ACCENT}; }}
+    QCheckBox::indicator:checked {{ image: url({_check_icon_url()}); }}
+    QCheckBox::indicator:disabled {{ border-color: {T.BORDER_STRONG}; }}
     QMenuBar {{ background: {T.BG}; color: {T.TEXT}; }}
     QMenuBar::item:selected, QMenu::item:selected {{ background: {T.ACCENT_DEEP}; }}
     QMenu {{ background: {T.PANEL_ALT}; color: {T.TEXT}; border: 1px solid {T.BORDER_STRONG}; }}
@@ -233,10 +261,10 @@ class SampleEditorWindow(QMainWindow):
         self._a_save_ms = self._act(f, "Save &Multisample", self.on_save_multisample)
         self._a_save_sample = self._act(f, "Save &Sample", self.on_save_sample)
         f.addSeparator()
-        self._act(f, "Pull Collection from &Kronos (.KSC)...", self.on_pull_collection)
-        self._act(f, "Pull Multisample from Kronos (.KMP)...", self.on_pull_multisample)
-        self._a_push_sample = self._act(f, "Push Sample to Kronos", self.on_push_sample)
-        self._a_push_ms = self._act(f, "Push Multisample to Kronos", self.on_push_multisample)
+        self._act(f, "Pull Collection from &Instrument (.KSC)...", self.on_pull_collection)
+        self._act(f, "Pull Multisample from Instrument (.KMP)...", self.on_pull_multisample)
+        self._a_push_sample = self._act(f, "Push Sample to Instrument", self.on_push_sample)
+        self._a_push_ms = self._act(f, "Push Multisample to Instrument", self.on_push_multisample)
         f.addSeparator()
         self._a_import = self._act(f, "&Import Audio (WAV/MP3/MP4)...", self.on_import_audio)
         self._a_import_stereo = self._act(f, "Import Audio as Stereo &Pair...", self.on_import_stereo_audio)
@@ -307,7 +335,7 @@ class SampleEditorWindow(QMainWindow):
         bl.addWidget(_label("Open Collection:"))
         b_file = QPushButton("From File...")
         b_file.clicked.connect(self.on_open_collection)
-        b_kron = QPushButton("From Kronos...")
+        b_kron = QPushButton("From Instrument...")
         b_kron.clicked.connect(self.on_pull_collection)
         bl.addWidget(b_file)
         bl.addWidget(b_kron)
@@ -407,8 +435,9 @@ class SampleEditorWindow(QMainWindow):
         self._sample_combo.setToolTip("Assigns a sample to this zone - lists everything already imported into the "
                                       "collection's repository; the first entry is what's currently assigned")
         self._sample_combo.activated.connect(self._on_zone_sample_activated)
-        self._link_box = QCheckBox("Link")
-        self._link_box.setToolTip("Picking a sample shares its audio instead of copying it (see Help)")
+        self._link_box = QCheckBox("Sample Shortcut")
+        self._link_box.setToolTip("Enabled: create a shortcut to a sample without duplicating. "
+                                  "Disabled: duplicate with separate settings and controls. See help for details.")
         self._orig_box = FieldBox("", 55)
         self._orig_box.setToolTip("Note name, e.g. C4")
         self._top_box = FieldBox("", 55)
@@ -466,9 +495,9 @@ class SampleEditorWindow(QMainWindow):
                             _label("Sample Rate:"), self._rate_box, self._warning))
 
         # KRONOS panel — fields written into the .KSF and reflected on the hardware once pushed.
-        kp, kl = _panel("KRONOS", "kronos")
+        kp, kl = _panel("INSTRUMENT", "kronos")
         self._reverse_box = QCheckBox("Reverse")
-        self._reverse_box.setToolTip("The Kronos Reverse flag - reverses playback direction, doesn't touch the audio data")
+        self._reverse_box.setToolTip("The instrument Reverse flag - reverses playback direction, doesn't touch the audio data")
         self._boost_box = QCheckBox("+12dB Boost")
         self._boost_box.setToolTip("Sample-level +12dB gain boost")
         self._loop_box = QCheckBox("Loop Enabled")
@@ -566,7 +595,7 @@ class SampleEditorWindow(QMainWindow):
     def _build_waveform_frame(self) -> QFrame:
         f, lay = _panel("")
         row = QHBoxLayout()
-        row.setSpacing(1)
+        row.setSpacing(6)   # same gap as the LOCAL EDITS rows (_flow); 1 px ran the buttons together
         self._btn_start = _tool_button(path_icon("locate_start", 14), "Rewind to start (Home)")
         self._btn_rew = _tool_button(path_icon("rewind", 14), "Rewind")
         self._btn_play = _tool_button(play_stop_icon(False), "Play / Stop (Space)")
@@ -581,7 +610,7 @@ class SampleEditorWindow(QMainWindow):
         self._btn_end.clicked.connect(lambda: self._after(self._model.transport_locate_end))
         for b in (self._btn_start, self._btn_rew, self._btn_play, self._btn_pause, self._btn_ff, self._btn_end):
             row.addWidget(b)
-        row.addSpacing(8)
+        row.addSpacing(10)
         self._btn_zin = _tool_button(zoom_icon(True), "Zoom in (Ctrl+Plus, or scroll over the waveform)")
         self._btn_zout = _tool_button(zoom_icon(False), "Zoom out (Ctrl+Minus)")
         self._btn_zin.clicked.connect(self.on_zoom_in)
@@ -598,7 +627,7 @@ class SampleEditorWindow(QMainWindow):
         self._scroll_zoom.clicked.connect(self._on_scroll_zoom_toggled)
         for w in (self._btn_zin, self._btn_zout, self._btn_zsel, self._btn_fit, self._scroll_zoom):
             row.addWidget(w)
-        row.addSpacing(8)
+        row.addSpacing(10)
         self._btn_undo = _tool_button(undo_icon(False), "Undo")
         self._btn_redo = _tool_button(undo_icon(True), "Redo")
         self._btn_undo.clicked.connect(self.on_undo)
@@ -645,14 +674,14 @@ class SampleEditorWindow(QMainWindow):
         grid.addLayout(left, 1)
 
         right = QFrame()
-        right.setFixedWidth(92)
+        right.setFixedWidth(104)
         right.setStyleSheet(f"QFrame#vu{{border:1px solid {T.BORDER_STRONG};border-radius:2px;}}")
         right.setObjectName("vu")
         rg = QGridLayout(right)
-        rg.setContentsMargins(4, 4, 4, 4)
+        rg.setContentsMargins(8, 6, 8, 6)
         rg.setSpacing(3)
         self._pan = SamplePanControl()
-        self._pan.setFixedHeight(20)
+        self._pan.setFixedHeight(22)
         self._pan.pan = self._model.pan
         self._pan.pan_changed.connect(lambda v: setattr(self._model, "pan", v))
         self._vu_l = SampleVuMeter(show_labels=False)
@@ -660,18 +689,24 @@ class SampleEditorWindow(QMainWindow):
         self._volume = SampleVolumeControl()
         self._volume.volume = self._model.volume
         self._volume.volume_changed.connect(lambda v: setattr(self._model, "volume", float(v)))
-        rg.addWidget(self._pan, 0, 0, 1, 2)
-        rg.addWidget(self._vu_l, 1, 0)
-        rg.addWidget(self._vu_r, 1, 1)
-        rg.addWidget(self._volume, 1, 2, 2, 1)
+        pan_cap, vol_cap = QLabel("Pan"), QLabel("Vol")
+        for c in (pan_cap, vol_cap):
+            c.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            c.setStyleSheet(MUTED + "font-size:10px;")
+        rg.addWidget(pan_cap, 0, 0, 1, 3)
+        rg.addWidget(self._pan, 1, 0, 1, 3)
+        rg.addWidget(vol_cap, 2, 2)
+        rg.addWidget(self._vu_l, 3, 0)
+        rg.addWidget(self._vu_r, 3, 1)
+        rg.addWidget(self._volume, 3, 2, 2, 1)
         cap_l, cap_r = QLabel("L"), QLabel("R")
         for c in (cap_l, cap_r):
             c.setAlignment(Qt.AlignmentFlag.AlignCenter)
             c.setStyleSheet(MUTED + "font-size:9px;")
-        rg.addWidget(cap_l, 2, 0)
-        rg.addWidget(cap_r, 2, 1)
+        rg.addWidget(cap_l, 4, 0)
+        rg.addWidget(cap_r, 4, 1)
         rg.setColumnMinimumWidth(2, 34)
-        rg.setRowStretch(1, 1)
+        rg.setRowStretch(3, 1)
         grid.addWidget(right)
         self._vu_left_widgets = (self._vu_l, cap_l)
         lay.addLayout(grid)
@@ -720,7 +755,7 @@ class SampleEditorWindow(QMainWindow):
         m = self._model
         name = os.path.basename(m.active_collection_path) if m.active_collection_path else None
         self.setWindowTitle(("*" if m.has_unsaved_changes else "")
-                            + ("Sample Editor - Kronos" if name is None else f"{name} - Sample Editor - Kronos"))
+                            + ("Sample Editor - Instrument" if name is None else f"{name} - Sample Editor - Instrument"))
         self._btn_save.setEnabled(m.has_unsaved_changes)
         self._a_save_changes.setEnabled(m.has_unsaved_changes)
 
@@ -1475,7 +1510,7 @@ class SampleEditorWindow(QMainWindow):
         a.setEnabled(self._model.has_unsaved_changes)
         a.triggered.connect(self.on_save_changes)
         menu.addAction("Save as...").triggered.connect(lambda: self.on_save_collection_as(owning))
-        menu.addAction("Push to Kronos...").triggered.connect(self.on_push_collection)
+        menu.addAction("Push to Instrument...").triggered.connect(self.on_push_collection)
         menu.addSeparator()
         menu.addAction("Close Collection").triggered.connect(lambda: self._unload_with_confirm(owning))
         menu.addAction("Close Editor").triggered.connect(self.close)
@@ -1660,7 +1695,7 @@ class SampleEditorWindow(QMainWindow):
 
     def _remote_source(self) -> Optional[KronosRemoteSampleSource]:
         if not self._host:
-            self._status.setText("No Kronos host configured - set one from the main window first.")
+            self._status.setText("No instrument host configured - set one from the main window first.")
             return None
         return KronosRemoteSampleSource(self, self._host, self._ftp_port, self._user, self._pass)
 

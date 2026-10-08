@@ -138,7 +138,7 @@ def _parse_data_dir_arg() -> None:
 
 def _parse_args(settings: AppSettings) -> AppSettings:
     p = argparse.ArgumentParser(description="Kronos ScreenRemote")
-    p.add_argument("host", nargs="?", default="", help="Kronos host/IP")
+    p.add_argument("host", nargs="?", default="", help="Instrument host/IP")
     p.add_argument("--data-dir", default="",
                    help="Directory for settings, caches and the local library "
                         "(default: the per-user application-data directory; also "
@@ -201,7 +201,7 @@ def main():
     if not settings.kronos_host:
         text, ok = QInputDialog.getText(
             None, "Kronos ScreenRemote",
-            "Enter Kronos host/IP address:",
+            "Enter instrument host/IP address:",
             text="192.168.100.15")
         if ok and text.strip():
             settings.kronos_host = text.strip()

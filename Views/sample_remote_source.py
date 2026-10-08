@@ -24,7 +24,7 @@ from Views.sample_editor_dialogs import confirm, prompt_text
 
 log = logging.getLogger(__name__)
 
-PUSH_TIMEOUT_NOTE = ("the Kronos stopped responding partway through - nothing on it is guaranteed complete, "
+PUSH_TIMEOUT_NOTE = ("the instrument stopped responding partway through - nothing on it is guaranteed complete, "
                      "check the file there before relying on it")
 
 
@@ -71,13 +71,13 @@ class RemoteBrowserDialog(QDialog):
         self._mode = mode
         self._ext = extension.upper()
         self.selected_path: Optional[str] = None
-        self.setWindowTitle("Push to Kronos" if mode == "folder" else
-                            f"Load {'Multisample' if self._ext == '.KMP' else 'Sample Collection'} from Kronos")
+        self.setWindowTitle("Push to Instrument" if mode == "folder" else
+                            f"Load {'Multisample' if self._ext == '.KMP' else 'Sample Collection'} from Instrument")
         self.resize(480, 560)
 
         lay = QVBoxLayout(self)
-        info = QLabel("Select the destination folder on the Kronos's SSD." if mode == "folder"
-                      else f"Select a {self._ext} file on the Kronos's SSD.")
+        info = QLabel("Select the destination folder on the instrument's SSD." if mode == "folder"
+                      else f"Select a {self._ext} file on the instrument's SSD.")
         info.setStyleSheet(f"color: {T.TEXT_DIM};")
         lay.addWidget(info)
 
@@ -240,11 +240,11 @@ class KronosRemoteSampleSource:
     def pick_and_pull(self, extension: str, local_root: str) -> RemotePullResult:
         ftp, err = run_blocking(self._owner, "Connecting...", lambda _p: self._connect())
         if err is not None:
-            return RemotePullResult(None, f"Could not connect to the Kronos: {err}")
+            return RemotePullResult(None, f"Could not connect to the instrument: {err}")
         try:
             dlg = RemoteBrowserDialog(ftp, "file", extension, self._owner)
             if dlg.exec() != QDialog.DialogCode.Accepted or not dlg.selected_path:
-                return RemotePullResult(None, "Load from Kronos cancelled.")
+                return RemotePullResult(None, "Load from Instrument cancelled.")
             remote = dlg.selected_path
             res, err = run_blocking(self._owner, "Downloading...",
                                     lambda prog: sample_ftp.pull(ftp, remote, local_root, on_progress=prog))
@@ -281,16 +281,16 @@ class KronosRemoteSampleSource:
             return RemotePushResult(f"Push failed: {err}")
         if failures:
             return RemotePushResult(f"Push failed: {failures[0]}")
-        return RemotePushResult(f"Pushed '{name}' to the Kronos.")
+        return RemotePushResult(f"Pushed '{name}' to the instrument.")
 
     def pick_folder_and_push_collection(self, local_ksc_path: str, collection) -> RemotePushResult:
         ftp, err = run_blocking(self._owner, "Connecting...", lambda _p: self._connect())
         if err is not None:
-            return RemotePushResult(f"Could not connect to the Kronos: {err}")
+            return RemotePushResult(f"Could not connect to the instrument: {err}")
         try:
             dlg = RemoteBrowserDialog(ftp, "folder", "", self._owner)
             if dlg.exec() != QDialog.DialogCode.Accepted or not dlg.selected_path:
-                return RemotePushResult("Push to Kronos cancelled.")
+                return RemotePushResult("Push to Instrument cancelled.")
             dest = dlg.selected_path
             failures, err = run_blocking(
                 self._owner, "Uploading...",
@@ -301,7 +301,7 @@ class KronosRemoteSampleSource:
                 QMessageBox.warning(self._owner, "Sample Editor",
                                     "Some files did not push successfully:\n\n" + "\n".join(failures[:20]))
                 return RemotePushResult(f"Push finished with {len(failures)} failure(s).")
-            return RemotePushResult(f"Pushed '{os.path.basename(local_ksc_path)}' and its content to '{dest}' on the Kronos.")
+            return RemotePushResult(f"Pushed '{os.path.basename(local_ksc_path)}' and its content to '{dest}' on the instrument.")
         finally:
             try:
                 ftp.disconnect()

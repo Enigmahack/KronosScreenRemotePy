@@ -127,7 +127,7 @@ w._set_sync_mode(L.SYNC_PUSH_ONLY)
 answers = []
 QMessageBox.warning = staticmethod(lambda *a, **k: (answers.append(a[1]) or QMessageBox.StandardButton.No))
 w._start_sync(); assert wait(lambda: not w._busy, 30)
-assert answers and answers[-1] == "Overwrite the Kronos?" and not fake.writes
+assert answers and answers[-1] == "Overwrite the instrument?" and not fake.writes
 assert w._index.get(OBJ_PROGRAM, 0x00, 6).conflicted
 assert not w._brd_conflict.isHidden(), "conflict banner shown"
 assert "NOT pushed" in w._lbl_warning.text()

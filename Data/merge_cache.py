@@ -529,8 +529,8 @@ class MergeCache:
         (choosing entry's OWN destination) is a separate, manual step the caller
         drives -- this method only patches OUTGOING references, never decides
         where `entry` itself goes."""
-        from Data.librarian_sysex import (
-            OBJ_PROGRAM, obj_bank_to_func33, set_combi_timbre_ref, set_setlist_slot_ref)
+        from Data.librarian_model import ObjLoc, apply_ref_patch, encode_ref
+        from Tools.dependency_scanner import canonical_kind
         body = bytearray(entry.body)
         unresolved: List[MergeRefSite] = []
         for site in entry.ref_sites:
@@ -544,14 +544,12 @@ class MergeCache:
 
             if dest is not None:
                 d_type, d_bank, d_number = dest
-                ref_type = 1 if d_type == OBJ_PROGRAM else 0   # func33 convention: 1=Program, 0=Combi
-                func33_bank = obj_bank_to_func33(ref_type, d_bank)
-                if site.ref_kind.startswith("timbre"):
-                    set_combi_timbre_ref(body, site.site, func33_bank, d_number)
-                elif site.ref_kind.startswith("slot"):
-                    set_setlist_slot_ref(body, site.site, func33_bank, d_number, type_=None)
+                kind = canonical_kind(site.ref_kind)
+                enc = encode_ref(kind, ObjLoc(d_type, d_bank, d_number)) if kind else None
+                if enc is None:
+                    unresolved.append(site)   # unknown/legacy ref_kind, or a target this site can't encode -- leave as-is
                 else:
-                    unresolved.append(site)   # unknown/legacy ref_kind (pre-upgrade snapshot) -- leave as-is
+                    apply_ref_patch(body, kind, site.site, enc[0], enc[1])
             else:
                 unresolved.append(site)
         return bytes(body), unresolved

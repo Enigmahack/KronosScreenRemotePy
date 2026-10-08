@@ -397,12 +397,23 @@ More Info dialog, "Search a PCG for this object…" (one file, every listed gap,
 persists across selection changes / tree rebuilds. **C# bug found, user decided "port the intended
 behavior":** C#'s sample-bank name resolution never fires — `SampleDependencyRow.Key` is `"Exs|exs12"` but
 `ResolveSampleDescription` expects bare `exs12`/hex (the one-line C# fix: strip the `Bucket|` prefix); Python
-resolves correctly. Known gaps vs C#, all tracked: (a) **Drum Kit / Wave Sequence object types don't exist in
-Python** (registry, pull, panes, PCG view, `KronosBanks` linear maps) so a Program's oscillator-zone refs to
-them and their own sample refs aren't shown — this is the biggest remaining Librarian-model gap;
-(b) the Program Drum Track ref is display-only: the *resolution* paths (merge pull, repoint, the push
-referential REFUSE check) still use `walk_object_references`, which has no drum-track encoder — adding it
-there without a `RefKind`-style dispatch would write at the wrong offsets, so port it as an enum first.
+resolves correctly. (Both former gaps - Drum Kit / Wave Sequence object types and the Program Drum Track in the
+resolution paths - are closed, see the next paragraph.)
+
+**Drum Kits / Wave Sequences (done 2026-10-08).** Full object types, not display-only: `Data/object_types.py`
+(registry: per-bank slot counts INT 40/150, User 16/32, GM drum-kit read-only; linear MS-number maps), bodies in
+`Objects/object_body.py`, PCG `DBK1`/`WBK1` import, pull planner / Sync / push / erase, Merge and Auto-Fill (placed in
+referenced-before-referrer order, `_PLACE_ORDER`), sample refs in `Tools/sample_reference_walker.py`. References are
+dispatched on a canonical kind (`combi_timbre` | `setlist_slot` | `drum_track` | `osc_zone`;
+`dependency_scanner.canonical_kind`, `librarian_model.encode_ref/apply_ref_patch`) so a Drum Kit / Wave Sequence move
+repoints the Programs' oscillator zones (HD-1 wire format only) and a Program move repoints other Programs' Drum Track.
+`LibraryCatalog` now holds Programs too. Evidence: the 244-file real PCG corpus gives 63,888 kits / 144,716 wave
+sequences, all 38,424 / 2,216 bytes, zero rejected chunks, and every one of ~31k Program->kit/seq references in a
+120-file sample resolves to a real object; live Nautilus (read-only, `tests/live_drum_wave*.py`): digests answer for all
+30 banks, user-bank limits are exactly 16/32, GM kit bank has 9 slots, and a full pull fetched 862 objects (264+598)
+with no conflicts. Tests: `tests/test_drum_wave.py` (offline model), `tests/test_drum_wave_ui.py` (real window vs fake
+instrument). Not done: showing the GM Drum Kit bank's names in the Local tree (9 slots, dump-able), and editing
+beyond rename for these two types. Not verified: a real WRITE of a Drum Kit / Wave Sequence to an instrument.
 
 **Tests live in `tests/`** (run from the repo root, `python tests/<name>.py`): `regress.py` (recursively import every
 module, fail on import errors, construct/close MainWindow with temporary application data), `test_cal.py`, `test_librarian.py` / `test_launch.py` (the whole sync UI

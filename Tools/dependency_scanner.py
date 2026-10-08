@@ -25,13 +25,16 @@ use — nothing here reimplements that byte-level extraction.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Iterator, List
+from typing import Callable, Iterator, List, Optional
 
 from Data.librarian_model import ObjLoc, _READONLY_PROGRAM_BANKS
 from Data.librarian_sysex import (
-    OBJ_COMBI, OBJ_PROGRAM, OBJ_SET_LIST,
-    func33_to_obj_bank, iter_combi_timbre_refs, iter_setlist_slot_refs,
+    OBJ_COMBI, OBJ_DRUM_KIT, OBJ_PROGRAM, OBJ_SET_LIST, OBJ_WAVE_SEQ,
+    PROGRAM_HD1_WIRE_SIZE, ZONES_PER_OSC,
+    func33_to_obj_bank, iter_combi_timbre_refs, iter_program_zone_refs, iter_setlist_slot_refs,
+    program_drum_track_on, program_drum_track_ref, program_oscillator_mode,
 )
+import Data.object_types as object_types
 
 try:  # mirror the same defensive import librarian_sysex.py already does
     from Tools.setlist_data import _NAME_LEN, _SLOT_BASE, _SLOT_SIZE
@@ -68,11 +71,14 @@ def walk_object_references(obj_type: int, body: bytes) -> Iterator[ObjectRef]:
     I-A:000); blank Set List slots are skipped (see _setlist_slot_is_blank);
     Song refs (slot type 2) are out of scope, same as the C# source's own
     note. Any other object type yields nothing."""
-    if obj_type in (OBJ_COMBI, OBJ_SET_LIST):
-        from Objects.object_body import combi_body_is_init, setlist_body_is_init
-        is_init = combi_body_is_init if obj_type == OBJ_COMBI else setlist_body_is_init
-        if is_init(body):
+    if obj_type in (OBJ_COMBI, OBJ_SET_LIST, OBJ_PROGRAM):
+        from Objects.object_body import is_init
+        if is_init(obj_type, body):
             return
+
+    if obj_type == OBJ_PROGRAM:
+        yield from _walk_program_references(body)
+        return
 
     if obj_type == OBJ_COMBI:
         for t, fbank, num in iter_combi_timbre_refs(body):
@@ -97,6 +103,48 @@ def walk_object_references(obj_type: int, body: bytes) -> Iterator[ObjectRef]:
         yield ObjectRef(f"slot {s + 1}", s, ObjLoc(ref_obj_type, obj_bank, idx))
 
 
+def _walk_program_references(body: bytes) -> Iterator[ObjectRef]:
+    """A Program's outgoing references: its Drum Track (another Program, gated on its own 'on' bit) and,
+    in the HD-1 wire format only (EXi bodies reuse that byte range for other data), each oscillator
+    zone's Wave Sequence / Drum Kit (linear-addressed). Port of the Program branch of
+    ObjectReferenceWalker.Walk."""
+    if program_drum_track_on(body):
+        dt_bank, dt_num = program_drum_track_ref(body)
+        obj_bank = func33_to_obj_bank(1, dt_bank)
+        if obj_bank >= 0:
+            yield ObjectRef("drum track", -1, ObjLoc(OBJ_PROGRAM, obj_bank, dt_num))
+    if len(body) == PROGRAM_HD1_WIRE_SIZE:
+        osc_mode = program_oscillator_mode(body)
+        for osc, zone, ms_type, number in iter_program_zone_refs(body):
+            label = f"OSC{osc + 1} zone {zone + 1}"
+            site = osc * ZONES_PER_OSC + zone
+            if ms_type == 2:
+                loc = object_types.wave_seq_linear_to_loc(number)
+                if loc is not None:
+                    yield ObjectRef(label, site, ObjLoc(OBJ_WAVE_SEQ, loc[0], loc[1]))
+            elif ms_type == 1 and osc_mode in (4, 5):
+                loc = object_types.drum_kit_linear_to_loc(number)
+                if loc is not None:
+                    yield ObjectRef(label, site, ObjLoc(OBJ_DRUM_KIT, loc[0], loc[1]))
+
+
+def canonical_kind(ref_kind: str) -> Optional[str]:
+    """Normalises the walker's site label ('timbre 3', 'slot 2', 'drum track', 'OSC1 zone 4') or an
+    already-canonical ReferrerSite.kind to 'combi_timbre' | 'setlist_slot' | 'drum_track' |
+    'osc_zone' (None for an unknown / legacy label). The resolution paths dispatch on this."""
+    if ref_kind in ("combi_timbre", "setlist_slot", "drum_track", "osc_zone"):
+        return ref_kind
+    if ref_kind.startswith("timbre"):
+        return "combi_timbre"
+    if ref_kind.startswith("slot"):
+        return "setlist_slot"
+    if ref_kind.startswith("drum track"):
+        return "drum_track"
+    if ref_kind.startswith("OSC"):
+        return "osc_zone"
+    return None
+
+
 def is_always_available(ref: ObjLoc) -> bool:
     """A reference that can NEVER be missing, because its target isn't part of
     the library at all: the read-only ROM Program banks (GM, g(1)..g(d)).
@@ -109,7 +157,9 @@ def is_always_available(ref: ObjLoc) -> bool:
     still want to SHOW these references, they just must never be treated as
     something to resolve, pull, repoint, or block on. walk_resolvable_
     references below is the filtered view every resolution path wants."""
-    return ref.obj_type == OBJ_PROGRAM and ref.bank in _READONLY_PROGRAM_BANKS
+    # GM Drum Kit (bank 0x10) is the same kind of factory ROM content as GM Programs.
+    return ((ref.obj_type == OBJ_PROGRAM and ref.bank in _READONLY_PROGRAM_BANKS)
+            or (ref.obj_type == OBJ_DRUM_KIT and object_types.is_read_only(OBJ_DRUM_KIT, ref.bank)))
 
 
 # Program -> Drum Track (another Program). Drum Track lives in the Common section shared by both wire
@@ -119,25 +169,12 @@ _DRUM_TRACK_ON_BYTE, _DRUM_TRACK_ON_BIT = 1295, 0x10
 
 
 def walk_display_references(obj_type: int, body: bytes) -> Iterator[ObjectRef]:
-    """walk_object_references() plus the Program -> Drum Track reference — DISPLAY ONLY
-    (the Object Dependencies panel). Deliberately NOT folded into walk_object_references: every
-    resolution path (merge pull, repoint, the push referential check) dispatches on `ref_kind`
-    and has no encoder for a drum-track site, so adding it there would mis-route a write to the
-    Set List encoder — the exact bug class C#'s RefKind enum exists to prevent. Making the
-    resolution paths drum-track-aware is a tracked follow-up (CLAUDE.md).
-
-    A never-touched Program's Drum Track bank/number bytes default to 0,0 — a valid-looking
-    Program I-A:000 address, not an absent reference — so it is gated on the 'Drum Track On' bit."""
-    if obj_type != OBJ_PROGRAM:
-        yield from walk_object_references(obj_type, body)
-        return
-    from Objects.object_body import program_body_is_init
-    if program_body_is_init(body):
-        return
-    if len(body) > _DRUM_TRACK_BANK and (body[_DRUM_TRACK_ON_BYTE] & _DRUM_TRACK_ON_BIT):
-        obj_bank = func33_to_obj_bank(1, body[_DRUM_TRACK_BANK])
-        if obj_bank >= 0:
-            yield ObjectRef("drum track", -1, ObjLoc(OBJ_PROGRAM, obj_bank, body[_DRUM_TRACK_NUM]))
+    """What the Object Dependencies panel shows. Drum Track and Drum Kit / Wave Sequence references
+    are now part of walk_object_references itself (every resolution path dispatches on
+    canonical_kind and has an encoder for each), so this is the same walk — kept as its own name
+    because the panel is a display path (it must also SHOW always-available ROM references, which
+    resolution paths filter out via walk_resolvable_references)."""
+    return walk_object_references(obj_type, body)
 
 
 def walk_resolvable_references(obj_type: int, body: bytes) -> Iterator[ObjectRef]:

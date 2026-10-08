@@ -51,9 +51,9 @@ class StreamVersionError(ConnectionError):
 def version_failure_message(status: int, ver_min: Optional[int], ver_max: Optional[int]) -> str:
     rng = "" if ver_min is None or ver_max is None else f" (the daemon accepts stream versions {ver_min}-{ver_max}; this client speaks {_HELLO_VERSION})"
     if ver_max is not None and ver_max < _HELLO_VERSION:
-        return f"The Kronos daemon is too old for this client - update the ScreenRemote daemon{rng}."
+        return f"The instrument daemon is too old for this client - update the ScreenRemote daemon{rng}."
     if ver_min is not None and ver_min > _HELLO_VERSION:
-        return f"This client is too old for the Kronos daemon - update the client{rng}."
+        return f"This client is too old for the instrument daemon - update the client{rng}."
     if status == _STATUS_FORMAT_NEEDS_NEWER_VERSION:
         return f"This unit's display format needs a newer stream version than this client sent{rng}."
     return f"The daemon rejected this client's stream protocol version{rng}."
@@ -130,10 +130,10 @@ class StreamReceiver(QThread):
                 raise ConnectionError("Invalid response from daemon")
             status = hdr[4]
             if status == 0x01:
-                raise PermissionError("FTP authentication rejected by Kronos daemon (bad credentials or locked "
+                raise PermissionError("FTP authentication rejected by instrument daemon (bad credentials or locked "
                                       "account; a daemon older than 3.0.2 also answers a v3 hello this way).")
             if status == 0x02:
-                raise ConnectionError("Kronos could not look up credentials — user not found.")
+                raise ConnectionError("Instrument could not look up credentials — user not found.")
             if status in (_STATUS_FORMAT_NEEDS_NEWER_VERSION, _STATUS_VERSION_MISMATCH):
                 # Both are followed by ver_min/ver_max (docs/api.md 3.4) so the client can say which side is too old.
                 vers = _recv_all(s, 2)

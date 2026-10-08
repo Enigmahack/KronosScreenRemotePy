@@ -146,7 +146,7 @@ class FtpPropertiesDialog(BaseDialog):
         layout.addLayout(form)
 
         # Info
-        info = QLabel("FTP is used to transfer files to/from the Kronos.\n"
+        info = QLabel("FTP is used to transfer files to/from the instrument.\n"
                      "Anonymous login is typically available.")
         info.setStyleSheet(f"color: {T.TEXT_DIM}; font-size: 9pt;")
         info.setWordWrap(True)

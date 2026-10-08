@@ -372,6 +372,8 @@ class SampleWaveformControl(QWidget):
             self._grabbed = False
             self.releaseMouse()
 
+    DRAG_DEAD_ZONE_PX = 4
+
     def mousePressEvent(self, e) -> None:
         if e.button() == Qt.MouseButton.RightButton:
             self._on_right_press(e)
@@ -499,9 +501,11 @@ class SampleWaveformControl(QWidget):
             self._update_hover_cursor(x)
             return
 
+        # Dead zone: a press-drag within DRAG_DEAD_ZONE_PX of the press stays a plain click.
+        if not self._drag_moved and abs(x - self._press_x) <= self.DRAG_DEAD_ZONE_PX:
+            return
         frame = self._pixel_to_frame(x)
-        if frame != self._drag_anchor:
-            self._drag_moved = True
+        self._drag_moved = True
         self.set_preview_selection(min(self._drag_anchor, frame), max(self._drag_anchor, frame))
         self.selection_preview_changed.emit()
 

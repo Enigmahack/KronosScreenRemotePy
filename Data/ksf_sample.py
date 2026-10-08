@@ -142,7 +142,7 @@ class KsfSample:
         if not self.is_valid_stub_target(filename):
             raise ValueError(
                 f"'{filename}' is {len(filename.encode('ascii', errors='replace'))} characters — "
-                "a Kronos SMF1 link can only name a 12-character-or-shorter filename.")
+                "an instrument SMF1 link can only name a 12-character-or-shorter filename.")
         b = filename.encode("ascii", errors="replace")
         self._smf1 = b + b" " * (12 - len(b))
 

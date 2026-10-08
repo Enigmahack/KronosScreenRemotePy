@@ -30,7 +30,7 @@ class InputTesterWindow(BaseDialog):
     """Window for testing input devices and injection against the connected unit."""
 
     def __init__(self, main_window, parent=None):
-        super().__init__("Input Tester", parent or main_window)
+        super().__init__("Input Tester", parent)
         self._mw = main_window
         self._touch_timer: Optional[QTimer] = None
         self._touch_poll_inflight = False
@@ -292,7 +292,7 @@ class ButtonInjectorWindow(BaseDialog):
     """Dedicated window for button injection testing against the connected unit."""
 
     def __init__(self, main_window, parent=None):
-        super().__init__("Button Injector", parent or main_window)
+        super().__init__("Button Injector", parent)
         self._mw = main_window
         self._setup_ui()
         self.resize(420, 560)

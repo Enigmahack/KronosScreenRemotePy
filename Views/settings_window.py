@@ -82,7 +82,7 @@ class _ResettableSlider(QSlider):
 
 class SettingsWindow(QDialog):
     def __init__(self, settings: AppSettings, parent=None, initial_tab: str = "",
-                 on_image_preview=None, on_button_injector=None):
+                 on_image_preview=None, on_button_injector=None, on_test_mode=None):
         super().__init__(parent)
         self.setWindowTitle("Settings")
         self.setMinimumSize(540, 580)
@@ -92,6 +92,7 @@ class SettingsWindow(QDialog):
         # only, never to settings — so Cancel can cleanly revert).
         self._on_image_preview = on_image_preview
         self._on_button_injector = on_button_injector
+        self._on_test_mode = on_test_mode
         self._recording_macro_idx: Optional[int] = None
         self._recording_steps: List[str] = []
         self._editing_raw_idx: Optional[int] = None
@@ -102,10 +103,13 @@ class SettingsWindow(QDialog):
             self.select_tab(initial_tab)
 
     def select_tab(self, name: str):
-        for i in range(self._tabs.count()):
-            if self._tabs.tabText(i) == name:
-                self._tabs.setCurrentIndex(i)
-                return
+        for g in range(self._tabs.count()):
+            sub = self._tabs.widget(g)
+            for i in range(sub.count()):
+                if sub.tabText(i) == name:
+                    self._tabs.setCurrentIndex(g)
+                    sub.setCurrentIndex(i)
+                    return
 
     # ── UI construction ────────────────────────────────────────────────────────
 
@@ -114,21 +118,29 @@ class SettingsWindow(QDialog):
         outer.setContentsMargins(10, 10, 10, 10)
         outer.setSpacing(8)
 
+        # Two levels instead of one long scrolling tab row: group tabs on top,
+        # the individual pages inside each group.
         self._tabs = QTabWidget()
         outer.addWidget(self._tabs, 1)
-
-        self._tabs.addTab(self._build_general_tab(),    "General")
-        self._tabs.addTab(self._build_connection_tab(), "Connection")
-        self._tabs.addTab(self._build_streaming_tab(),  "Streaming")
-        self._tabs.addTab(self._build_view_tab(),       "View")
-        self._tabs.addTab(self._build_image_tab(),      "Image")
-        self._tabs.addTab(self._build_keybinds_tab(),   "Key Bindings")
-        self._tabs.addTab(self._build_input_mapping_tab(), "Input Mapping")
-        self._tabs.addTab(self._build_macros_tab(),     "Macros")
-        self._tabs.addTab(self._build_debug_tab(),      "Debug")
-        self._tabs.addTab(self._build_midi_tab(),       "MIDI/SysEx")
-        self._tabs.addTab(self._build_librarian_tab(),  "Librarian")
-        self._tabs.addTab(self._build_sample_editor_tab(), "Sample Editor")
+        groups = (
+            ("General", (("General", self._build_general_tab),
+                         ("Connection", self._build_connection_tab),
+                         ("Streaming", self._build_streaming_tab))),
+            ("Display & Input", (("View", self._build_view_tab),
+                                 ("Image", self._build_image_tab),
+                                 ("Key Bindings", self._build_keybinds_tab),
+                                 ("Input Mapping", self._build_input_mapping_tab),
+                                 ("Macros", self._build_macros_tab))),
+            ("Tools", (("MIDI/SysEx", self._build_midi_tab),
+                       ("Librarian", self._build_librarian_tab),
+                       ("Sample Editor", self._build_sample_editor_tab),
+                       ("Debug", self._build_debug_tab))),
+        )
+        for group, pages in groups:
+            sub = QTabWidget()
+            for title, build in pages:
+                sub.addTab(build(), title)
+            self._tabs.addTab(sub, group)
 
         # Bottom row: Import/Export left; OK/Cancel right
         foot = QHBoxLayout()
@@ -161,7 +173,7 @@ class SettingsWindow(QDialog):
         self._hide_value_inp = QCheckBox("Hide value input panel on startup")
         self._hide_value_inp.setToolTip("Hides the left-hand slider panel at launch. Toggle from View → Hide Value Input.")
         self._reverse_scroll = QCheckBox("Reverse mouse scrolling direction")
-        self._reverse_scroll.setToolTip("Swaps which wheel direction sends WHEEL CW vs WHEEL CCW to the Kronos data wheel.")
+        self._reverse_scroll.setToolTip("Swaps which wheel direction sends WHEEL CW vs WHEEL CCW to the instrument data wheel.")
         vb.addWidget(self._quit_prompt)
         vb.addWidget(self._hide_data_inp)
         vb.addWidget(self._hide_value_inp)
@@ -220,7 +232,7 @@ class SettingsWindow(QDialog):
         self._host_edit  = QLineEdit()
         self._sport_spin = QSpinBox(); self._sport_spin.setRange(1, 65535)
         self._cport_spin = QSpinBox(); self._cport_spin.setRange(1, 65535)
-        form.addRow("Kronos IP address:", self._host_edit)
+        form.addRow("Instrument IP address:", self._host_edit)
         form.addRow("Stream port:",       self._sport_spin)
         form.addRow("Control port:",      self._cport_spin)
 
@@ -268,18 +280,18 @@ class SettingsWindow(QDialog):
         fps_row.addWidget(self._fps_slider)
         fps_row.addWidget(self._fps_lbl)
         vb.addLayout(fps_row)
-        vb.addWidget(_hint("Change-driven mode consumes no CPU when the Kronos screen is idle. "
+        vb.addWidget(_hint("Change-driven mode consumes no CPU when the instrument screen is idle. "
                            "Streaming changes take effect on the next connect."))
 
         vb.addSpacing(12)
         vb.addWidget(_section("Boot screen"))
         self._disable_boot = QCheckBox("Disable boot screen graphics")
         self._disable_boot.setToolTip(
-            "Suppresses the animated splash overlay shown while the Kronos is booting. "
+            "Suppresses the animated splash overlay shown while the instrument is booting. "
             "The raw boot frames are still displayed — only the decorative overlay is removed.")
         vb.addWidget(self._disable_boot)
         vb.addWidget(_hint("When enabled, the animated boot splash overlay is not drawn. "
-                           "You will still see the raw Kronos boot frames as they stream in."))
+                           "You will still see the raw instrument boot frames as they stream in."))
 
         vb.addSpacing(8)
         vb.addWidget(_section("Boot screen detection"))
@@ -297,7 +309,7 @@ class SettingsWindow(QDialog):
         vb.addLayout(boot_row)
         vb.addWidget(_hint("Percentage of the frame that must be black before the boot splash "
                            "overlay is displayed. Raise this value if the splash appears during "
-                           "normal use (e.g. Kronos calibration mode with a dark screen). Default: 60%."))
+                           "normal use (e.g. instrument calibration mode with a dark screen). Default: 60%."))
 
         vb.addStretch()
         return w
@@ -373,8 +385,8 @@ class SettingsWindow(QDialog):
         vb.setSpacing(6)
 
         vb.addWidget(_section("Image Adjustments"))
-        vb.addWidget(_hint("Applied to the streamed Kronos screen in real time. "
-                           "These affect only what you see here — not the Kronos itself."))
+        vb.addWidget(_hint("Applied to the streamed instrument screen in real time. "
+                           "These affect only what you see here — not the instrument itself."))
         vb.addSpacing(6)
 
         def _adj_row(name: str, lo: int, hi: int, fmt, default: int) -> QSlider:
@@ -582,11 +594,11 @@ class SettingsWindow(QDialog):
         vb.addSpacing(10)
         self._poll_on_changes = QCheckBox("SysEx Poll on Changes")
         self._poll_on_changes.setToolTip(
-            "Triggers a SysEx check-in when the Kronos sends a Program Change or Bank Select message. "
+            "Triggers a SysEx check-in when the instrument sends a Program Change or Bank Select message. "
             "Requires Monitor MIDI to be enabled.")
         vb.addWidget(self._poll_on_changes)
         vb.addWidget(_hint("Automatically updates the current performance display when a Program Change "
-                           "or Bank Select is received from the Kronos."))
+                           "or Bank Select is received from the instrument."))
 
         vb.addSpacing(10)
         self._pull_names = QCheckBox("Pull Names on Program Change")
@@ -595,15 +607,15 @@ class SettingsWindow(QDialog):
             "MIDI. Requires Monitor MIDI.")
         vb.addWidget(self._pull_names)
         vb.addWidget(_hint("Fills the performance name as you navigate, without a full Sync Names sweep. "
-                           "Over the daemon/DIN path this can be slow and briefly flash the Kronos display."))
+                           "Over the daemon/DIN path this can be slow and briefly flash the instrument display."))
 
         vb.addSpacing(10)
         self._proactive_poll = QCheckBox("Proactive SysEx Polling")
         self._proactive_poll.setToolTip(
-            "Enabling this can cause the Kronos to slow down during the check-in. Only enable if you "
+            "Enabling this can cause the instrument to slow down during the check-in. Only enable if you "
             "require it.")
         vb.addWidget(self._proactive_poll)
-        vb.addWidget(_hint("Periodically queries the Kronos for the current performance name on a fixed "
+        vb.addWidget(_hint("Periodically queries the instrument for the current performance name on a fixed "
                            "schedule, regardless of MIDI activity."))
         poll_row = QHBoxLayout()
         poll_row.addWidget(_hint("Poll interval"))
@@ -623,13 +635,13 @@ class SettingsWindow(QDialog):
         self._slider_cc.setMaxLength(3)
         self._slider_cc.setFixedWidth(60)
         self._slider_cc.setToolTip(
-            "MIDI CC# the Kronos VALUE slider transmits (default 18). The on-screen value slider "
-            "follows this controller. Change it if your Kronos assigns the value slider to a different CC.")
+            "MIDI CC# the instrument VALUE slider transmits (default 18). The on-screen value slider "
+            "follows this controller. Change it if your instrument assigns the value slider to a different CC.")
         cc_row.addWidget(self._slider_cc)
         cc_row.addStretch(1)
         vb.addLayout(cc_row)
         vb.addWidget(_hint("Keeps the on-screen value slider in sync with physical VALUE slider moves on "
-                           "the Kronos. Requires Monitor MIDI and SysEx transmit enabled on the Kronos."))
+                           "the instrument. Requires Monitor MIDI and SysEx transmit enabled on the instrument."))
         vb.addStretch()
         return w
 
@@ -672,19 +684,19 @@ class SettingsWindow(QDialog):
         vb.addSpacing(10)
         self._lib_sync_on_launch = QCheckBox("Full sync on launch")
         self._lib_sync_on_launch.setToolTip(
-            "Pull every bank from the Kronos as soon as the Librarian opens. Never writes to the Kronos.")
+            "Pull every bank from the instrument as soon as the Librarian opens. Never writes to the instrument.")
         vb.addWidget(self._lib_sync_on_launch)
         vb.addWidget(_hint("Reads every program, combi, set list, drum kit, and wave sequence instead of "
                            "only the banks whose digest changed. Slow on a full library and is a pull "
-                           "only: nothing is pushed to the Kronos without user intervention."))
+                           "only: nothing is pushed to the instrument without user intervention."))
 
         vb.addSpacing(10)
         self._lib_force_destructive = QCheckBox("Force destructive write")
         self._lib_force_destructive.setToolTip(
-            "2-Way Sync overwrites the Kronos even where it changed since the last pull, without asking.")
+            "2-Way Sync overwrites the instrument even where it changed since the last pull, without asking.")
         vb.addWidget(self._lib_force_destructive)
         warn = _hint("With this on, the keyboard library is treated as the source of truth and 2-Way "
-                     "Sync overwrites the Kronos to match it, without asking.")
+                     "Sync overwrites the instrument to match it, without asking.")
         warn.setStyleSheet("color: #CC8888; font-size: 10px;")
         vb.addWidget(warn)
 
@@ -789,6 +801,15 @@ class SettingsWindow(QDialog):
         self._btn_button_injector.clicked.connect(lambda: self._on_button_injector())
         self._debug_logging.toggled.connect(self._btn_button_injector.setVisible)
         vb.addWidget(self._btn_button_injector, 0, Qt.AlignLeft)
+
+        # Kronos-only (no Nautilus equivalent) — the caller passes None there.
+        if self._on_test_mode is not None:
+            vb.addSpacing(8)
+            btn_test = QPushButton("Enter Instrument Test Mode…")
+            btn_test.setToolTip("Puts the instrument into its built-in hardware test mode. "
+                                "Unsaved changes are lost and the instrument must be restarted afterwards.")
+            btn_test.clicked.connect(lambda: self._on_test_mode())
+            vb.addWidget(btn_test, 0, Qt.AlignLeft)
 
         vb.addStretch()
         return w

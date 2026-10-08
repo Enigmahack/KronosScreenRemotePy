@@ -354,7 +354,7 @@ class ModelCore:
 
     def open_collection(self, path: str) -> None:
         if is_user_bank(path):
-            self.status_text = (f"'{os.path.basename(path)}' is a _UserBank.KSC - a live shortcut to Kronos SSD "
+            self.status_text = (f"'{os.path.basename(path)}' is a _UserBank.KSC - a live shortcut to the instrument's SSD "
                                 "library content, not real sample data. Nothing to edit here; open the actual .KSC instead.")
             return
         try:

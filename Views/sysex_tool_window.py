@@ -81,6 +81,7 @@ class SysExToolWindow(QDialog):
         self._auto_scroll = True
         self._sysex_count = 0
         self._midi_count = 0
+        self._initial_channel = initial_channel
 
         self._build_ui()
 
@@ -165,7 +166,7 @@ class SysExToolWindow(QDialog):
 
         # Virtual piano (Dock=Bottom, sits above the bottom toolbar)
         piano_panel = QWidget()
-        piano_panel.setStyleSheet("background-color: #0D0D0D; border-top: 1px solid #2E2E2E;")
+        piano_panel.setStyleSheet("background-color: #0D0D0D; border-top: 1px solid #3A3A3A;")
         piano_row = QHBoxLayout(piano_panel)
         piano_row.setContentsMargins(10, 11, 10, 11)
         self._piano = _PianoWidget(self._on_piano_note)
@@ -176,21 +177,26 @@ class SysExToolWindow(QDialog):
         side_w.setLayout(side)
         self._note_label = QLabel("")
         self._note_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._note_label.setStyleSheet("color: #88AADD; font-family: Consolas; font-size: 13px; font-weight: bold;")
+        self._note_label.setStyleSheet("color: #B5CDFF; font-family: Consolas; font-size: 13px; font-weight: bold;")
         side.addWidget(self._note_label)
         caption = QLabel("Virtual Piano")
         caption.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        caption.setStyleSheet("color: #444444; font-family: Consolas; font-size: 9px;")
+        caption.setStyleSheet("color: #8C8C8C; font-family: Consolas; font-size: 9px;")
         side.addWidget(caption)
         ch_lbl = QLabel("OUT CH")
         ch_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        ch_lbl.setStyleSheet("color: #555555; font-family: Consolas; font-size: 9px; margin-top: 10px;")
+        ch_lbl.setStyleSheet("color: #A0A0A0; font-family: Consolas; font-size: 9px; margin-top: 10px;")
         side.addWidget(ch_lbl)
         self._chan_combo = QComboBox()
         self._chan_combo.addItems([f"CH {i + 1}" for i in range(16)])
-        self._chan_combo.setStyleSheet("font-family: Consolas; font-size: 11px;")
+        self._chan_combo.setStyleSheet(
+            "QComboBox { font-family: Consolas; font-size: 11px; background-color: #2E2E2E; color: #E6E6E6; "
+            "border: 1px solid #5A5A5A; border-radius: 3px; padding: 2px 6px; }"
+            "QComboBox:hover { border-color: #8AA8DD; }"
+            "QComboBox QAbstractItemView { background-color: #2E2E2E; color: #E6E6E6; "
+            "selection-background-color: #1E3A5A; }")
         self._chan_combo.currentIndexChanged.connect(lambda i: setattr(self, "_out_channel", i))
-        self._chan_combo.setCurrentIndex(max(0, min(15, int(initial_channel) - 1)))
+        self._chan_combo.setCurrentIndex(max(0, min(15, int(self._initial_channel) - 1)))
         side.addWidget(self._chan_combo)
         side.addStretch(1)
         piano_row.addWidget(side_w)
@@ -198,28 +204,28 @@ class SysExToolWindow(QDialog):
 
         # Bottom toolbar (Dock=Bottom — the outermost strip)
         toolbar = QWidget()
-        toolbar.setStyleSheet("background-color: #121212; border-top: 1px solid #2E2E2E;")
+        toolbar.setStyleSheet("background-color: #181818; border-top: 1px solid #3A3A3A;")
         tb_row = QHBoxLayout(toolbar)
         tb_row.setContentsMargins(8, 5, 8, 5)
         self._btn_clear = QPushButton("Clear")
         self._btn_clear.setFixedSize(60, 22)
-        self._btn_clear.setStyleSheet("background-color: #2A2A2A; color: #CCCCCC; border: 1px solid #444444; font-size: 11px;")
+        self._btn_clear.setStyleSheet("background-color: #343434; color: #E0E0E0; border: 1px solid #5A5A5A; font-size: 11px;")
         self._btn_clear.clicked.connect(self._clear_log)
         tb_row.addWidget(self._btn_clear)
         self._chk_autoscroll = QCheckBox("Auto-scroll")
         self._chk_autoscroll.setChecked(True)
-        self._chk_autoscroll.setStyleSheet("color: #888888; font-size: 11px;")
+        self._chk_autoscroll.setStyleSheet("color: #BBBBBB; font-size: 11px;")
         self._chk_autoscroll.toggled.connect(lambda v: setattr(self, "_auto_scroll", v))
         tb_row.addWidget(self._chk_autoscroll)
         self._sysex_count_label = QLabel("")
-        self._sysex_count_label.setStyleSheet("color: #555555; font-size: 11px;")
+        self._sysex_count_label.setStyleSheet("color: #9A9A9A; font-size: 11px;")
         tb_row.addWidget(self._sysex_count_label)
         self._midi_count_label = QLabel("")
-        self._midi_count_label.setStyleSheet("color: #555555; font-size: 11px;")
+        self._midi_count_label.setStyleSheet("color: #9A9A9A; font-size: 11px;")
         tb_row.addWidget(self._midi_count_label)
         tb_row.addStretch(1)
         self._stream_label = QLabel("Stream: —")
-        self._stream_label.setStyleSheet("color: #88AADD; font-family: Consolas; font-size: 11px;")
+        self._stream_label.setStyleSheet("color: #A9C4F5; font-family: Consolas; font-size: 11px;")
         tb_row.addWidget(self._stream_label)
         root.addWidget(toolbar)
 
@@ -385,6 +391,8 @@ class _PianoWidget(QWidget):
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self._keys: Dict[int, QPushButton] = {}
         self._key_is_black: Dict[int, bool] = {}
+        self._white_slots: Dict[int, int] = {}      # midi -> white-key index (left to right)
+        self._black_seams: Dict[int, float] = {}    # midi -> white-key-boundary x (in white-key widths)
         self._build_piano()
 
     @staticmethod
@@ -412,27 +420,57 @@ class _PianoWidget(QWidget):
 
         whites.append((len(whites), 108))
 
-        x = 0.0
-        for _, midi in whites:
+        for slot, (_, midi) in enumerate(whites):
             btn = self._make_key(midi, _WW, _WH, "white")
-            btn.move(int(x), 0)
             btn.raise_()
-            x += _WW
             self._keys[midi] = btn
             self._key_is_black[midi] = False
+            self._white_slots[midi] = slot
 
         for wx, midi in blacks:
             btn = self._make_key(midi, _BW, _BH, "black")
-            btn.move(int(wx * _WW - _BW / 2), 0)
             btn.raise_()
             self._keys[midi] = btn
             self._key_is_black[midi] = True
+            self._black_seams[midi] = wx
 
-        self.setMinimumWidth(int(x))
+        self._n_whites = len(whites)
+        # Natural size is the old fixed layout; the keys then shrink/grow with the window width and
+        # the height follows the key width (see resizeEvent), so a narrow window is no longer forced
+        # wider by the keyboard.
+        self.setMinimumWidth(self._n_whites * 8)
+        self._layout_keys()
+
+    def sizeHint(self):
+        from PySide6.QtCore import QSize
+        return QSize(self._n_whites * _WW, _WH + 4)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._layout_keys()
+
+    def _layout_keys(self) -> None:
+        """Re-lay every key out for the current width: white keys divide the width evenly, black keys
+        keep their seam position and their proportions relative to a white key. The widget's height
+        tracks the key width (clamped) so the keyboard keeps its look at any size."""
+        if not self._white_slots:
+            return
+        ww = max(1.0, self.width() / self._n_whites)
+        wh = int(max(44, min(180, _WH * ww / _WW)))
+        if self.height() != wh + 4:
+            self.setFixedHeight(wh + 4)
+        bw = max(4, int(round(_BW * ww / _WW)))
+        bh = int(round(_BH * wh / _WH))
+        for midi, slot in self._white_slots.items():
+            x0, x1 = int(round(slot * ww)), int(round((slot + 1) * ww))
+            self._keys[midi].setGeometry(x0, 0, max(1, x1 - x0), wh)
+        for midi, wx in self._black_seams.items():
+            self._keys[midi].setGeometry(int(round(wx * ww - bw / 2)), 0, bw, bh)
+            self._keys[midi].raise_()
 
     def _make_key(self, note: int, w: int, h: int, kind: str) -> QPushButton:
         btn = QPushButton(self)
-        btn.setFixedSize(w, h)
+        btn.resize(w, h)
         btn.setStyleSheet(self._key_style(kind, False))
         btn.pressed.connect(lambda n=note: self._on_note(n, True))
         btn.released.connect(lambda n=note: self._on_note(n, False))
@@ -441,10 +479,10 @@ class _PianoWidget(QWidget):
     @staticmethod
     def _key_style(kind: str, lit: bool) -> str:
         if kind == "white":
-            bg = "#90B8FF" if lit else "#DCDCDC"
-            return f"background-color: {bg}; border: 1px solid #444444;"
-        bg = "#183868" if lit else "#1E1E1E"
-        return f"background-color: {bg}; border: 1px solid #000000;"
+            bg = "#5E9BFF" if lit else "#D6D6D6"
+            return f"background-color: {bg}; border: 1px solid #555555;"
+        bg = "#3B78D8" if lit else "#2E2E2E"
+        return f"background-color: {bg}; border: 1px solid {'#0A2A5A' if lit else '#000000'};"
 
     def light_key(self, note: int, on: bool):
         btn = self._keys.get(note)

@@ -34,7 +34,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import (
     QAction, QActionGroup, QBrush, QColor, QFont, QImage, QKeyEvent,
-    QMouseEvent, QPainter, QPainterPath, QPixmap, QPolygonF, QWheelEvent,
+    QMouseEvent, QPainter, QPainterPath, QPen, QPixmap, QPolygonF, QWheelEvent,
 )
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QDialog, QFileDialog, QFormLayout, QFrame,
@@ -360,6 +360,127 @@ def _paint_seq_icon(kind: str, color: str, size: int) -> QPixmap:
     return px
 
 
+class _SeqButton(QWidget):
+    """Flat footer icon button — port of MainWindow.xaml's SeqTransportBtn / SeqTransportToggleBtn /
+    SeqRecordToggleBtn: a fixed-size rounded cell (24x20, or 30x24 for Save / Tap Tempo) with a
+    10x10 (12x12) vector icon centred in it, #333 hover, #454545 pressed/checked, dimmed to 35 %
+    when disabled (never hidden, so the footer doesn't reflow). Every transport icon is painted
+    from the C# Path geometry, so they all share one size and colour instead of mixing text
+    glyphs with painted pixmaps."""
+    clicked = Signal()
+
+    ICON = QColor("#B4B4B4")
+    RED = QColor("#E05656")
+    GREEN = QColor("#5EC26A")
+
+    def __init__(self, kind: str, tooltip: str, size=(24, 20), icon: int = 10, parent=None):
+        super().__init__(parent)
+        self._kind = kind
+        self._icon = icon
+        self._hover = self._down = False
+        self._checked = False
+        self._checked_bg = QColor("#454545")
+        self._faded = False        # permanently dim + inert (Kronos-only buttons on a Nautilus)
+        self._flash = False
+        self.setFixedSize(*size)
+        self.setToolTip(tooltip)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setObjectName("footerIcon")
+
+    # state ---------------------------------------------------------------------
+    def set_kind(self, kind: str) -> None:
+        if kind != self._kind:
+            self._kind = kind
+            self.update()
+
+    def set_checked(self, on: bool, bg: Optional[str] = None) -> None:
+        self._checked = on
+        if bg:
+            self._checked_bg = QColor(bg)
+        self.update()
+
+    def set_faded(self, faded: bool) -> None:
+        self._faded = faded
+        self.update()
+
+    def flash(self, ms: int = 250) -> None:
+        self._flash = True
+        self.update()
+        QTimer.singleShot(ms, self._end_flash)
+
+    def _end_flash(self) -> None:
+        self._flash = False
+        self.update()
+
+    # events --------------------------------------------------------------------
+    def enterEvent(self, e):
+        self._hover = True; self.update()
+
+    def leaveEvent(self, e):
+        self._hover = self._down = False; self.update()
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton and self.isEnabled() and not self._faded:
+            self._down = True; self.update()
+
+    def mouseReleaseEvent(self, e):
+        was = self._down
+        self._down = False
+        self.update()
+        if was and e.button() == Qt.MouseButton.LeftButton and self.rect().contains(e.position().toPoint()):
+            self.clicked.emit()
+
+    # paint ---------------------------------------------------------------------
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setOpacity(0.35 if (not self.isEnabled()) else 0.5 if self._faded else 1.0)
+        bg = None
+        if self._down:
+            bg = QColor("#454545")
+        elif self._checked:
+            bg = self._checked_bg
+        elif self._hover and self.isEnabled() and not self._faded:
+            bg = QColor("#333333")
+        if bg is not None:
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(bg)
+            p.drawRoundedRect(QRectF(self.rect()), 3, 3)
+        n = self._icon
+        p.translate((self.width() - n) / 2, (self.height() - n) / 2)
+        k = self._kind
+        accent = QColor(T.ACCENT) if self._flash else None
+        if k in ("metronome", "save"):
+            p.resetTransform()
+            px = _paint_seq_icon(k, (accent or self.ICON).name(), n)
+            p.drawPixmap(QPointF((self.width() - n) / 2, (self.height() - n) / 2), px)
+            return
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(accent or (self.RED if k == "rec" else self.ICON))
+
+        def poly(*pts):
+            p.drawPolygon(QPolygonF([QPointF(x, y) for x, y in pts]))
+
+        if k == "locate":
+            p.drawRect(QRectF(0, 0, 1.8, 10)); poly((10, 0), (3, 5), (10, 10))
+        elif k == "rew":
+            poly((5, 0), (0, 5), (5, 10)); poly((10, 0), (5, 5), (10, 10))
+        elif k == "ff":
+            poly((0, 0), (5, 5), (0, 10)); poly((5, 0), (10, 5), (5, 10))
+        elif k == "pause":
+            p.drawRect(QRectF(0.5, 0, 2.5, 10)); p.drawRect(QRectF(6, 0, 2.5, 10))
+        elif k == "rec":
+            p.drawEllipse(QRectF(0, 0, 10, 10))
+        elif k == "playstop":
+            # One fixed icon for both states (the play state can't be read back from the instrument):
+            # a green Play triangle, top-left, laid over a red Stop square, lower-right.
+            p.setBrush(accent or self.RED)
+            p.drawRect(QRectF(4, 4, 6, 6))
+            p.setBrush(accent or self.GREEN)
+            p.setPen(QPen(QColor("#1A1A1A"), 0.8))
+            poly((0.3, 0.3), (7.8, 4.7), (0.3, 9.1))
+
+
 class FrameWidget(QWidget):
     """Renders the Kronos frame and all overlays."""
     touch_down   = Signal(int, int)   # frame coords
@@ -630,7 +751,7 @@ class FrameWidget(QWidget):
                         fr.width() - 2 * m, fr.height() - 2 * m)
         self._frame_rect = fr
 
-        if (self._boot_phase and self._is_connected
+        if (self._boot_phase and self._is_connected and self._stream_fmt == 0
                 and not self._disable_boot_screen and self._frame_is_likely_boot_screen
                 and not getattr(self, "_daemon_authoritative", False)):
             # Client-side boot splash overlay - only when the daemon is NOT compositing
@@ -653,7 +774,7 @@ class FrameWidget(QWidget):
             alpha = max(0.0, 1.0 - elapsed / _TOUCH_FADE)
             if alpha > 0:
                 nx, ny = self._touch_marker_pos
-                self._renderer.draw_touch_marker(p, fr, nx, ny, alpha)
+                self._renderer.draw_touch_marker(p, fr, nx, ny, alpha, self._fw, self._fh)
                 if not self._fade_timer.isActive():
                     self._fade_timer.start()
             else:
@@ -1122,6 +1243,55 @@ class _StatusDot(QWidget):
         p.end()
 
 
+class _StatusToolIcon(QWidget):
+    """Painted 14x13 status-bar launcher glyph (Librarian / File Transfer /
+    Sample Editor / MIDI Monitor), shapes copied from the C# MainWindow.xaml
+    status-bar Paths. Click is routed through `clicked`."""
+    clicked = Signal()
+
+    def __init__(self, kind: str, tooltip: str, parent=None):
+        super().__init__(parent)
+        self._kind = kind
+        self.setFixedSize(20, 15)
+        self.setToolTip(tooltip)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        fg = QColor("#B4B4B4")
+        p.translate((self.width() - 14) / 2, (self.height() - 13) / 2)
+        p.setPen(Qt.NoPen)
+        p.setBrush(fg)
+        if self._kind == "librarian":
+            path = QPainterPath()
+            path.moveTo(7, 3); path.cubicTo(5, 1.5, 2, 1, 0, 1.5); path.lineTo(0, 11.5)
+            path.cubicTo(2, 11, 5, 11.5, 7, 13); path.cubicTo(9, 11.5, 12, 11, 14, 11.5)
+            path.lineTo(14, 1.5); path.cubicTo(12, 1, 9, 1.5, 7, 3); path.closeSubpath()
+            p.drawPath(path)
+        elif self._kind == "files":
+            path = QPainterPath()
+            for i, (x, y) in enumerate([(1, 1), (7, 1), (8, 3), (14, 3), (14, 11), (0, 11), (0, 3)]):
+                path.moveTo(x, y) if i == 0 else path.lineTo(x, y)
+            path.closeSubpath()
+            p.drawPath(path)
+        elif self._kind == "sample":
+            for x, y, h in ((0, 5, 3), (3, 2, 9), (6, 4, 5), (9, 0, 13), (12, 4, 5)):
+                p.drawRect(QRectF(x, y, 2, h))
+        elif self._kind == "midi":
+            p.setPen(QPen(QColor("#262626"), 0.5))
+            for x in (0, 3, 6, 9, 12):
+                p.drawRect(QRectF(x, 0, 3, 13))
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor("#1A1A1A"))
+            for x in (2, 5, 11):
+                p.drawRect(QRectF(x, 0, 2, 8))
+
+
 class _NotifyBubble(QWidget):
     """Chat-bubble notification indicator — a filled speech bubble that recolors
     by state (idle gray / info amber / error red). Vector shape mirrors the C#
@@ -1447,7 +1617,7 @@ class _FtpLoginDialog(QDialog):
         self.save_password = True
         self.exhausted_attempts = False
 
-        self.setWindowTitle("Kronos FTP Login")
+        self.setWindowTitle("Instrument FTP Login")
         self.setFixedWidth(340)
         self.setStyleSheet(f"QDialog {{ background-color: {T.BG}; color: {T.TEXT}; }}")
 
@@ -1808,7 +1978,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         self._status_label.setContentsMargins(T.PAD, 0, 0, 0)
 
         self._fps_label = _text(T.TEXT_DIM, "Live stream frame rate", min_w=54)
-        self._ping_label = _text(T.TEXT_IDLE, "Round-trip latency to Kronos", min_w=56)
+        self._ping_label = _text(T.TEXT_IDLE, "Round-trip latency to the instrument", min_w=56)
         self._ping_label.setText("⇄ —")
 
         self._kbd_label = _icon("⌨", T.TEXT_DIM,
@@ -1817,8 +1987,16 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         self._notify_label.setToolTip("No notifications")
         self._kbd_info_btn = _icon("▦", T.TEXT_IDLE,
                                    "Keyboard Info / Performance Meter", clickable=True)
+        self._lib_btn = _StatusToolIcon("librarian", "Librarian")
+        self._ftp_btn = _StatusToolIcon("files", "File Transfer")
+        self._smp_btn = _StatusToolIcon("sample", "Sample Editor")
+        self._mon_btn = _StatusToolIcon("midi", "MIDI Monitor")
+        self._lib_btn.clicked.connect(self._open_librarian_shell)
+        self._ftp_btn.clicked.connect(self._open_file_manager)
+        self._smp_btn.clicked.connect(self.on_show_sample_editor)
+        self._mon_btn.clicked.connect(self._open_sysex_tool)
         self._conn_mode_label = _text(T.TEXT_DIM, "Streaming mode", min_w=48)
-        self._mode_label = _text(T.ACCENT, "Current Kronos mode", min_w=88)
+        self._mode_label = _text(T.ACCENT, "Current instrument mode", min_w=88)
 
         # MIDI link badge — "TCP" when the MIDI bridge (:9875) is connected, else "—".
         self._midi_badge = QLabel("—")
@@ -1834,8 +2012,8 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         self._midi_rx_dot   = QLabel("●")
         self._midi_tx_dot   = QLabel("●")
         self._midi_tx_arrow = QLabel("↑")
-        _rx_tip = "MIDI received (client ← Kronos)"
-        _tx_tip = "MIDI transmitted (client → Kronos)"
+        _rx_tip = "MIDI received (client ← instrument)"
+        _tx_tip = "MIDI transmitted (client → instrument)"
         for w in (self._midi_rx_arrow, self._midi_tx_arrow):
             w.setFont(arrow_font)
         for w in (self._midi_rx_dot, self._midi_tx_dot):
@@ -1866,10 +2044,11 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
 
         self._status_bar.addWidget(self._conn_dot)
         self._status_bar.addWidget(self._status_label)
-        for w in (_sep(), self._fps_label, _sep(), self._ping_label,
+        for w in (_sep(), self._kbd_label, _sep(), self._fps_label, _sep(), self._ping_label,
                   _sep(), self._midi_badge, _sep(), _midi_io,
-                  _sep(), self._kbd_label, _sep(), self._notify_label,
-                  _sep(), self._kbd_info_btn, _sep(), self._perf_label):
+                  _sep(), self._notify_label, _sep(), self._kbd_info_btn,
+                  self._lib_btn, self._ftp_btn, self._smp_btn, self._mon_btn,
+                  _sep(), self._perf_label):
             self._status_bar.addWidget(w)
 
         # Right-cluster containers for ModeText / ConnModeText (C# declares them
@@ -1888,86 +2067,56 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         # Locate/Rewind/Fast-Forward/Pause/Record/Start only mean anything in Sequence
         # mode; REC/WRITE doubles as Save in Setlist/Combi/Program/Global. Tap Tempo is
         # global. Enabled whenever connected (no per-mode gating in this port).
-        _seq_font = QFont(T.FONT_SYMBOL)
-        _seq_font.setPixelSize(T.FS_SMALL)
+        def _seq_btn(kind: str, tooltip: str, action: str, kronos_only: bool = False,
+                     nautilus_action: Optional[str] = None, size=(24, 20), icon: int = 10,
+                     on_click=None) -> "_SeqButton":
+            b = _SeqButton(kind, tooltip, size, icon)
+            # kronos_only: Fast-Forward/Rewind have no confirmed Nautilus wire token (kept in
+            # place but faded + inert there, matching C#'s ApplyDeviceFamilyUi). nautilus_action:
+            # a real remapped scan code to send on Nautilus, resolved at click time since the
+            # family can change across a reconnect.
+            def _clicked(a=action, na=nautilus_action, ko=kronos_only):
+                if ko and self._is_nautilus:
+                    return
+                self._ctrl_send(btn(self._nautilus_token(a, na) if na else a))
+                if on_click is not None:
+                    on_click()
+            b.clicked.connect(_clicked)
+            return b
 
-        def _seq_btn(glyph: str, tooltip: str, action: str, kronos_only: bool = False,
-                     nautilus_action: Optional[str] = None) -> QLabel:
-            lbl = QLabel(glyph)
-            lbl.setObjectName("footerIcon")
-            lbl.setFont(_seq_font)
-            lbl.setStyleSheet(f"color: {T.TEXT_DIM}; padding: 0 3px;")
-            lbl.setToolTip(tooltip)
-            lbl.setCursor(Qt.CursorShape.PointingHandCursor)
-            # kronos_only: Fast-Forward/Rewind have no confirmed Nautilus wire
-            # token (kept in place but faded + non-clickable there, matching
-            # C#'s ApplyDeviceFamilyUi — unconditional, not just gated by
-            # Sequence mode like the rest of this row). nautilus_action: a
-            # real remapped scan code to send instead on Nautilus (see
-            # _nautilus_token) — resolved at click time, not baked in here,
-            # since device family can change across a reconnect.
-            lbl.mousePressEvent = lambda ev, a=action, na=nautilus_action, l=lbl, ko=kronos_only: (
-                None if ev.button() != Qt.MouseButton.LeftButton or (ko and self._is_nautilus)
-                else (self._ctrl_send(btn(self._nautilus_token(a, na) if na else a)),
-                      l.setStyleSheet(f"color: {T.ACCENT}; padding: 0 3px;"),
-                      QTimer.singleShot(180, lambda: l.setStyleSheet(
-                          f"color: {T.TEXT_DIM}; padding: 0 3px;"))))
-            return lbl
-
-        def _seq_icon_btn(kind: str, tooltip: str, action: str,
-                          nautilus_action: Optional[str] = None) -> QLabel:
-            # Painted vector icon, not an emoji glyph — 💾 (U+1F4BE) and the metronome
-            # shape have no Segoe UI Symbol coverage, so Qt falls back to the system's
-            # COLOR emoji font for them, which is why Save used to render as a colored,
-            # mismatched glyph next to the monochrome transport icons around it. Painting
-            # our own keeps every footer icon the same flat, single-color style.
-            size = T.FS_SMALL
-            lbl = QLabel()
-            lbl.setObjectName("footerIcon")
-            lbl.setPixmap(_paint_seq_icon(kind, T.TEXT_DIM, size))
-            lbl.setToolTip(tooltip)
-            lbl.setCursor(Qt.CursorShape.PointingHandCursor)
-            lbl.mousePressEvent = lambda ev, a=action, na=nautilus_action, l=lbl, k=kind, sz=size: (
-                None if ev.button() != Qt.MouseButton.LeftButton
-                else (self._ctrl_send(btn(self._nautilus_token(a, na) if na else a)),
-                      l.setPixmap(_paint_seq_icon(k, T.ACCENT, sz)),
-                      QTimer.singleShot(180, lambda: l.setPixmap(_paint_seq_icon(k, T.TEXT_DIM, sz)))))
-            return lbl
-
-        self._seq_locate = _seq_btn("⏮", "Locate — return to the locate point", "SEQ_LOCATE",
+        self._seq_playing = False
+        self._seq_recording = False
+        self._seq_locate = _seq_btn("locate", "Locate - return to the locate point", "SEQ_LOCATE",
                                      nautilus_action="MS1")
-        self._seq_rew    = _seq_btn("◀◀", "Rewind (<<)", "SEQ_REW", kronos_only=True)
-        self._seq_ff     = _seq_btn("▶▶", "Fast-forward (>>)", "SEQ_FF", kronos_only=True)
-        self._seq_pause  = _seq_btn("⏸", "Pause", "SEQ_PAUSE", nautilus_action="MS3")
-        self._seq_rec    = _seq_btn("⏺", "Record", "SEQ_REC", nautilus_action="MS2")
-        self._seq_start  = _seq_btn("▶", "Start / Stop", "SEQ_START", nautilus_action="MP6")
-        self._tap_tempo_lbl = _seq_icon_btn("metronome",
-            "Tap Tempo — one tap per press; the Kronos averages", "TAP_TEMPO",
-            nautilus_action="NUM9")
-        self._seq_save_lbl  = _seq_icon_btn("save",
-            "Write / Save — REC/WRITE (Setlist/Combi/Program/Global)", "SEQ_REC",
-            nautilus_action="EXIT")
-        # Transport row is one widget so it can be faded/enabled as a unit (req 12).
-        _seq_box = QWidget()
-        _seq_lay = QHBoxLayout(_seq_box)
-        _seq_lay.setContentsMargins(0, 0, 0, 0)
-        _seq_lay.setSpacing(2)
-        for w in (self._seq_locate, self._seq_rew, self._seq_ff, self._seq_pause,
-                  self._seq_rec, self._seq_start):
-            _seq_lay.addWidget(w)
-        self._seq_box = _seq_box
-        # Save (REC/WRITE) is its own item in the C# status bar (SeqSaveBarItem).
-        _save_box = QWidget()
-        _save_lay = QHBoxLayout(_save_box)
-        _save_lay.setContentsMargins(0, 0, 0, 0)
-        _save_lay.addWidget(self._seq_save_lbl)
-        self._seq_save_box = _save_box
-        # Tap Tempo is its own item too (TapTempoBarItem).
-        _tap_box = QWidget()
-        _tap_lay = QHBoxLayout(_tap_box)
-        _tap_lay.setContentsMargins(0, 0, 0, 0)
-        _tap_lay.addWidget(self._tap_tempo_lbl)
-        self._tap_tempo_box = _tap_box
+        self._seq_rew    = _seq_btn("rew", "Rewind (<<)", "SEQ_REW", kronos_only=True)
+        self._seq_ff     = _seq_btn("ff", "Fast-forward (>>)", "SEQ_FF", kronos_only=True)
+        self._seq_pause  = _seq_btn("pause", "Pause", "SEQ_PAUSE", nautilus_action="MP6")
+        self._seq_rec    = _seq_btn("rec", "Record", "SEQ_REC", nautilus_action="MS2",
+                                     on_click=lambda: self._seq_toggled("rec"))
+        self._seq_start  = _seq_btn("playstop", "Start / Stop", "SEQ_START", nautilus_action="MS3",
+                                     on_click=lambda: self._seq_toggled("start"))
+        self._tap_tempo_lbl = _seq_btn("metronome",
+            "Tap Tempo - tap in quarter-notes to set the tempo (two taps is enough)", "TAP_TEMPO",
+            nautilus_action="NUM9", size=(30, 24), icon=12)
+        self._seq_save_lbl  = _seq_btn("save",
+            "Write - Save your changes (Setlist/Combi/Program/Global)", "SEQ_REC",
+            nautilus_action="EXIT", size=(30, 24), icon=12)
+
+        def _box(*widgets, spacing=0, margins=(2, 0, 2, 0)) -> QWidget:
+            box = QWidget()
+            lay = QHBoxLayout(box)
+            lay.setContentsMargins(*margins)
+            lay.setSpacing(spacing)
+            for w in widgets:
+                lay.addWidget(w)
+            return box
+
+        # Transport row is one widget so it can be enabled/dimmed as a unit; Save and Tap Tempo are
+        # their own items (SeqSaveBarItem / TapTempoBarItem).
+        self._seq_box = _box(self._seq_locate, self._seq_rew, self._seq_ff, self._seq_pause,
+                             self._seq_rec, self._seq_start)
+        self._seq_save_box = _box(self._seq_save_lbl)
+        self._tap_tempo_box = _box(self._tap_tempo_lbl)
 
         # ── Right cluster: audio VU meter (the only right-justified item) ────
         from Rendering.vu_meter import VuMeterWidget
@@ -1981,21 +2130,13 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         _vu_lay.addWidget(self._vu_widget)
         _vu_lay.addWidget(self._vu_picker_btn)
 
-        # C# right-aligned status bar order (left→right, per MainWindow.xaml's
-        # DockPanel.Dock=Right declarations): Save | TapTempo | SeqTransport | VU |
-        # ConnMode | ModeText. QStatusBar.addPermanentWidget stacks from the right, so
-        # add rightmost-first to reproduce that order.
-        self._status_bar.addPermanentWidget(self._mode_box)
-        self._status_bar.addPermanentWidget(_sep())
-        self._status_bar.addPermanentWidget(self._conn_mode_box)
-        self._status_bar.addPermanentWidget(_sep())
-        self._status_bar.addPermanentWidget(_vu_box)
-        self._status_bar.addPermanentWidget(_sep())
-        self._status_bar.addPermanentWidget(self._seq_box)
-        self._status_bar.addPermanentWidget(_sep())
-        self._status_bar.addPermanentWidget(self._tap_tempo_box)
-        self._status_bar.addPermanentWidget(_sep())
-        self._status_bar.addPermanentWidget(self._seq_save_box)
+        # C# right-aligned order, left -> right: Save | TapTempo | SeqTransport | VU | ConnMode |
+        # ModeText (the items are declared rightmost-first in a right-docked DockPanel, each with
+        # its separator on its left). QStatusBar.addPermanentWidget appends left -> right.
+        for w in (self._seq_save_box, self._tap_tempo_box, self._seq_box, _vu_box,
+                  self._conn_mode_box, self._mode_box):
+            self._status_bar.addPermanentWidget(_sep())
+            self._status_bar.addPermanentWidget(w)
 
         self._build_menu()
         self._init_tray_icon()
@@ -2099,11 +2240,10 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         self._act_file_mgr   = tools_menu.addAction("File &Manager…")
         tools_menu.addSeparator()
         self._act_keyboard_info = tools_menu.addAction("&Keyboard Info…")
-        self._act_test_mode   = tools_menu.addAction("Enter Kronos &Test Mode")
         tools_menu.addSeparator()
         self._act_disable_kbd = tools_menu.addAction("&Disable Remote Typing")
         self._act_disable_kbd.setCheckable(True)
-        self._act_paste_clipboard = tools_menu.addAction("&Paste Clipboard to Kronos")
+        self._act_paste_clipboard = tools_menu.addAction("&Paste Clipboard to Instrument")
 
         # ── Mode select (MENU_ModeSelect) ───────────────────────────────────
         mode_menu = mb.addMenu("&Mode Select")
@@ -2176,7 +2316,6 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         self._act_cal.toggled.connect(self._on_cal_toggled)
         for n, act in self._act_grid.items():
             act.triggered.connect(lambda checked, s=n: self._set_cal_grid(s))
-        self._act_test_mode.triggered.connect(self._enter_test_mode)
         self._act_quick_save.triggered.connect(self._quick_save_screenshot)
         self._act_screenshot.triggered.connect(self._save_screenshot)
         self._act_copy_frame.triggered.connect(self._copy_frame_to_clipboard)
@@ -2359,7 +2498,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             return
         host = self._settings.kronos_host
         if not host:
-            text, ok = QInputDialog.getText(self, "Connect", "Kronos host/IP:", text="192.168.100.15")
+            text, ok = QInputDialog.getText(self, "Connect", "Instrument host/IP:", text="192.168.100.15")
             if not ok or not text.strip():
                 return
             host = text.strip()
@@ -2829,8 +2968,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         now covers Seq Locate/Rewind/Forward/Pause/Record/Start/Save + Tap
         Tempo's wire-token remap across the footer buttons, keybind
         dispatch, and command palette — Record/Start/Save mirror C#'s
-        SeqTransportViewModel (Record→MS2, Start/Stop→MP6 swapped with
-        Pause's MS3, Save→EXIT since Nautilus's front-panel "F" QA slot is
+        SeqTransportViewModel (Record→MS2, Start/Stop→MS3 (play/pause), Pause→MP6, Save→EXIT since Nautilus's front-panel "F" QA slot is
         wire EXIT and programmed as Write/Save there, while Kronos fires
         the same REC/WRITE press for both Record and Save).
         Also re-pushes the device family into SysExService.set_device_family()
@@ -2889,9 +3027,12 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         # in place rather than hidden (matches C#). The click itself is
         # already guarded in _seq_btn's kronos_only handler; this only
         # updates the resting (non-flash) visual.
-        ff_rew_color = T.TEXT_FAINT if self._is_nautilus else T.TEXT_DIM
-        for lbl in (self._seq_rew, self._seq_ff):
-            lbl.setStyleSheet(f"color: {ff_rew_color}; padding: 0 3px;")
+        if self._is_nautilus and self._boot_phase:
+            self._exit_boot_phase()   # family resolved after the cheap stream-format guess
+        for b in (self._seq_rew, self._seq_ff):
+            b.set_faded(self._is_nautilus)
+        self._seq_refresh_state()
+        self._update_seq_enabled()   # Tap Tempo's Sequence-mode gate depends on the family
 
         # Re-fit the window at the current scale on every connect/family
         # resolution — Kronos has a left value pane and a 600px screen,
@@ -2996,6 +3137,10 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         self._frame_w._frame_is_likely_boot_screen = False
 
     def _enter_boot_phase(self):
+        # The Kronos boot splash is Kronos-only (INDEX8 stream). A Nautilus has its own, different
+        # boot and the splash artwork would be wrong for it - never show it there (C# has no splash).
+        if self._is_nautilus or self._frame_w._stream_fmt != 0:
+            return
         self._boot_phase = True
         self._boot_phase_start = time.monotonic()
         self._preload_timer_start = time.monotonic()
@@ -3338,7 +3483,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             self._kbd_label.setToolTip("Keyboard send disabled")
         elif self._kbd_capture:
             self._kbd_label.setStyleSheet(f"color: {T.OK};")
-            self._kbd_label.setToolTip("Keyboard captured — keys forwarded to Kronos")
+            self._kbd_label.setToolTip("Keyboard captured — keys forwarded to the instrument")
         else:
             self._kbd_label.setStyleSheet(f"color: {T.TEXT_DIM};")
             self._kbd_label.setToolTip("Keyboard capture — click in frame to capture")
@@ -3461,22 +3606,28 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         # FF/Rewind buttons (kept disabled there, a separate UI decision — see
         # _seq_btn's kronos_only), the keybind path works on both families.
         # Record/Start/Save mirror C#'s SeqTransportViewModel: Record is Nautilus
-        # MS2 ("SEQ REC"), Start/Stop is MP6 (swapped with Pause's MS3), and Save
+        # MS2 ("SEQ REC"), Start/Stop is MS3 (play/pause) and Pause is MP6 (swapped from C#'s mapping on request), and Save
         # is Nautilus front-panel "F" — wire EXIT, that QA slot is programmed as
         # Write/Save — while on Kronos Save fires the same REC/WRITE press as
         # Record (one physical key there).
         seq = {"Seq Locate":  self._nautilus_token("SEQ_LOCATE", "MS1"),
                "Seq Rewind":  self._nautilus_token("SEQ_REW", "MP7"),
                "Seq Forward": self._nautilus_token("SEQ_FF", "MP8"),
-               "Seq Pause":   self._nautilus_token("SEQ_PAUSE", "MS3"),
+               "Seq Pause":   self._nautilus_token("SEQ_PAUSE", "MP6"),
                "Seq Record":  self._nautilus_token("SEQ_REC", "MS2"),
-               "Seq Start":   self._nautilus_token("SEQ_START", "MP6"),
+               "Seq Start":   self._nautilus_token("SEQ_START", "MS3"),
                "Seq Save":    self._nautilus_token("SEQ_REC", "EXIT")}
         for action, token in seq.items():
             if self._matches_keybind(event, action):
                 self._ctrl_send(btn(token))
+                if action == "Seq Start":
+                    self._seq_toggled("start")
+                elif action == "Seq Record":
+                    self._seq_toggled("rec")
                 return
         if self._matches_keybind(event, "Tap Tempo"):
+            if not self._tap_tempo_allowed():
+                return
             self._ctrl_send(btn(self._nautilus_token('TAP_TEMPO', 'NUM9')))
             self._flash_tap_tempo()
             return
@@ -3519,9 +3670,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
     # TapTempoOnce/FlashTapTempo).
     def _flash_tap_tempo(self):
         if hasattr(self, "_tap_tempo_lbl"):
-            self._tap_tempo_lbl.setPixmap(_paint_seq_icon("metronome", T.ACCENT, T.FS_SMALL))
-            QTimer.singleShot(250, lambda: self._tap_tempo_lbl.setPixmap(
-                _paint_seq_icon("metronome", T.TEXT_DIM, T.FS_SMALL)))
+            self._tap_tempo_lbl.flash(250)
 
     # ── Held-key auto-repeat ─────────────────────────────────────────────────
     def _start_kbd_repeat(self, qt_key: int, linux_code: int):
@@ -4079,9 +4228,9 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
     def _enter_test_mode(self):
         result = QMessageBox.warning(
             self,
-            "Kronos Test Mode",
-            "This will place you into the Kronos Test Mode. All unsaved changes "
-            "will be lost, and your Kronos will need to be restarted after "
+            "Instrument Test Mode",
+            "This will place you into the instrument's Test Mode. All unsaved changes "
+            "will be lost, and your instrument will need to be restarted after "
             "complete. Also, this is potentially a dangerous operation and should "
             "only be performed if you are aware of the risk.\n\n"
             "Do you wish to continue?",
@@ -4184,7 +4333,8 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
                       self._settings.image_sharpen)
         dlg = SettingsWindow(self._settings, self, initial_tab=initial_tab,
                              on_image_preview=self._preview_image_adjust,
-                             on_button_injector=self.show_button_injector)
+                             on_button_injector=self.show_button_injector,
+                             on_test_mode=None if self._is_nautilus else self._enter_test_mode)
         if dlg.exec() == QDialog.Accepted:
             self._apply_settings_side_effects(mirror_before, ss_before, debug_before,
                                               hide_data_before, hide_value_before)
@@ -4392,12 +4542,14 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             "Seq Locate":  lambda: self._ctrl_send(btn(self._nautilus_token('SEQ_LOCATE', 'MS1'))),
             "Seq Rewind":  lambda: self._ctrl_send(btn(self._nautilus_token('SEQ_REW', 'MP7'))),
             "Seq Forward": lambda: self._ctrl_send(btn(self._nautilus_token('SEQ_FF', 'MP8'))),
-            "Seq Pause":   lambda: self._ctrl_send(btn(self._nautilus_token('SEQ_PAUSE', 'MS3'))),
-            "Seq Record":  lambda: self._ctrl_send(btn(self._nautilus_token('SEQ_REC', 'MS2'))),
-            "Seq Start":   lambda: self._ctrl_send(btn(self._nautilus_token('SEQ_START', 'MP6'))),
+            "Seq Pause":   lambda: self._ctrl_send(btn(self._nautilus_token('SEQ_PAUSE', 'MP6'))),
+            "Seq Record":  lambda: (self._ctrl_send(btn(self._nautilus_token('SEQ_REC', 'MS2'))),
+                                    self._seq_toggled("rec")),
+            "Seq Start":   lambda: (self._ctrl_send(btn(self._nautilus_token('SEQ_START', 'MS3'))),
+                                    self._seq_toggled("start")),
             "Seq Save":    lambda: self._ctrl_send(btn(self._nautilus_token('SEQ_REC', 'EXIT'))),
             "Tap Tempo":   lambda: (self._ctrl_send(btn(self._nautilus_token('TAP_TEMPO', 'NUM9'))),
-                                     self._flash_tap_tempo()),
+                                     self._flash_tap_tempo()) if self._tap_tempo_allowed() else None,
         })
         fn = cmds.get(action)
         if fn:
@@ -4422,12 +4574,12 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         host = self._host or self._settings.kronos_host
         if not host:
             QMessageBox.warning(self, "File Manager",
-                                "No Kronos host configured. Set it in Settings first.")
+                                "No instrument host configured. Set it in Settings first.")
             return
         from Tools.file_manager import FileManagerWindow
         self._file_manager_win = FileManagerWindow(
             host, self._settings.ftp_port,
-            self._settings.ftp_username, self._settings.ftp_password, self)
+            self._settings.ftp_username, self._settings.ftp_password, None)
         self._file_manager_win.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self._file_manager_win.destroyed.connect(lambda: setattr(self, '_file_manager_win', None))
         self._file_manager_win.show()
@@ -4437,7 +4589,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
     def _open_keyboard_info(self):
         from Views.perf_window import PerformanceWindow
         if self._perf_window is None:
-            self._perf_window = PerformanceWindow(self._host, self._ctrl_port, self)
+            self._perf_window = PerformanceWindow(self._host, self._ctrl_port, None)
         self._perf_window.update_host(self._host, self._ctrl_port)
         self._perf_window.show()
         self._perf_window.raise_()
@@ -4494,16 +4646,16 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             return
         if not self._host:
             QMessageBox.warning(self, "MIDI Monitor",
-                                "No Kronos host configured. Set it in Settings first.")
+                                "No instrument host configured. Set it in Settings first.")
             return
         if not self._settings.midi_monitor_enabled or not self._sysex_service.can_dump:
             QMessageBox.warning(self, "MIDI Monitor",
                                 "MIDI monitoring is off or not connected. Enable "
-                                "'Monitor MIDI' in Settings → MIDI/SysEx and connect to the Kronos first.")
+                                "'Monitor MIDI' in Settings → MIDI/SysEx and connect to the instrument first.")
             return
         from Views.sysex_tool_window import SysExToolWindow
         self._sysex_tool_win = SysExToolWindow(
-            self._host, self._sysex_service.bridge, self._sysex_service, self,
+            self._host, self._sysex_service.bridge, self._sysex_service, None,
             initial_channel=self._settings.midi_output_channel)
         self._sysex_tool_win.closing.connect(self._save_midi_output_channel)
         self._sysex_tool_win.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
@@ -4525,12 +4677,12 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             return
         if not self._host:
             QMessageBox.warning(self, "Librarian Shell",
-                                "No Kronos host configured. Set it in Settings first.")
+                                "No instrument host configured. Set it in Settings first.")
             return
         from Views.librarian_shell_window import LibrarianShellWindow
         self._librarian_shell_win = LibrarianShellWindow(
             self._host, self._sysex_service,
-            self._settings.ftp_port, self._settings.ftp_username, self._settings.ftp_password, self,
+            self._settings.ftp_port, self._settings.ftp_username, self._settings.ftp_password, None,
             settings=self._settings)
         self._librarian_shell_win.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self._librarian_shell_win.destroyed.connect(lambda: setattr(self, '_librarian_shell_win', None))
@@ -4654,6 +4806,36 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
 
     # ── Connection state ───────────────────────────────────────────────────────
 
+    # Record / Start state is the client's own guess (SeqTransportViewModel.IsRecording/IsPlaying).
+    # Start/Stop has ONE fixed play+stop icon and never shows a state (it can't be read back from the
+    # instrument); the guess is only kept so stopping also drops Record. The armed Record look
+    # (pale red) is Kronos-only - on Nautilus there is no daemon confirmation, so showing
+    # an armed state would mislead.
+    def _seq_toggled(self, which: str) -> None:
+        if which == "start":
+            self._seq_playing = not self._seq_playing
+            if not self._seq_playing:
+                self._seq_recording = False
+        else:
+            self._seq_recording = not self._seq_recording
+        self._seq_refresh_state()
+
+    def _seq_reset(self) -> None:
+        if self._seq_playing or self._seq_recording:
+            self._seq_playing = self._seq_recording = False
+            self._seq_refresh_state()
+
+    def _seq_refresh_state(self) -> None:
+        lit = not self._is_nautilus
+        self._seq_rec.set_checked(self._seq_recording and lit, "#6E3535")
+
+    def _tap_tempo_allowed(self) -> bool:
+        """Tap Tempo is disabled in Sequence mode on Nautilus: the first tap there snaps the tempo
+        straight to 99 instead of averaging. Whether the Kronos does the same is untested, so it
+        stays enabled there."""
+        return (self._conn_state == "connected"
+                and not (self._is_nautilus and self._current_mode == 4))
+
     def _update_seq_enabled(self) -> None:
         """Gate the sequencer transport on Sequence mode and Save on the four
         write-capable modes, matching SeqTransportViewModel (IsTransportEnabled =
@@ -4668,19 +4850,14 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         for w in (self._seq_locate, self._seq_rew, self._seq_ff, self._seq_pause,
                   self._seq_rec, self._seq_start):
             w.setEnabled(transport_on)
-        self._tap_tempo_lbl.setEnabled(connected)
+        self._tap_tempo_lbl.setEnabled(self._tap_tempo_allowed())
         self._seq_save_lbl.setEnabled(save_on)
-        opacity = 1.0 if transport_on else 0.4
-        eff = self._seq_box.graphicsEffect()
-        if eff is None:
-            eff = QGraphicsOpacityEffect(self._seq_box)
-            self._seq_box.setGraphicsEffect(eff)
-        eff.setOpacity(opacity)
         if not transport_on:
+            self._seq_reset()   # the instrument refuses a mode change while Record/Start is armed
             self._seq_box.setToolTip("Sequencer transport - only available in Sequence mode")
         else:
             self._seq_box.setToolTip("Sequencer transport - sends the front-panel SEQUENCER "
-                                     "buttons to the Kronos")
+                                     "buttons to the instrument")
 
     def _set_conn_state(self, state: str, text: str):
         """Update connection dot + status label text together."""
@@ -4960,6 +5137,13 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             self._perf_window.close()
         if self._file_manager_win:
             self._file_manager_win.close()
+        for w in (self._sysex_tool_win, self._librarian_shell_win,
+                  getattr(self, "_sample_editor_win", None),
+                  getattr(self, "_input_tester", None),
+                  getattr(self, "_button_injector", None)):
+            close = getattr(w, "close", None)
+            if callable(close):
+                close()
 
         receiver = self._receiver
         audio = self._audio_capture

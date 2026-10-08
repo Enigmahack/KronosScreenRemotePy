@@ -31,7 +31,7 @@ class MainWindowDialogMixin:
     def show_input_tester(self):
         """Show input testing window (non-modal)."""
         if self._input_tester is None:
-            self._input_tester = InputTesterWindow(self)
+            self._input_tester = InputTesterWindow(self, None)
         self._input_tester.show()
         self._input_tester.raise_()
         self._input_tester.activateWindow()
@@ -39,7 +39,7 @@ class MainWindowDialogMixin:
     def show_button_injector(self):
         """Show button injector window (non-modal)."""
         if self._button_injector is None:
-            self._button_injector = ButtonInjectorWindow(self)
+            self._button_injector = ButtonInjectorWindow(self, None)
         self._button_injector.show()
         self._button_injector.raise_()
         self._button_injector.activateWindow()
@@ -61,7 +61,7 @@ class MainWindowDialogMixin:
         perf_window.py's SYSINFO-poll pattern) since it blocks on the network."""
         if not self._host or not self._receiver:
             MessageBox.warning(self, "Not Connected",
-                              "No Kronos is currently connected.")
+                              "No instrument is currently connected.")
             return
 
         properties = {
@@ -69,7 +69,7 @@ class MainWindowDialogMixin:
             "Stream Port": str(self._stream_port),
             "Control Port": str(self._ctrl_port),
             "Stream Format": "RGB565LE (Nautilus)" if self._receiver.stream_fmt == 1
-                              else "INDEX8 (Kronos)",
+                              else "INDEX8 (Instrument)",
             "Screen": f"{self._receiver.width}x{self._receiver.height}",
             "Measured FPS": f"{self._measured_fps:.1f}",
             "Stream Mode": "Pull" if self._pull_mode else "Change",
@@ -172,12 +172,12 @@ class MainWindowDialogMixin:
         host = self._host or self._settings.kronos_host
         if not host:
             MessageBox.warning(self, "Sample Editor",
-                              "No Kronos host configured. Set it in Settings first.")
+                              "No instrument host configured. Set it in Settings first.")
             return False
         from Views.sample_editor_window import SampleEditorWindow
         self._sample_editor_win = SampleEditorWindow(
             host, self._settings.ftp_port,
-            self._settings.ftp_username, self._settings.ftp_password, self)
+            self._settings.ftp_username, self._settings.ftp_password, None)
         self._sample_editor_win.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self._sample_editor_win.destroyed.connect(lambda: setattr(self, '_sample_editor_win', None))
         self._sample_editor_win.show()

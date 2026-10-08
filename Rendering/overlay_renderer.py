@@ -93,7 +93,7 @@ class OverlayRenderer:
             p.fillRect(frame_rect, Qt.black)
             p.setPen(_COL_ACCENT)
             p.setFont(_FONT_SMALL)
-            p.drawText(frame_rect.toRect(), Qt.AlignCenter, "Connecting to Kronos…")
+            p.drawText(frame_rect.toRect(), Qt.AlignCenter, "Connecting to the instrument…")
 
     # ── Disconnected overlay ───────────────────────────────────────────────────
 
@@ -106,12 +106,13 @@ class OverlayRenderer:
     # ── Touch marker ──────────────────────────────────────────────────────────
 
     def draw_touch_marker(self, p: QPainter, frame_rect: QRectF,
-                          nx: int, ny: int, alpha: float):
-        """Draw a fading circle at (nx, ny) in frame pixel coords (0–799, 0–599)."""
-        scale_x = frame_rect.width()  / 800
-        scale_y = frame_rect.height() / 600
-        cx = frame_rect.x() + nx * scale_x
-        cy = frame_rect.y() + ny * scale_y
+                          nx: int, ny: int, alpha: float,
+                          frame_w: int = 800, frame_h: int = 600):
+        """Draw a fading circle at (nx, ny) in native frame pixel coords."""
+        scale_x = frame_rect.width()  / frame_w
+        scale_y = frame_rect.height() / frame_h
+        cx = frame_rect.x() + nx * frame_rect.width()  / max(1, frame_w - 1)
+        cy = frame_rect.y() + ny * frame_rect.height() / max(1, frame_h - 1)
         r  = 14 * min(scale_x, scale_y)
         col = QColor(_COL_TOUCH_MARKER)
         col.setAlphaF(alpha * col.alphaF())
