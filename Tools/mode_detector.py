@@ -20,7 +20,7 @@ log = logging.getLogger(__name__)
 # Repo-root Resources/Refs/ — two parents up from Tools/mode_detector.py, not
 # one. The one-parent version silently resolved to a nonexistent Tools/
 # Resources/Refs/, so every detector below loaded zero reference images and
-# every fallback detection (mode, boot phase via BootPhaseDetector, and the
+# every fallback detection (mode, and the
 # unconditional Help overlay check, which is gated on ModeDetector.has_any())
 # was a total silent no-op — never crashed, never logged above DEBUG.
 _DEFAULT_REFS_DIR = pathlib.Path(__file__).parent.parent / "Resources" / "Refs"

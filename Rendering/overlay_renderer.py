@@ -28,7 +28,6 @@ _COL_SLIDER_BG     = QColor(0x33, 0x33, 0x33)
 _COL_LOCKED        = QColor(0xFF, 0x80, 0x00, 180)
 _COL_GRID          = QColor(0x00, 0xFF, 0x80, 100)
 _COL_TOUCH_MARKER  = QColor(0xAA, 0xAA, 0xAA, 210)
-_COL_BOOT_BAR      = QColor(0xFF, 0x00, 0x00)
 _COL_DISCONNECTED  = QColor(0xFF, 0x44, 0x44)
 
 _SWATCH_SIZE   = 12   # palette editor swatch px
@@ -37,64 +36,11 @@ _SWATCH_ROWS   = 16
 _SLIDER_W      = 162
 _PANEL_PADDING = 12
 
-# Boot splash bar geometry as fractions of the splash image (1600x1200 reference)
-_BAR_FX0 = 140.0 / 1600   # left edge of bar
-_BAR_FX1 = 1442.0 / 1600  # right edge of bar
-_BAR_FY0 = 859.0 / 1200   # top of bar
-_BAR_FY1 = 865.0 / 1200   # bottom of bar
-_COL_BOOT_BAR_GREY = QColor(0x96, 0x96, 0x96)
-
 _FONT_MONO  = QFont("Courier New", 10)
 _FONT_SMALL = QFont("Segoe UI", 9) if True else QFont("sans-serif", 9)
 
 
 class OverlayRenderer:
-    def __init__(self):
-        self._boot_splash: Optional[QPixmap] = None
-        # Repo-root Resources/Images/ — this file is one directory below the repo
-        # root, so it takes TWO .parent hops (see Rendering/control_surface.py's
-        # _res() for the fuller writeup of this bug, fixed alongside this one).
-        self._boot_splash_path = (
-            pathlib.Path(__file__).parent.parent / "Resources" / "Images" / "BootSplash.png"
-        )
-        self._boot_splash_loaded = False
-
-    # ── Boot splash ────────────────────────────────────────────────────────────
-
-    def draw_boot_splash(self, p: QPainter, frame_rect: QRectF,
-                         fill_fraction: float):
-        """
-        Draw the boot splash image scaled to frame_rect, with a progress bar.
-        fill_fraction is 0..1 across the bar range (left=_BAR_FX0, right=_BAR_FX1).
-        Grey shows unfilled portion; red shows filled portion.
-        """
-        if not self._boot_splash_loaded:
-            self._boot_splash_loaded = True
-            if self._boot_splash_path.exists():
-                self._boot_splash = QPixmap(str(self._boot_splash_path))
-
-        if self._boot_splash and not self._boot_splash.isNull():
-            p.drawPixmap(frame_rect.toRect(), self._boot_splash)
-            ry = frame_rect.y() + _BAR_FY0 * frame_rect.height()
-            rh = (_BAR_FY1 - _BAR_FY0) * frame_rect.height()
-            clipped = max(0.0, min(1.0, fill_fraction))
-            fill_fx = _BAR_FX0 + clipped * (_BAR_FX1 - _BAR_FX0)
-            # Grey (unfilled) portion
-            if fill_fx < _BAR_FX1:
-                gx = frame_rect.x() + fill_fx * frame_rect.width()
-                gw = (_BAR_FX1 - fill_fx) * frame_rect.width()
-                p.fillRect(QRectF(gx, ry, gw, rh), _COL_BOOT_BAR_GREY)
-            # Red (filled) portion
-            if fill_fx > _BAR_FX0:
-                rx = frame_rect.x() + _BAR_FX0 * frame_rect.width()
-                rw = (fill_fx - _BAR_FX0) * frame_rect.width()
-                p.fillRect(QRectF(rx, ry, rw, rh), _COL_BOOT_BAR)
-        else:
-            p.fillRect(frame_rect, Qt.black)
-            p.setPen(_COL_ACCENT)
-            p.setFont(_FONT_SMALL)
-            p.drawText(frame_rect.toRect(), Qt.AlignCenter, "Connecting to the instrument…")
-
     # ── Disconnected overlay ───────────────────────────────────────────────────
 
     def draw_disconnected(self, p: QPainter, frame_rect: QRectF, message: str):

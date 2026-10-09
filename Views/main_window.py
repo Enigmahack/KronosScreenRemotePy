@@ -6,7 +6,7 @@ Layout (LayoutPreset.Full):
 
 Frame widget handles:
   - 8bpp→RGB rendering via QImage.Format_Indexed8 + color table
-  - All overlays (palette editor, zoom, cal, help, boot splash, touch marker)
+  - All overlays (palette editor, zoom, cal, help, touch marker)
   - Mouse drag → TOUCH_DOWN/MOVE/UP
   - Keyboard forwarding to Kronos via ctrl_client
 
@@ -51,7 +51,6 @@ import Models.storage
 import Models.cal_text as cal_text
 import Utils.theme as T
 from Models.app_settings import AppSettings, get_rebindable
-from Tools.boot_phase_detector import BootPhaseDetector, Phase as BootPhase
 from Rendering.control_surface import KronosControlSurface
 from Tools.mode_detector import CombiProgramEditDetector, ModeDetector, frame_black_fraction
 from Models.models import CalBiasDot, CalHistEntry, CalHistKind, CalMesh, HistEntry, PaletteEntry
@@ -151,14 +150,8 @@ def _mods_to_int(mods) -> int:
     return result
 
 
-_APP_TITLE  = "Kronos ScreenRemote"
+_APP_TITLE  = "Keyboard Screen Remote"
 
-# Boot bar fill fractions (0..1, left edge to right edge of bar)
-_BOOT_F_STATIC_END  = 724.0 / 1302   # px 864 in 1600-wide image
-_BOOT_F_PRELOAD_END = 1190.0 / 1302  # px 1330
-_BOOT_F_BANK_START  = 1190.0 / 1302  # px 1330
-_BOOT_F_BANK_END    = 1.0            # px 1442 = right edge
-_BOOT_ENTRY_DELAY   = 0.5            # seconds before entering boot phase
 
 _NUMPAD_MAP: dict[int, str] = {
     Qt.Key_0: "NUM0", Qt.Key_1: "NUM1", Qt.Key_2: "NUM2",
@@ -541,11 +534,7 @@ class FrameWidget(QWidget):
         self._ed_open     = False
         self._cal_mode    = False
         self._kbd_capture = False
-        self._boot_phase  = True
         self._is_connected = False
-        self._disable_boot_screen = False
-        self._frame_is_likely_boot_screen = False
-        self._daemon_authoritative = False   # set True once the daemon STATE path answers
 
         self._renderer = OverlayRenderer()
 
@@ -574,7 +563,6 @@ class FrameWidget(QWidget):
         self._cal_history:  list[CalHistEntry] = []
         self._cal_hist_pos  = -1
 
-        # Boot splash
         self._disconnect_msg = ""
 
         # Render timer for touch marker fade
@@ -751,16 +739,7 @@ class FrameWidget(QWidget):
                         fr.width() - 2 * m, fr.height() - 2 * m)
         self._frame_rect = fr
 
-        if (self._boot_phase and self._is_connected and self._stream_fmt == 0
-                and not self._disable_boot_screen and self._frame_is_likely_boot_screen
-                and not getattr(self, "_daemon_authoritative", False)):
-            # Client-side boot splash overlay - only when the daemon is NOT compositing
-            # one server-side (see _on_frame's daemon_authoritative flag). When the
-            # daemon is authoritative it paints the splash + live progress bar into the
-            # stream itself (KronosScreenRemoteDaemon/docs/api.md "Boot splash"), so a
-            # local overlay would double-draw over it.
-            self._renderer.draw_boot_splash(p, fr, self._boot_fill_fraction)
-        elif self._frame_pixmap:
+        if self._frame_pixmap:
             p.drawPixmap(fr.toRect(), self._frame_pixmap)
         elif not self._is_connected:
             self._renderer.draw_disconnected(p, fr, self._disconnect_msg or "Not connected")
@@ -1738,7 +1717,6 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
 
         self._mode_detector  = ModeDetector()
         self._combi_detector = CombiProgramEditDetector()
-        self._boot_detector  = BootPhaseDetector()
         self._current_mode   = 0
         self._prev_mode      = 0
         self._pending_mode   = 0   # user-requested mode awaiting detection confirmation
@@ -1776,20 +1754,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         self._combi_flash_timer.setInterval(420)
         self._combi_flash_timer.timeout.connect(self._combi_flash_tick)
 
-        # Boot phase state
-        self._boot_phase         = False
         self._detected_mode_ever = False
-        self._boot_first_frame: float   = 0.0
-        self._boot_phase_start: float   = 0.0
-        self._preload_timer_start: float = 0.0
-        self._bank_data_detected_at: float = 0.0
-        self._boot_load_phase    = BootPhase.NONE
-        self._finishing_fill_frac = _BOOT_F_STATIC_END
-        self._preload_schedule: Optional[list[tuple[float, float]]] = None
-
-        self._boot_anim_timer = QTimer(self)
-        self._boot_anim_timer.setInterval(30)
-        self._boot_anim_timer.timeout.connect(self._boot_anim_tick)
 
         self._fps_count   = 0
         self._fps_time    = time.monotonic()
@@ -2610,7 +2575,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         self._frame_w.cancel_drag()
         if not quiet:
             self._auto_reconnect_enabled = False  # explicit user disconnect — no auto-reconnect
-        self._reset_boot_state()
+        self._reset_daemon_state()
         self._mode_poll_timer.stop()
         self._poll_in_progress = False
         if self._combi_prog_edit_active:
@@ -2670,9 +2635,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             self._fps_time     = now
             self._fps_label.setText(f"{self._measured_fps:.1f} fps")
 
-        # Per-frame black checks. Both thresholds are answered from a single
-        # scan of the frame — the black fraction doesn't depend on which
-        # threshold it's compared against.
+        # Per-frame black check (gates the pixel detectors below).
         #
         # INDEX8 only: every pixel-based detector below assumes one palette-index
         # byte per pixel at stride _fw and a Kronos-shaped reference image. On
@@ -2685,13 +2648,11 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         if is_index8:
             black_frac = frame_black_fraction(raw, self._frame_w._lut)
             mostly_black = black_frac > 0.90
-            likely_boot = black_frac > self._settings.boot_screen_threshold / 100.0
-            self._frame_w._frame_is_likely_boot_screen = likely_boot
         else:
             mostly_black = True   # suppresses the pixel-detector block below
 
         # Pixel detection is only a FALLBACK (req 13): the daemon's STATE poll is the
-        # authoritative mode/boot source. While the daemon is answering (or still
+        # authoritative mode source. While the daemon is answering (or still
         # reporting BOOT=1) the pixel detectors are skipped entirely; they only run
         # when the daemon STATE path has never produced a reading (daemon process
         # missing / network to ctrl port failing).
@@ -2734,38 +2695,12 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
                     else:
                         self._combi_exit_gone_at = 0.0
 
-        # Boot phase entry (req 14): while the daemon reports BOOT=1 (or hasn't answered
-        # yet) keep the boot splash up; pixel black-detection is the fallback path only.
-        if self._boot_first_frame == 0.0:
-            self._boot_first_frame = time.monotonic()
-        if (not self._detected_mode_ever and not self._boot_phase
-                and self._boot_first_frame > 0
-                and time.monotonic() - self._boot_first_frame >= _BOOT_ENTRY_DELAY):
-            if self._daemon_booting or not daemon_authoritative:
-                self._enter_boot_phase()
-
-        # Boot load-phase detection - advance phases strictly forward (fallback only;
-        # the daemon's own progress bar is composited server-side into the stream).
-        if is_index8 and self._boot_phase and not daemon_authoritative:
-            detected = self._boot_detector.identify(raw, frame_w_px, self._frame_w._lut)
-            if (detected == BootPhase.FINISHING
-                    and self._boot_load_phase < BootPhase.FINISHING):
-                self._finishing_fill_frac = self._compute_boot_fill_fraction()
-                self._boot_load_phase = BootPhase.FINISHING
-            elif (detected == BootPhase.BANK_DATA
-                    and self._boot_load_phase < BootPhase.BANK_DATA):
-                self._boot_load_phase = BootPhase.BANK_DATA
-                self._bank_data_detected_at = time.monotonic()
-            elif (detected == BootPhase.PRELOAD_KSC
-                    and self._boot_load_phase < BootPhase.PRELOAD_KSC):
-                self._boot_load_phase = BootPhase.PRELOAD_KSC
-
     @Slot()
     def _on_disconnected(self):
         if self.sender() is not None and self.sender() is not self._receiver:
             return
         self._session_generation += 1
-        self._reset_boot_state()
+        self._reset_daemon_state()
         self._frame_w._is_connected    = False
         self._frame_w._frame_pixmap    = None
         self._frame_w._disconnect_msg  = "Connection lost"
@@ -2852,10 +2787,8 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         self._set_conn_state("connected", f"Connected — {self._host}")
         self.setWindowTitle(f"{_APP_TITLE} — {self._host}")
         self._add_recent_host(self._host)
-        self._reset_boot_state()
+        self._reset_daemon_state()
         self._frame_w._is_connected  = True
-        self._frame_w._disable_boot_screen = self._settings.disable_boot_screen
-        self._frame_w._frame_is_likely_boot_screen = True
         self._frame_w._disconnect_msg = ""
         self._frame_w.update()
         self._mode_poll_timer.start()
@@ -3027,8 +2960,6 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         # in place rather than hidden (matches C#). The click itself is
         # already guarded in _seq_btn's kronos_only handler; this only
         # updates the resting (non-flash) visual.
-        if self._is_nautilus and self._boot_phase:
-            self._exit_boot_phase()   # family resolved after the cheap stream-format guess
         for b in (self._seq_rew, self._seq_ff):
             b.set_faded(self._is_nautilus)
         self._seq_refresh_state()
@@ -3096,8 +3027,6 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             self._sysex_service.refresh_now()
         self._current_mode = mode
         self._detected_mode_ever = True
-        if self._boot_phase:
-            self._exit_boot_phase()
         self._ctrl_surface.set_mode(mode)
         self._mode_label.setText(_MODE_NAMES[mode] if 1 <= mode <= 7 else "")
         self._update_seq_enabled()
@@ -3116,108 +3045,12 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         self._ctrl_surface.set_active("NAUT_MODE", mode_lit or False)
         self._ctrl_surface.set_active("NAUT_PAGE", page_lit or False)
 
-    # ── Boot phase ────────────────────────────────────────────────────────────
+    # ── Daemon state ──────────────────────────────────────────────────────────
 
-    def _reset_boot_state(self):
-        self._boot_phase = False
+    def _reset_daemon_state(self):
         self._detected_mode_ever = False
         self._daemon_state_ok = False
         self._daemon_booting = True
-        self._boot_first_frame = 0.0
-        self._boot_phase_start = 0.0
-        self._preload_timer_start = 0.0
-        self._bank_data_detected_at = 0.0
-        self._boot_load_phase = BootPhase.NONE
-        self._finishing_fill_frac = _BOOT_F_STATIC_END
-        self._preload_schedule = None
-        self._boot_anim_timer.stop()
-        self._frame_w._boot_phase = False
-        self._frame_w._daemon_authoritative = False
-        self._frame_w._boot_fill_fraction = 0.0
-        self._frame_w._frame_is_likely_boot_screen = False
-
-    def _enter_boot_phase(self):
-        # The Kronos boot splash is Kronos-only (INDEX8 stream). A Nautilus has its own, different
-        # boot and the splash artwork would be wrong for it - never show it there (C# has no splash).
-        if self._is_nautilus or self._frame_w._stream_fmt != 0:
-            return
-        self._boot_phase = True
-        self._boot_phase_start = time.monotonic()
-        self._preload_timer_start = time.monotonic()
-        self._boot_load_phase = BootPhase.NONE
-        self._finishing_fill_frac = _BOOT_F_STATIC_END
-        self._build_preload_schedule()
-        self._frame_w._boot_phase = True
-        self._boot_anim_timer.start()
-        self._boot_anim_tick()
-
-    def _exit_boot_phase(self):
-        self._boot_phase = False
-        self._boot_anim_timer.stop()
-        self._frame_w._boot_phase = False
-        self._frame_w.update()
-
-    def _build_preload_schedule(self):
-        import random
-        pause_count = 25
-        active_total = 20.0
-        pause_duration = 1.0
-        pts = sorted(random.random() * active_total for _ in range(pause_count))
-        segs: list[tuple[float, float]] = []
-        wall = 0.0
-        prog = 0.0
-        for p in pts:
-            active = p - prog
-            if active > 1e-9:
-                wall += active
-                prog += active
-                segs.append((wall, prog))
-            wall += pause_duration
-            segs.append((wall, prog))
-        tail = active_total - prog
-        if tail > 1e-9:
-            wall += tail
-            prog = active_total
-            segs.append((wall, prog))
-        self._preload_schedule = segs
-
-    def _get_preload_progress(self, elapsed: float) -> float:
-        if self._preload_schedule is None:
-            return max(0.0, min(1.0, elapsed / 20.0))
-        prev_wall = 0.0
-        prev_prog = 0.0
-        for wall_end, prog_end in self._preload_schedule:
-            if elapsed <= wall_end:
-                wall_span = wall_end - prev_wall
-                prog_span = prog_end - prev_prog
-                if prog_span < 1e-9 or wall_span < 1e-9:
-                    return prev_prog / 20.0
-                return (prev_prog + (elapsed - prev_wall) / wall_span * prog_span) / 20.0
-            prev_wall = wall_end
-            prev_prog = prog_end
-        return 1.0
-
-    def _compute_boot_fill_fraction(self) -> float:
-        if self._boot_load_phase == BootPhase.FINISHING:
-            return self._finishing_fill_frac
-        if self._boot_load_phase == BootPhase.BANK_DATA and self._bank_data_detected_at > 0:
-            t = max(0.0, min(1.0, (time.monotonic() - self._bank_data_detected_at) / 5.0))
-            raw = _BOOT_F_BANK_START + (_BOOT_F_BANK_END - _BOOT_F_BANK_START) * t
-        elif self._preload_timer_start > 0:
-            elapsed = time.monotonic() - self._preload_timer_start
-            t = max(0.0, min(1.0, self._get_preload_progress(elapsed)))
-            raw = _BOOT_F_STATIC_END + (_BOOT_F_PRELOAD_END - _BOOT_F_STATIC_END) * t
-        else:
-            raw = _BOOT_F_STATIC_END
-        snapped = math.floor(raw / 0.01) * 0.01
-        return max(snapped, _BOOT_F_STATIC_END)
-
-    def _boot_anim_tick(self):
-        if not self._boot_phase:
-            self._boot_anim_timer.stop()
-            return
-        self._frame_w._boot_fill_fraction = self._compute_boot_fill_fraction()
-        self._frame_w.update()
 
     def _combi_flash_tick(self):
         if not self._combi_prog_edit_active:
@@ -3323,7 +3156,6 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
                 generation is not None and not self._session_is_current(generation, receiver, endpoint)):
             return
         self._daemon_state_ok = True
-        self._frame_w._daemon_authoritative = True
         # Nautilus MODE/PAGE front-panel LEDs — applied on every STATE poll
         # regardless of boot state, matching C#'s OnSessionStateReceived
         # calling ApplyNautilusLamps before ApplyDaemonState's own boot gate.
@@ -3331,12 +3163,8 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         daemon_booting = boot != 0
         if daemon_booting:
             self._daemon_booting = True
-            if not self._boot_phase and not self._detected_mode_ever:
-                self._enter_boot_phase()
             return
         self._daemon_booting = False
-        if self._boot_phase:
-            self._exit_boot_phase()
         if edit_ctx != 0:
             # Program-edit-from-Combi (1) / -from-Sequence (2) - drive the flashing state.
             ctx = 1 if edit_ctx == 1 else 2
@@ -3352,10 +3180,6 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             # confirms the change (one poll interval, not an added grace).
             if mode != 0 and mode != self._current_mode:
                 self._set_mode_button(mode)
-            elif mode == 0 and not self._detected_mode_ever:
-                # Daemon says unknown and nothing detected yet - keep the boot phase up.
-                if not self._boot_phase:
-                    self._enter_boot_phase()
 
     def _enter_program_edit_context(self, ctx: int) -> None:
         """Enter a program-edit-from-Combi/Sequence context: the origin mode button lights
@@ -4386,8 +4210,6 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         # Apply zoom default
         self._zoom_level = self._settings.zoom_default_level
         self._frame_w._zoom_level = self._zoom_level
-        # Apply boot screen setting
-        self._frame_w._disable_boot_screen = self._settings.disable_boot_screen
         # Apply image adjustments (brightness/contrast/gamma/saturation/sharpen)
         self._apply_image_adjust()
         # Apply hide data/value input only if visibility changed

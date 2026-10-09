@@ -129,3 +129,54 @@ class ConnectionFailedDialog(BaseDialog):
 
     def should_retry(self) -> bool:
         return self.retry
+
+
+class SavedConnectionDialog(BaseDialog):
+    """Create/edit one Saved Connection: friendly name + host + FTP login + FTP port."""
+
+    def __init__(self, seed: dict, is_new: bool, parent=None):
+        super().__init__("New Saved Connection" if is_new else "Edit Saved Connection", parent)
+        from PySide6.QtWidgets import QFormLayout, QLineEdit, QSpinBox, QDialogButtonBox
+        from Views.revealable_password_edit import RevealablePasswordEdit
+        self.result_entry: Optional[dict] = None
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        self._name = QLineEdit(str(seed.get("name", "")))
+        self._name.setToolTip("Friendly name shown in the Saved Connections list. "
+                              "Defaults to the IP address if left empty.")
+        self._host = QLineEdit(str(seed.get("host", "")))
+        self._user = QLineEdit(str(seed.get("username", "")))
+        self._pass = RevealablePasswordEdit()
+        self._pass.setText(str(seed.get("password", "")))
+        self._port = QSpinBox()
+        self._port.setRange(1, 65535)
+        self._port.setValue(int(seed.get("ftp_port", 21) or 21))
+        form.addRow("Name:", self._name)
+        form.addRow("Instrument IP address:", self._host)
+        form.addRow("FTP Username:", self._user)
+        form.addRow("FTP Password:", self._pass)
+        form.addRow("FTP Port:", self._port)
+        layout.addLayout(form)
+        self._error = QLabel("")
+        self._error.setStyleSheet(f"color: {T.ERROR};")
+        self._error.setVisible(False)
+        layout.addWidget(self._error)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self._on_ok)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        self.setMinimumWidth(340)
+
+    def _on_ok(self):
+        host = self._host.text().strip()
+        if not host:
+            self._error.setText("Enter the instrument IP address.")
+            self._error.setVisible(True)
+            return
+        name = self._name.text().strip()
+        self.result_entry = {
+            "name": name or host, "host": host,
+            "username": self._user.text().strip(), "password": self._pass.text(),
+            "ftp_port": self._port.value(),
+        }
+        self.accept()

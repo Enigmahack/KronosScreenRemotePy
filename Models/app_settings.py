@@ -121,10 +121,6 @@ class AppSettings:
     focused_data_expanded:  bool = False
     focused_value_expanded: bool = False
 
-    # Boot screen
-    boot_screen_threshold: int  = 60   # 5–95 %
-    disable_boot_screen:   bool = False
-
     # View
     zoom_default_level: float = 2.5
     zoom_window_size:   float = 1.0
@@ -203,6 +199,10 @@ class AppSettings:
 
     # Recent connections (most-recent-first, capped at 10)
     recent_hosts: List[str] = field(default_factory=list)
+
+    # Named connections managed in Settings > Connection. Each entry is a dict with keys
+    # name, host, username, password, ftp_port (password in plain text, like ftp_password).
+    saved_connections: List[Dict[str, object]] = field(default_factory=list)
 
     # Raw key mappings (host Qt key → linux keycode)
     raw_key_maps: List[RawKeyMap] = field(default_factory=list)

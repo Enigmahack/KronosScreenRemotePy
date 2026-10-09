@@ -229,12 +229,28 @@ class SettingsWindow(QDialog):
     def _build_connection_tab(self) -> QWidget:
         w = QWidget()
         form = QFormLayout(w)
+        self._saved_combo = QComboBox()
+        self._saved_combo.setToolTip("Choosing an entry fills in the IP address and FTP login below.")
+        self._saved_combo.currentIndexChanged.connect(self._on_saved_selected)
+        self._saved_add = QPushButton("+")
+        self._saved_add.setFixedWidth(28)
+        self._saved_add.setToolTip("Save the current settings as a new entry.")
+        self._saved_add.clicked.connect(self._on_saved_add)
+        self._saved_remove = QPushButton("-")
+        self._saved_remove.setFixedWidth(28)
+        self._saved_remove.setToolTip("Remove the selected entry.")
+        self._saved_remove.clicked.connect(self._on_saved_remove)
+        self._saved_edit = QPushButton("Edit...")
+        self._saved_edit.setToolTip("Edit the selected entry.")
+        self._saved_edit.clicked.connect(self._on_saved_edit)
+        saved_row = QHBoxLayout()
+        saved_row.addWidget(self._saved_combo, 1)
+        saved_row.addWidget(self._saved_add)
+        saved_row.addWidget(self._saved_remove)
+        saved_row.addWidget(self._saved_edit)
+        form.addRow("Saved connections:", saved_row)
         self._host_edit  = QLineEdit()
-        self._sport_spin = QSpinBox(); self._sport_spin.setRange(1, 65535)
-        self._cport_spin = QSpinBox(); self._cport_spin.setRange(1, 65535)
         form.addRow("Instrument IP address:", self._host_edit)
-        form.addRow("Stream port:",       self._sport_spin)
-        form.addRow("Control port:",      self._cport_spin)
 
         note = _hint("Connection changes take effect on the next connect.")
         form.addRow(note)
@@ -247,6 +263,65 @@ class SettingsWindow(QDialog):
         form.addRow("FTP Password:", self._ftp_pass)
         form.addRow("FTP Port:",     self._ftp_port_spin)
         return w
+
+    # ── Saved connections ──────────────────────────────────────────────────────
+    # Edits go to self._saved (a working copy) and are written back on OK / Apply, so Cancel
+    # discards them like every other setting.
+
+    def _rebind_saved(self, select: Optional[int] = None) -> None:
+        self._saved_combo.blockSignals(True)
+        self._saved_combo.clear()
+        for c in self._saved:
+            self._saved_combo.addItem(str(c["name"]))
+        self._saved_combo.setCurrentIndex(-1 if select is None else select)
+        self._saved_combo.blockSignals(False)
+        self._update_saved_buttons()
+
+    def _update_saved_buttons(self) -> None:
+        has = self._saved_combo.currentIndex() >= 0
+        self._saved_remove.setEnabled(has)
+        self._saved_edit.setEnabled(has)
+
+    def _on_saved_selected(self, idx: int) -> None:
+        self._update_saved_buttons()
+        if not (0 <= idx < len(self._saved)):
+            return
+        c = self._saved[idx]
+        self._host_edit.setText(str(c["host"]))
+        self._ftp_user.setText(str(c["username"]))
+        self._ftp_pass.setText(str(c["password"]))
+        self._ftp_port_spin.setValue(int(c["ftp_port"]))
+
+    def _on_saved_add(self) -> None:
+        from Views.connection_dialogs import SavedConnectionDialog
+        seed = {"name": "", "host": self._host_edit.text().strip(),
+                "username": self._ftp_user.text().strip(), "password": self._ftp_pass.text(),
+                "ftp_port": self._ftp_port_spin.value()}
+        dlg = SavedConnectionDialog(seed, True, self)
+        if dlg.exec() != QDialog.Accepted or dlg.result_entry is None:
+            return
+        self._saved.append(dlg.result_entry)
+        self._rebind_saved(len(self._saved) - 1)
+        self._on_saved_selected(len(self._saved) - 1)
+
+    def _on_saved_edit(self) -> None:
+        from Views.connection_dialogs import SavedConnectionDialog
+        idx = self._saved_combo.currentIndex()
+        if not (0 <= idx < len(self._saved)):
+            return
+        dlg = SavedConnectionDialog(self._saved[idx], False, self)
+        if dlg.exec() != QDialog.Accepted or dlg.result_entry is None:
+            return
+        self._saved[idx] = dlg.result_entry
+        self._rebind_saved(idx)
+        self._on_saved_selected(idx)
+
+    def _on_saved_remove(self) -> None:
+        idx = self._saved_combo.currentIndex()
+        if not (0 <= idx < len(self._saved)):
+            return
+        del self._saved[idx]
+        self._rebind_saved(None)
 
     # ── Streaming tab ──────────────────────────────────────────────────────────
 
@@ -282,34 +357,6 @@ class SettingsWindow(QDialog):
         vb.addLayout(fps_row)
         vb.addWidget(_hint("Change-driven mode consumes no CPU when the instrument screen is idle. "
                            "Streaming changes take effect on the next connect."))
-
-        vb.addSpacing(12)
-        vb.addWidget(_section("Boot screen"))
-        self._disable_boot = QCheckBox("Disable boot screen graphics")
-        self._disable_boot.setToolTip(
-            "Suppresses the animated splash overlay shown while the instrument is booting. "
-            "The raw boot frames are still displayed — only the decorative overlay is removed.")
-        vb.addWidget(self._disable_boot)
-        vb.addWidget(_hint("When enabled, the animated boot splash overlay is not drawn. "
-                           "You will still see the raw instrument boot frames as they stream in."))
-
-        vb.addSpacing(8)
-        vb.addWidget(_section("Boot screen detection"))
-        boot_row = QHBoxLayout()
-        self._boot_thresh_slider = QSlider(Qt.Horizontal)
-        self._boot_thresh_slider.setRange(5, 95)
-        self._boot_thresh_slider.setTickInterval(5)
-        self._boot_thresh_slider.setSingleStep(5)
-        self._boot_thresh_lbl = QLabel("60%")
-        self._boot_thresh_lbl.setFixedWidth(50)
-        self._boot_thresh_slider.valueChanged.connect(
-            lambda v: self._boot_thresh_lbl.setText(f"{v}%"))
-        boot_row.addWidget(self._boot_thresh_slider)
-        boot_row.addWidget(self._boot_thresh_lbl)
-        vb.addLayout(boot_row)
-        vb.addWidget(_hint("Percentage of the frame that must be black before the boot splash "
-                           "overlay is displayed. Raise this value if the splash appears during "
-                           "normal use (e.g. instrument calibration mode with a dark screen). Default: 60%."))
 
         vb.addStretch()
         return w
@@ -899,8 +946,8 @@ class SettingsWindow(QDialog):
 
         # Connection
         self._host_edit.setText(s.kronos_host)
-        self._sport_spin.setValue(s.stream_port)
-        self._cport_spin.setValue(s.ctrl_port)
+        self._saved = [dict(c) for c in s.saved_connections]
+        self._rebind_saved(None)
         self._ftp_user.setText(s.ftp_username)
         self._ftp_pass.setText(s.ftp_password)
         self._ftp_port_spin.setValue(s.ftp_port)
@@ -933,9 +980,6 @@ class SettingsWindow(QDialog):
         self._stream_mode.setCurrentIndex(1 if s.pull_mode else 0)
         self._fps_slider.setValue(s.max_fps)
         self._fps_lbl.setText(f"{s.max_fps} fps")
-        self._disable_boot.setChecked(s.disable_boot_screen)
-        self._boot_thresh_slider.setValue(s.boot_screen_threshold)
-        self._boot_thresh_lbl.setText(f"{s.boot_screen_threshold}%")
 
         # View
         idx = self._default_window_size.findData(s.default_window_size)
@@ -991,8 +1035,11 @@ class SettingsWindow(QDialog):
 
         # Connection
         s.kronos_host  = self._host_edit.text().strip()
-        s.stream_port  = self._sport_spin.value()
-        s.ctrl_port    = self._cport_spin.value()
+        s.saved_connections = [dict(c) for c in self._saved]
+        # Not user-configurable: always the daemon defaults, so a value saved by an older
+        # version cannot linger without any way to see or change it.
+        s.stream_port  = AppSettings.stream_port
+        s.ctrl_port    = AppSettings.ctrl_port
         s.ftp_username = self._ftp_user.text()
         s.ftp_password = self._ftp_pass.text()
         s.ftp_port     = self._ftp_port_spin.value()
@@ -1014,8 +1061,6 @@ class SettingsWindow(QDialog):
         # Streaming
         s.pull_mode              = self._stream_mode.currentIndex() == 1
         s.max_fps                = self._fps_slider.value()
-        s.disable_boot_screen    = self._disable_boot.isChecked()
-        s.boot_screen_threshold  = self._boot_thresh_slider.value()
 
         # View
         s.default_window_size = self._default_window_size.currentData()
@@ -1416,8 +1461,9 @@ class SettingsWindow(QDialog):
         s.vga_mirror_enabled     = self._vga_mirror.isChecked()
         s.screensaver_timeout    = self._ss_spin.value()
         s.kronos_host            = self._host_edit.text().strip()
-        s.stream_port            = self._sport_spin.value()
-        s.ctrl_port              = self._cport_spin.value()
+        s.saved_connections      = [dict(c) for c in self._saved]
+        s.stream_port            = AppSettings.stream_port
+        s.ctrl_port              = AppSettings.ctrl_port
         s.ftp_username           = self._ftp_user.text()
         s.ftp_password           = self._ftp_pass.text()
         s.ftp_port               = self._ftp_port_spin.value()
@@ -1435,8 +1481,6 @@ class SettingsWindow(QDialog):
         self._save_sample_editor_fields(s)
         s.pull_mode              = self._stream_mode.currentIndex() == 1
         s.max_fps                = self._fps_slider.value()
-        s.disable_boot_screen    = self._disable_boot.isChecked()
-        s.boot_screen_threshold  = self._boot_thresh_slider.value()
         s.default_window_size    = self._default_window_size.currentData()
         s.zoom_default_level     = self._zoom_level_slider.value() / 10.0
         s.zoom_window_size       = self._zoom_win_slider.value()   / 10.0

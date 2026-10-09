@@ -607,3 +607,14 @@ available; the following offline patterns worked:
   (`KronosScreenRemote/SampleFixtures/`, `PCG EXAMPLES`) in addition to
   synthetic ones — round-trip byte-identity against real hardware-captured
   data is the strongest evidence a port is correct.
+
+**Pass 5 — 2026-10-08, naming + connection updates mirrored from C#.** The app presents itself as "Keyboard
+Screen Remote" and says "instrument" instead of "Kronos" in user-facing text (no "Korg" anywhere user-visible; the
+Sample Editor's blue panel is "KEYBOARD"). Folders, module names, the Qt application name and the data directory
+(`KronosScreenRemote`) are deliberately unchanged — renaming the data directory would orphan users' data. The
+client-side boot splash is gone entirely (the daemon composites it into the stream): `Tools/boot_phase_detector.py`,
+`Resources/BootPhase/`, `Resources/Images/BootSplash*.png`, `OverlayRenderer.draw_boot_splash`, the two
+`boot_*` settings and their Settings controls were removed; the daemon's `BOOT=` gate (`_daemon_booting`) stays.
+Settings > Connection gained **Saved connections** (`saved_connections`: list of dicts name/host/username/password/
+ftp_port; `Views/connection_dialogs.SavedConnectionDialog`; test `tests/test_saved_connections.py`) and no longer
+exposes Stream/Control port — OK/Apply force 7373/7374 (`--port`/`--ctrl` still override for a session).

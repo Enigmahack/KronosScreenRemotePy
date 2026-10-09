@@ -471,7 +471,7 @@ def decode_midi(msg: bytes, max_hex_bytes: Optional[int] = None) -> str:
         suffix = "" if max_hex_bytes is None or len(msg) <= max_hex_bytes else \
             f" … (+{len(msg) - max_hex_bytes} bytes)"
         if len(msg) >= 5 and msg[1] == 0x42 and (msg[2] & 0xF0) == 0x30 and msg[3] == 0x68:
-            return f"SysEx Korg func={msg[4]:02X} [{len(msg)}B]  [{raw}{suffix}]"
+            return f"SysEx func={msg[4]:02X} [{len(msg)}B]  [{raw}{suffix}]"
         return f"SysEx [{len(msg)}B]  [{raw}{suffix}]"
 
     hexs = f"[{bytes_to_hex(msg)}]"

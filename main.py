@@ -94,7 +94,7 @@ def _offer_migration(parent) -> None:
     if old is None:
         return
     answer = QMessageBox.question(
-        parent, "Kronos ScreenRemote — data directory",
+        parent, "Keyboard Screen Remote — data directory",
         f"This app's data used to live in:\n    {old}\n\n"
         f"That location can no longer be written to, so it is now using:\n"
         f"    {storage.data_dir()}\n\n"
@@ -115,11 +115,11 @@ def _offer_migration(parent) -> None:
         QApplication.restoreOverrideCursor()
 
     if errors:
-        QMessageBox.warning(parent, "Kronos ScreenRemote — data directory",
+        QMessageBox.warning(parent, "Keyboard Screen Remote — data directory",
                             f"Copied {copied} file(s), but some items failed:\n\n"
                             + "\n".join(errors[:10]))
     else:
-        QMessageBox.information(parent, "Kronos ScreenRemote — data directory",
+        QMessageBox.information(parent, "Keyboard Screen Remote — data directory",
                                 f"Copied {copied} file(s) to {storage.data_dir()}.")
 
 
@@ -137,7 +137,7 @@ def _parse_data_dir_arg() -> None:
 
 
 def _parse_args(settings: AppSettings) -> AppSettings:
-    p = argparse.ArgumentParser(description="Kronos ScreenRemote")
+    p = argparse.ArgumentParser(description="Keyboard Screen Remote")
     p.add_argument("host", nargs="?", default="", help="Instrument host/IP")
     p.add_argument("--data-dir", default="",
                    help="Directory for settings, caches and the local library "
@@ -200,7 +200,7 @@ def main():
     # Prompt for host if none configured
     if not settings.kronos_host:
         text, ok = QInputDialog.getText(
-            None, "Kronos ScreenRemote",
+            None, "Keyboard Screen Remote",
             "Enter instrument host/IP address:",
             text="192.168.100.15")
         if ok and text.strip():

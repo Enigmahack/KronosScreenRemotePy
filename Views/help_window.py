@@ -264,9 +264,10 @@ def _build_html() -> str:
         _h1("Settings"),
         _p("Open <b>Settings → Settings…</b> for full configuration:"),
         _kbd_table(
-            _kb_row("Instrument Host",            "IP address of the instrument."),
-            _kb_row("Stream Port",            "TCP port for the screen stream (default: 7373)."),
-            _kb_row("Ctrl Port",              "TCP port for control commands (default: 7374)."),
+            _kb_row("Saved connections",      "<b>Settings → Connection</b>: <b>+</b> saves a named entry (IP address and FTP "
+                                              "login), <b>-</b> removes it, <b>Edit…</b> changes it. Choosing an entry "
+                                              "fills in the IP address, FTP username, password and port."),
+            _kb_row("Instrument IP address",  "IP address of the instrument."),
             _kb_row("Change / Pull mode",     "Change: stream only when the instrument screen updates (recommended). "
                                               "Pull: poll at a fixed FPS; uses slightly more instrument CPU."),
             _kb_row("Max FPS",                "Frame-rate cap for Pull mode (1–15 fps)."),
@@ -285,7 +286,7 @@ def _build_html() -> str:
                                               "and the FTP login that last worked for each."),
             _kb_row("Zoom Default Level",     "Initial magnification when the zoom window opens (2.5× – 10×)."),
             _kb_row("Zoom Window Size",       "Size of the zoom inset window as a fraction of the frame area."),
-            _kb_row("Keybindings",            "Rebind any shortcut listed in the Keyboard Shortcuts section above."),
+            _kb_row("Key Bindings",           "Rebind any shortcut listed in the Keyboard Shortcuts section above."),
             _kb_row("Librarian tab",          "Merge behavior, duplicate handling, <b>Full sync on launch</b> and "
                                               "<b>Force destructive write</b> — see the Librarian section below."),
             _kb_row("Sample Editor tab",      "Playback output device, and where a newly created zone goes."),
@@ -482,7 +483,7 @@ def _build_html() -> str:
 class HelpWindow(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Kronos ScreenRemote — Help")
+        self.setWindowTitle("Keyboard Screen Remote — Help")
         self.setMinimumSize(600, 520)
         self.resize(680, 640)
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)

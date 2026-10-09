@@ -1915,7 +1915,7 @@ class LibrarianShellWindow(QDialog):
         if not missing:
             return [], ""
         path, _ = QFileDialog.getOpenFileName(self, _MSG_SCAN_DIALOG_TITLE, "",
-                                              "Korg PCG Files (*.pcg *.PCG);;All Files (*)")
+                                              "PCG Files (*.pcg *.PCG);;All Files (*)")
         if not path:
             return [], ""
         file_name = os.path.basename(path)
@@ -2991,7 +2991,7 @@ class LibrarianShellWindow(QDialog):
             self._local_status_label.setText("Nothing missing - every dependency already resolves.")
             return
         path, _ = QFileDialog.getOpenFileName(
-            self, "Scan a PCG for missing dependencies", "", "Korg PCG Files (*.pcg *.PCG)")
+            self, "Scan a PCG for missing dependencies", "", "PCG Files (*.pcg *.PCG)")
         if not path:
             return
         try:

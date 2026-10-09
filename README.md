@@ -1,8 +1,8 @@
-# KronosScreenRemotePy
+# Keyboard Screen Remote (Python)
 
-A Python application for remotely viewing and controlling a **Korg Kronos** synthesizer over Ethernet. It streams the Kronos display in real time, forwards touch/button input back to the device, and provides supplementary tools for file management, audio monitoring, and local display calibration.
+A Python application for remotely viewing and controlling a **Kronos** or **Nautilus** over Ethernet. It streams the instrument display in real time, forwards touch/button input back to the device, and provides supplementary tools for file management, audio monitoring, and local display calibration.
 
-> **Note:** This application requires the companion daemon running on the Kronos hardware.
+> **Note:** This application requires the companion daemon running on the instrument.
 > See [KronosScreenRemoteDaemon](https://github.com/Enigmahack/KronosScreenRemoteDaemon) for setup instructions.
 
 | Repository | Description |
@@ -51,7 +51,6 @@ A Python application for remotely viewing and controlling a **Korg Kronos** synt
 - **Librarian** — Program/Combi/Set-List slot move-and-swap tool with referrer-aware relocation, plus a full **Local Library**: an offline-first, dependency-aware mirror of the Kronos's banks (pull from hardware or a `.pcg` file, stage and dedup via a content-addressed merge cache, place into a local library, then Sync/Commit back to hardware) — see [Local Library](#local-library) below. **Ctrl+Z undo** rolls back every LOCAL (pre-Commit) edit; a successful Sync/Commit clears the stack. Merge→Local placement dedups byte-identical content (per-type toggle in Settings → Librarian). Category/Sub-Category in the Properties dialog show the real names from the Global object when synced.
 - **Set List Viewer** — Decoded Set List contents with real hardware slot colors
 - **Image Adjustments** — Tone (brightness / contrast / gamma) and saturation curves plus 3×3 unsharp-mask sharpening, applied to the streamed frame via the palette color table
-- **Boot Phase Detection** — Reference-image detection of the Kronos boot loading phase, with client-side boot splash overlay when the daemon isn't compositing
 - **Input Tester** — Maps host keys to raw Kronos keycodes and records observed hardware behavior (Tools menu)
 - **Command Palette** (Ctrl+K) — Live filter-as-you-type launcher for every rebindable action
 - **Sequencer Transport + Tap Tempo** — Footer transport row (Locate/Rewind/Fast-Forward/Pause/Record/Start, Write/Save) and tap-tempo, each also reachable via keybind
@@ -65,7 +64,7 @@ A Python application for remotely viewing and controlling a **Korg Kronos** synt
 |---|---|
 | Python | 3.12+ |
 | OS | Windows 10/11, macOS, or Linux (Windows recommended) |
-| Network | Ethernet connection to a Korg Kronos with the companion daemon installed |
+| Network | Ethernet connection to a Kronos or Nautilus with the companion daemon installed |
 
 ---
 
@@ -204,7 +203,7 @@ KronosScreenRemotePy/
   Commands/     command_palette.py (Ctrl+K launcher), batch_clipboard.py,
                 session_dependency_clipboard.py
 
-  Tools/        file_manager.py, mode_detector.py, boot_phase_detector.py,
+  Tools/        file_manager.py, mode_detector.py,
                 setlist_data.py, sysex_dump_collector.py, dependency_scanner.py
 
   Utils/        theme.py, image_adjust.py, key_map.py, char_map.py
@@ -235,12 +234,12 @@ for the fuller architecture writeup.
 
 ---
 
-## Connecting to a Kronos
+## Connecting to an Instrument
 
-1. Ensure the Kronos is connected to your local network and its **Global > Ethernet** settings have a valid IP address.
-2. Launch **KronosScreenRemotePy** and enter the Kronos IP in the connection dialog.
-3. The application connects on **TCP 7373** (screen stream) and **TCP 7374** (control commands).
-4. FTP access uses port **21** (configurable in Settings) with the credentials configured on the Kronos.
+1. Ensure the instrument is connected to your local network and its **Global > Ethernet** settings have a valid IP address.
+2. Launch **Keyboard Screen Remote**, open **Settings → Connection**, and enter the instrument IP address (or choose a Saved connection).
+3. The application connects on **TCP 7373** (screen stream) and **TCP 7374** (control commands); these ports are fixed.
+4. FTP access uses port **21** (configurable in Settings) with the credentials configured on the instrument.
 5. On first connect you will be prompted for FTP credentials; these are saved for subsequent sessions.
 
 ---

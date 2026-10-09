@@ -430,8 +430,6 @@ def load_settings() -> AppSettings:
         s.layout_preset          = root.get("layout_preset",          s.layout_preset)
         s.focused_data_expanded  = root.get("focused_data_expanded",  s.focused_data_expanded)
         s.focused_value_expanded = root.get("focused_value_expanded", s.focused_value_expanded)
-        s.boot_screen_threshold  = root.get("boot_screen_threshold",  s.boot_screen_threshold)
-        s.disable_boot_screen    = root.get("disable_boot_screen",    s.disable_boot_screen)
         s.zoom_default_level     = float(root.get("zoom_default_level", s.zoom_default_level))
         s.zoom_window_size       = float(root.get("zoom_window_size",   s.zoom_window_size))
         s.scaling_quality        = root.get("scaling_quality",         s.scaling_quality)
@@ -454,6 +452,19 @@ def load_settings() -> AppSettings:
                                                         s.merge_preserve_duplicate_combis)
         s.merge_behavior        = root.get("merge_behavior",         s.merge_behavior)
         s.recent_hosts           = list(root.get("recent_hosts",      []))
+        s.saved_connections = []
+        for c in root.get("saved_connections", []):
+            if not isinstance(c, dict) or not str(c.get("host", "")).strip():
+                continue
+            try:
+                port = int(c.get("ftp_port", 21))
+            except (TypeError, ValueError):
+                port = 21
+            s.saved_connections.append({
+                "name": str(c.get("name", "")) or str(c.get("host", "")),
+                "host": str(c.get("host", "")).strip(),
+                "username": str(c.get("username", "")), "password": str(c.get("password", "")),
+                "ftp_port": port if 0 < port <= 65535 else 21})
         for name in _SCALAR_FIELDS:
             default = getattr(s, name)
             v = root.get(name, default)
@@ -524,8 +535,6 @@ def save_settings(s: AppSettings):
             "layout_preset":          s.layout_preset,
             "focused_data_expanded":  s.focused_data_expanded,
             "focused_value_expanded": s.focused_value_expanded,
-            "boot_screen_threshold":  s.boot_screen_threshold,
-            "disable_boot_screen":    s.disable_boot_screen,
             "zoom_default_level":     s.zoom_default_level,
             "zoom_window_size":       s.zoom_window_size,
             "scaling_quality":        s.scaling_quality,
@@ -546,6 +555,7 @@ def save_settings(s: AppSettings):
             "merge_preserve_duplicate_combis":   s.merge_preserve_duplicate_combis,
             "merge_behavior":         s.merge_behavior,
             "recent_hosts":           s.recent_hosts,
+            "saved_connections":      s.saved_connections,
             "host_credentials":       s.host_credentials,
             "window_placements":      s.window_placements,
             "sample_recent_files":    s.sample_recent_files,

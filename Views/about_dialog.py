@@ -14,13 +14,13 @@ from PySide6.QtWidgets import (
 import Utils.theme as T
 
 APP_VERSION = "2.0.0"
-APP_NAME    = "Kronos ScreenRemote (Python)"
+APP_NAME    = "Keyboard Screen Remote (Python)"
 
 
 class AboutDialog(QDialog):
     def __init__(self, host: str, ctrl_port: int, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("About Kronos ScreenRemote")
+        self.setWindowTitle("About Keyboard Screen Remote")
         self.setMinimumWidth(400)
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
         self._host      = host
@@ -37,7 +37,7 @@ class AboutDialog(QDialog):
         title.setAlignment(Qt.AlignCenter)
         layout.addWidget(title)
 
-        subtitle = QLabel("Cross-platform remote display for the Korg Kronos synthesizer.")
+        subtitle = QLabel("Cross-platform remote display for the Kronos and Nautilus.")
         subtitle.setAlignment(Qt.AlignCenter)
         subtitle.setWordWrap(True)
         layout.addWidget(subtitle)

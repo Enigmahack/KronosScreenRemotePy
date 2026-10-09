@@ -71,7 +71,6 @@ Analysis and processing tools:
 - `sysex_dump_collector.py` - SysEx dump collection
 - `dependency_scanner.py` - Dependency analysis
 - `mode_detector.py` - Mode detection
-- `boot_phase_detector.py` - Boot phase detection
 - `file_manager.py` - File management utilities
 - `setlist_data.py` - Set list data utilities
 

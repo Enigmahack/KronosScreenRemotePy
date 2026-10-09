@@ -494,10 +494,10 @@ class SampleEditorWindow(QMainWindow):
         lay.addLayout(_flow(_label("Name:"), self._name_text, _label("Frames:"), self._frames_text,
                             _label("Sample Rate:"), self._rate_box, self._warning))
 
-        # KRONOS panel — fields written into the .KSF and reflected on the hardware once pushed.
-        kp, kl = _panel("INSTRUMENT", "kronos")
+        # KEYBOARD panel — fields written into the .KSF and reflected on the hardware once pushed.
+        kp, kl = _panel("KEYBOARD", "kronos")
         self._reverse_box = QCheckBox("Reverse")
-        self._reverse_box.setToolTip("The instrument Reverse flag - reverses playback direction, doesn't touch the audio data")
+        self._reverse_box.setToolTip("The keyboard Reverse flag - reverses playback direction, doesn't touch the audio data")
         self._boost_box = QCheckBox("+12dB Boost")
         self._boost_box.setToolTip("Sample-level +12dB gain boost")
         self._loop_box = QCheckBox("Loop Enabled")
@@ -1559,17 +1559,17 @@ class SampleEditorWindow(QMainWindow):
     # ── file / collection handlers ─────────────────────────────────────────────────────────
 
     def on_open_collection(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Open Collection", "", "Korg KSC Files (*.KSC *.ksc);;All Files (*)")
+        path, _ = QFileDialog.getOpenFileName(self, "Open Collection", "", "KSC Files (*.KSC *.ksc);;All Files (*)")
         if path:
             self.open_collection_path(path)
 
     def on_open_kmp(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Open Multisample", "", "Korg KMP Files (*.KMP *.kmp);;All Files (*)")
+        path, _ = QFileDialog.getOpenFileName(self, "Open Multisample", "", "KMP Files (*.KMP *.kmp);;All Files (*)")
         if path:
             self.open_kmp_path(path)
 
     def on_new_collection(self) -> None:
-        path, _ = QFileDialog.getSaveFileName(self, "New Collection", "", "Korg KSC Files (*.KSC);;All Files (*)")
+        path, _ = QFileDialog.getSaveFileName(self, "New Collection", "", "KSC Files (*.KSC);;All Files (*)")
         if path:
             self._model.new_collection(path)
             self._select_first_root()
@@ -1577,7 +1577,7 @@ class SampleEditorWindow(QMainWindow):
 
     def on_save_collection_as(self, owning_path: str) -> None:
         path, _ = QFileDialog.getSaveFileName(self, "Save Collection As", os.path.basename(owning_path),
-                                              "Korg KSC Files (*.KSC);;All Files (*)")
+                                              "KSC Files (*.KSC);;All Files (*)")
         if not path:
             return
         self._model.save_collection_as(path)
@@ -1768,7 +1768,7 @@ class SampleEditorWindow(QMainWindow):
         self._after_keep_multisample(lambda: self._model.import_stereo_audio_as_new_zone_pair(path, *keys))
 
     def on_new_zone_from_ksf(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "New Zone from Existing Sample", "", "Korg KSF Files (*.KSF *.ksf);;All Files (*)")
+        path, _ = QFileDialog.getOpenFileName(self, "New Zone from Existing Sample", "", "KSF Files (*.KSF *.ksf);;All Files (*)")
         if not path:
             return
         keys = self._prompt_zone_keys()
