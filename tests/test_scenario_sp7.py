@@ -12,7 +12,7 @@ import Core.sample_ftp as ftp
 from Data.ksc_collection import KscCollection
 from Data.kmp_multisample import KmpMultisample, KmpZone
 from Data.ksf_sample import KsfSample
-from pipeline_fakes import FaultyFtp
+from pipeline_fakes import SERVERS
 
 fails = []
 
@@ -53,16 +53,17 @@ with tempfile.TemporaryDirectory(prefix="kr_sp7_") as tmp:
     new = {f"{DEST}/{k}": v for k, v in snapshot(new_root).items()}
     check("fixture-old-new-differ", all(old[k] != new[k] for k in old if k.endswith(".KSF")))
 
-    for overwrite in (True, False):
+    for server, overwrite in [(n, o) for n in SERVERS for o in (True, False)]:
+        FaultyFtp = SERVERS[server]
         clean = FaultyFtp(old, overwrite=overwrite)
-        check(f"overwrite={overwrite} clean-push-no-failures", ftp.push_closure(clean, str(new_ksc), new_col, DEST) == [])
-        check(f"overwrite={overwrite} clean-push-new-content", all(clean.files.get(k) == v for k, v in new.items()))
-        check(f"overwrite={overwrite} clean-push-nothing-left-behind", sorted(clean.files) == sorted(new))
+        check(f"{server} overwrite={overwrite} clean-push-no-failures", ftp.push_closure(clean, str(new_ksc), new_col, DEST) == [])
+        check(f"{server} overwrite={overwrite} clean-push-new-content", all(clean.files.get(k) == v for k, v in new.items()))
+        check(f"{server} overwrite={overwrite} clean-push-nothing-left-behind", sorted(clean.files) == sorted(new))
         n_ops = clean.ops
 
         for dead in (True, False):
             for i in range(n_ops):
-                tag = f"push overwrite={overwrite} dead={dead} op={i}"
+                tag = f"push {server} overwrite={overwrite} dead={dead} op={i}"
                 f = FaultyFtp(old, fail_at=i, dead=dead, overwrite=overwrite)
                 failures = ftp.push_closure(f, str(new_ksc), new_col, DEST)
                 # silent success is only legitimate when a retry absorbed a one-off error (deleting the replaced
@@ -79,30 +80,33 @@ with tempfile.TemporaryDirectory(prefix="kr_sp7_") as tmp:
                     check(f"{tag}: no leftover .part/.old", not [p for p in f.files if p.endswith((".part", ".old"))])
 
     # pull
-    remote = FaultyFtp(new)
-    with tempfile.TemporaryDirectory(prefix="kr_sp7_pull_") as d:
-        _, mapping, failures = ftp.pull(remote, f"{DEST}/Show.KSC", d)
-        check("clean-pull-no-failures", failures == [])
-        pull_ops = remote.ops
-    for dead in (True, False):
-        for i in range(pull_ops):
-            tag = f"pull dead={dead} op={i}"
-            with tempfile.TemporaryDirectory(prefix="kr_sp7_pull_") as d:
-                f = FaultyFtp(new, fail_at=i, dead=dead)
-                try:
-                    _, mapping, failures = ftp.pull(f, f"{DEST}/Show.KSC", d)
-                except ConnectionError:
-                    mapping, failures = {}, ["raised"]
-                    check(f"{tag}: entry-file failure raised cleanly", True)
-                check(f"{tag}: failure reported", bool(failures))
-                local = snapshot(d)
-                check(f"{tag}: no .part left", not [k for k in local if k.endswith(".part")])
-                for lp, rp in mapping.items():
-                    check(f"{tag}: mapped file complete", Path(lp).read_bytes() == new[rp])
-                for k, v in local.items():
-                    check(f"{tag}: local {k} complete", v == new[DEST + "/" + k.split("SSD2/Show/", 1)[-1]] if "SSD2/Show/" in k else True)
+    for server in SERVERS:
+        FaultyFtp = SERVERS[server]
+        remote = FaultyFtp(new)
+        with tempfile.TemporaryDirectory(prefix="kr_sp7_pull_") as d:
+            _, mapping, failures = ftp.pull(remote, f"{DEST}/Show.KSC", d)
+            check(f"{server} clean-pull-no-failures", failures == [])
+            pull_ops = remote.ops
+        for dead in (True, False):
+            for i in range(pull_ops):
+                tag = f"pull {server} dead={dead} op={i}"
+                with tempfile.TemporaryDirectory(prefix="kr_sp7_pull_") as d:
+                    f = FaultyFtp(new, fail_at=i, dead=dead)
+                    try:
+                        _, mapping, failures = ftp.pull(f, f"{DEST}/Show.KSC", d)
+                    except ConnectionError:
+                        mapping, failures = {}, ["raised"]
+                        check(f"{tag}: entry-file failure raised cleanly", True)
+                    check(f"{tag}: failure reported", bool(failures))
+                    local = snapshot(d)
+                    check(f"{tag}: no .part left", not [k for k in local if k.endswith(".part")])
+                    for lp, rp in mapping.items():
+                        check(f"{tag}: mapped file complete", Path(lp).read_bytes() == new[rp])
+                    for k, v in local.items():
+                        check(f"{tag}: local {k} complete", v == new[DEST + "/" + k.split("SSD2/Show/", 1)[-1]] if "SSD2/Show/" in k else True)
 
-print(f"{n_ops} push ops x2 servers x2 modes, {pull_ops} pull ops x2 modes; {len(fails)} violations")
+
+print(f"{n_ops} push ops x4 server modes x2 modes, {pull_ops} pull ops x2 modes; {len(fails)} violations")
 for n in fails[:12]:
     print("  FAIL " + n)
 sys.exit(1 if fails else 0)

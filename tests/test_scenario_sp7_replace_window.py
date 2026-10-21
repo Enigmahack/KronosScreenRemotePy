@@ -13,7 +13,7 @@ os.environ.setdefault("KRONOS_DATA_DIR", tempfile.mkdtemp(prefix="kr_data_"))
 import logging; logging.disable(logging.CRITICAL)
 from pathlib import Path
 import Core.sample_ftp as ftp
-from pipeline_fakes import FaultyFtp
+from pipeline_fakes import SERVERS
 
 REMOTE = "/SSD2/Show/MS001000.KSF"
 OLD, NEW = b"OLD" * 100, b"NEW" * 100
@@ -22,15 +22,16 @@ n = 0
 with tempfile.TemporaryDirectory(prefix="kr_sp7w_") as tmp:
     local = Path(tmp) / "MS001000.KSF"
     local.write_bytes(NEW)
-    for overwrite in (True, False):
+    for server, overwrite in [(n, o) for n in SERVERS for o in (True, False)]:
+        FaultyFtp = SERVERS[server]
         probe = FaultyFtp({REMOTE: OLD}, overwrite=overwrite)
         ftp._upload_one(probe, str(local), REMOTE, None, [])
         if probe.files.get(REMOTE) != NEW or len(probe.files) != 1:
-            bad.append(f"overwrite={overwrite}: clean replace left {sorted(probe.files)}")
+            bad.append(f"{server} overwrite={overwrite}: clean replace left {sorted(probe.files)}")
         for dead in (True, False):
             for i in range(probe.ops):
                 n += 1
-                tag = f"overwrite={overwrite} dead={dead} op={i}"
+                tag = f"{server} overwrite={overwrite} dead={dead} op={i}"
                 f = FaultyFtp({REMOTE: OLD}, fail_at=i, dead=dead, overwrite=overwrite)
                 failures = []
                 ftp._upload_one(f, str(local), REMOTE, None, failures)

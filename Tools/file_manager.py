@@ -401,16 +401,18 @@ class _FtpWorker:
         self._ftp.mkd(path)
 
     def file_exists(self, path: str) -> bool:
+        """True when `path` is listed in its parent folder. Goes through list_dir, which falls back to LIST
+        because the Kronos answers MLSD with 500 (an MLSD-only check was always False there, so the File
+        Manager never saw a name collision and the sample push never saw the file it was replacing). A parent
+        folder that doesn't exist (a 550) means the file doesn't either; a dropped connection or timeout is not
+        "absent" and propagates."""
         self.ensure_connected()
         parent = _ftp_parent(path)
-        name = path.rsplit("/", 1)[-1]
+        name = path.rstrip("/").rsplit("/", 1)[-1]
         try:
-            for n, _ in self._ftp.mlsd(parent):
-                if n == name:
-                    return True
-        except Exception:
-            pass
-        return False
+            return any(e.name == name for e in self.list_dir(parent))
+        except ftplib.error_perm:
+            return False
 
 
 def _safe_local_join(local_dir: str, name: str) -> Optional[str]:
