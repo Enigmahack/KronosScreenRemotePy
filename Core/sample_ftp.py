@@ -98,6 +98,12 @@ def _upload_one(ftp: _FtpWorker, local_path: str, remote_path: str,
 
 
 def _promote(ftp: _FtpWorker, part: str, remote_path: str, aside: str) -> None:
+    # HW-VERIFY: whether the Kronos FTP server accepts RNTO over an existing file is unverified on hardware.
+    # The C# push (SampleFtpPush / KronosRemoteSampleSource) deletes the old file before renaming, which hints
+    # the server may refuse an overwrite (the pre-4f08dc7 Python code did the same). Probe once on a scratch
+    # file: STOR a.part and b, then RNFR a.part / RNTO b. If it is refused, the swap-aside branch below is the
+    # normal path on the unit and must be exercised end to end (including the .old cleanup); if it succeeds the
+    # branch is only a fallback.
     try:
         ftp.rename(part, remote_path)  # already guards top-level-volume + path-length
         return
@@ -110,11 +116,22 @@ def _promote(ftp: _FtpWorker, part: str, remote_path: str, aside: str) -> None:
     try:
         ftp.rename(part, remote_path)
     except Exception as ex:
+        # The reply may have been lost after the new file landed; renaming the old one back over it would
+        # silently throw the new bytes away, so only put the old file back when the final path is verifiably empty.
         try:
-            ftp.rename(aside, remote_path)
+            landed = ftp.file_exists(remote_path)
         except Exception:
-            raise OSError(f"{ex}; the previous version is still on the instrument as {aside}") from ex
-        raise
+            landed = None
+        if landed is False:
+            try:
+                ftp.rename(aside, remote_path)
+            except Exception:
+                raise OSError(f"{ex}; the previous version is still on the instrument as {aside}") from ex
+            raise
+        if landed:
+            raise OSError(f"{ex}; {remote_path} now holds a file (most likely the new one) and the previous "
+                          f"version is kept as {aside}") from ex
+        raise OSError(f"{ex}; the previous version is kept as {aside} - check whether {remote_path} exists") from ex
     try:
         ftp.delete_file(aside)
     except Exception:
