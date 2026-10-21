@@ -1,0 +1,2 @@
+-r requirements.txt
+coverage>=7.6   # pipeline/run.py --cov: changed-line coverage gaps

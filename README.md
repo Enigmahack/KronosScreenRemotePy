@@ -97,7 +97,7 @@ python -m venv .venv
 # macOS / Linux
 source .venv/bin/activate
 
-# Install dependencies
+# Install dependencies (add -dev for the test pipeline: requirements-dev.txt also installs coverage)
 pip install -r requirements.txt
 
 # Run
@@ -135,6 +135,21 @@ An existing install that already keeps its data in the program folder carries on
 using it, unchanged, for as long as that folder stays writable. If it stops being
 writable, the app moves to the per-user directory and offers, once, to copy the
 old data across (the originals are never deleted).
+
+### Test pipeline
+
+A new environment needs `pip install -r requirements-dev.txt` (adds `coverage`; the runner itself is stdlib-only
+and works without it, minus the coverage report). One-time per clone, enable the commit gate:
+`git config core.hooksPath pipeline/hooks`.
+
+- `python pipeline/run.py` - tier 0: changed files -> syntax, layering (lower packages must not import `Views`),
+  affected tests. Prints a few-line digest; full logs are in `pipeline/out/` (gitignored).
+- `python pipeline/run.py --tier 1` - every test script plus `regress.py`, before merging.
+- `python pipeline/run.py --cov` - also lists changed lines that no selected test executed.
+- `python pipeline/run.py --update-baseline` - accept current failures as known (listed in `pipeline/baseline.json`).
+- The pre-commit hook runs tier 0 on the staged files and blocks only on *new* failures.
+- `tests/live_*.py` need a real instrument and are never run by the pipeline.
+- Persona scenarios (`pipeline/personas/`) map to `tests/test_scenario_*.py`; reviewer agents are in `.claude/agents/`.
 
 ### Regression checks
 

@@ -1,0 +1,9 @@
+#!/bin/sh
+# Tier-0 pipeline on the staged files. Enabled by: git config core.hooksPath pipeline/hooks
+cd "$(git rev-parse --show-toplevel)" || exit 1
+PY=$(command -v python || command -v python3)
+[ -n "$PY" ] || { echo "pipeline: no python on PATH, hook skipped"; exit 0; }
+"$PY" pipeline/run.py --staged || {
+  echo "pipeline: commit blocked by the digest above (git commit --no-verify only for a known false alarm)"
+  exit 1
+}

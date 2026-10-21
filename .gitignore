@@ -12,3 +12,4 @@ blank_templates/
 librarian_backups/
 *.log
 
+pipeline/out/
