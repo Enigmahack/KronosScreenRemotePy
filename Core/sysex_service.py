@@ -276,6 +276,10 @@ class SysExService(QObject):
             self._dump = SysExDumpCollector(self._bridge, self._codec)
 
     @property
+    def is_nautilus(self) -> bool:
+        return self._codec is nsx
+
+    @property
     def bridge(self) -> Optional[MidiBridgeClient]:
         return self._bridge
 

@@ -20,6 +20,7 @@ file header for the corpus evidence):
 """
 from __future__ import annotations
 
+import enum
 from dataclasses import dataclass
 from typing import Dict, Iterator, List, Optional, Tuple
 
@@ -69,6 +70,35 @@ def dedup_key(uuid: bytes) -> str:
     masked = bytearray(uuid)
     masked[15] &= 0xFE
     return masked.hex().upper()
+
+
+class RefClass(enum.Enum):
+    NOTHING = "nothing"
+    ROM = "rom"
+    RAM = "ram"
+    EXS = "exs"
+    RAW_UUID = "raw_uuid"
+
+
+@dataclass(frozen=True)
+class ClassifiedRef:
+    kind: RefClass
+    exs_number: int = 0
+    raw_uuid_hex: str = ""
+
+
+def classify(uuid: bytes) -> ClassifiedRef:
+    """Unlike _classify_legacy_uuid this keeps ROM and empty refs, so a converter can act on them."""
+    if _is_all_zero(uuid):
+        return ClassifiedRef(RefClass.NOTHING)
+    if _is_legacy_form(uuid):
+        bank = uuid[15] >> 1
+        if bank == 0:
+            return ClassifiedRef(RefClass.ROM)
+        if bank == 1:
+            return ClassifiedRef(RefClass.RAM)
+        return ClassifiedRef(RefClass.EXS, exs_number=bank - 1)
+    return ClassifiedRef(RefClass.RAW_UUID, raw_uuid_hex=dedup_key(uuid))
 
 
 def _classify_legacy_uuid(uuid: bytes) -> Optional[Tuple[str, str, str]]:

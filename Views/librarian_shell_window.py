@@ -191,7 +191,7 @@ from PySide6.QtGui import QActionGroup, QBrush, QColor, QDrag, QIcon, QPainter, 
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QFrame, QMenu, QToolButton, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
     QGraphicsOpacityEffect, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget,
-    QListWidgetItem, QMenu, QMessageBox, QProgressBar, QPushButton, QSpinBox, QSplitter,
+    QInputDialog, QListWidgetItem, QMenu, QMessageBox, QProgressBar, QPushButton, QSpinBox, QSplitter,
     QStackedLayout, QStyle, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -228,6 +228,8 @@ from Commands.session_dependency_clipboard import SessionDependencyClipboard, Se
 from Utils.setlist_colors import ALL_COLORS as SETLIST_COLORS, get_by_index_or_default as setlist_color
 from Tools.setlist_data import MAX_COUNT
 import Models.storage
+from Conversion.push import (CONVERTIBLE_TYPES, ConvertItem, ConvertTables, ItemReport,
+                             bank_label as nautilus_bank_label, dest_label, push_converted)
 from Core.sysex_service import SysExService
 import Utils.theme as T
 
@@ -616,8 +618,10 @@ class _DestinationDialog(QDialog):
     swap's destination. Set List has no bank concept (matches ObjLoc/BankId
     convention throughout this subsystem)."""
 
-    def __init__(self, obj_type: int, heading: str, parent=None):
+    def __init__(self, obj_type: int, heading: str, parent=None, default: Optional[Tuple[int, int]] = None,
+                 bank_label=None):
         super().__init__(parent)
+        label_of = bank_label or (lambda b: object_types.label_for(obj_type, b))
         self.setWindowTitle(heading)
         self.setStyleSheet(f"QDialog {{ background-color: {T.BG}; color: {T.TEXT}; }}")
         v = QVBoxLayout(self)
@@ -627,7 +631,7 @@ class _DestinationDialog(QDialog):
         self._obj_type = obj_type
         if obj_type != OBJ_SET_LIST:
             for b in EDITABLE_BANKS[obj_type]:
-                self._bank_combo.addItem(object_types.label_for(obj_type, b), b)
+                self._bank_combo.addItem(label_of(b), b)
         else:
             self._bank_combo.addItem("Set Lists", 0)
             self._bank_combo.setEnabled(False)
@@ -638,7 +642,11 @@ class _DestinationDialog(QDialog):
         row.addWidget(self._number_spin)
         # Slot count is per BANK for Drum Kit / Wave Sequence (INT and User differ).
         self._bank_combo.currentIndexChanged.connect(self._sync_number_range)
+        if default is not None and self._bank_combo.findData(default[0]) >= 0:
+            self._bank_combo.setCurrentIndex(self._bank_combo.findData(default[0]))
         self._sync_number_range()
+        if default is not None:
+            self._number_spin.setValue(default[1])
         v.addLayout(row)
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         btns.accepted.connect(self.accept)
@@ -1114,6 +1122,7 @@ class LibrarianShellWindow(QDialog):
     _sync_done = Signal(object, object, object, str)     # PullResult|None, ChangesetPlan|None, SyncResult|None, status
     _merge_pull_done = Signal(int, int, str)              # added, gaps, status
     _progress = Signal(str)
+    _convert_done = Signal(object, str)                   # [ItemReport], backup path
     _sysex_probe_done = Signal(bool)                      # True = the Kronos answered a digest
     # PCG-from-Kronos pull, emitted from the FTP worker thread — Qt marshals both
     # to the GUI thread, which is the only thread allowed to touch the dialogs.
@@ -1246,6 +1255,7 @@ class LibrarianShellWindow(QDialog):
 
         self._build_ui()
         self._sync_done.connect(self._on_sync_done)
+        self._convert_done.connect(self._on_convert_done)
         self._merge_pull_done.connect(self._on_merge_pull_done)
         self._progress.connect(self._log)
         self._progress.connect(self._status_label.setText)
@@ -1653,6 +1663,7 @@ class LibrarianShellWindow(QDialog):
         menu.addAction("More Info...", self._show_pcg_properties)
         menu.addSeparator()
         menu.addAction("Move to Merge Window", self._pull_pcg_selected_into_merge)
+        menu.addAction("Convert to Nautilus...", lambda: self._convert_to_nautilus("pcg"))
         self._add_expand_collapse(menu, self._tree_pcg, item)
         menu.exec(self._tree_pcg.viewport().mapToGlobal(local_pos))
 
@@ -2915,6 +2926,7 @@ class LibrarianShellWindow(QDialog):
         a_move = menu.addAction("Move to Merge Window", self._stage_local_selected_to_merge)
         a_move.setToolTip("Stage this (and its dependencies) in the Merge Window to rearrange "
                           "and push it somewhere else.")
+        menu.addAction("Convert to Nautilus...", lambda: self._convert_to_nautilus("local"))
         if is_leaf and payload[1] in (OBJ_PROGRAM, OBJ_COMBI, OBJ_SET_LIST):
             a_scan = menu.addAction("Scan PCG for dependencies...", self._scan_dependencies_for_selected)
             a_scan.setToolTip("Pick a .pcg file and stage whatever it holds of this object's "
@@ -3847,6 +3859,103 @@ class LibrarianShellWindow(QDialog):
             return
         dest_bank, start_slot = dlg.selected()
         self._run_sequential_fill(seq_items, obj_type, dest_bank, start_slot)
+
+    # ── Convert to Nautilus ──────────────────────────────────────────────────
+
+    _CONVERT_DEFAULT_DEST = {OBJ_PROGRAM: (0x4C, 0)}   # Nautilus Program bank "S", slot 000
+
+    def _convert_to_nautilus(self, source: str) -> None:
+        """Kronos Programs/Combis/Drum Kits/Wave Sequences from the PCG or Local pane -> consecutive slots on
+        the connected Nautilus, over SysEx. Every target slot is backed up to a .syx first."""
+        service = self._service
+        if getattr(self, "_converting", False):
+            return
+        if service is None or not service.can_dump or not getattr(service, "is_nautilus", False):
+            QMessageBox.information(self, "Convert to Nautilus",
+                                    "Connect to a Nautilus first (SysEx must be available and the instrument "
+                                    "detected as a Nautilus).")
+            return
+        locs = self._selected_pcg_object_locs() if source == "pcg" else self._selected_local_object_locs()
+        items: List[ConvertItem] = []
+        for loc in locs:
+            if loc.obj_type not in CONVERTIBLE_TYPES:
+                continue
+            if source == "pcg":
+                body = self._pcg_resolve_content(loc.obj_type, loc.bank, loc.number)
+                entry = self._pcg_by_addr.get((loc.obj_type, loc.bank, loc.number))
+                name, is_exi = (entry.name, entry.is_exi) if entry is not None else ("", False)
+            else:
+                body = self._local_resolve_content(loc.obj_type, loc.bank, loc.number)
+                entry = self._index.get(loc.obj_type, loc.bank, loc.number)
+                name = entry.display_name if entry is not None else ""
+                is_exi = body is not None and len(body) == 4960
+            if body is not None:
+                items.append(ConvertItem(loc.obj_type, name, body, is_exi))
+        if not items:
+            self._log("Convert to Nautilus: select Programs, Combinations, Drum Kits or Wave Sequences.")
+            return
+        dest: Dict[int, Tuple[int, int]] = {}
+        for obj_type in CONVERTIBLE_TYPES:
+            n = sum(1 for i in items if i.obj_type == obj_type)
+            if not n:
+                continue
+            dlg = _DestinationDialog(obj_type, f"Convert {n} {object_types.REGISTRY[obj_type].display_name}(s) "
+                                     "to Nautilus, starting at...", self,
+                                     default=self._CONVERT_DEFAULT_DEST.get(obj_type),
+                                     bank_label=lambda b, t=obj_type: nautilus_bank_label(t, b))
+            if dlg.exec() != QDialog.DialogCode.Accepted:
+                return
+            dest[obj_type] = dlg.selected()
+        arp_start: Optional[int] = None
+        if any(i.obj_type in (OBJ_PROGRAM, OBJ_COMBI) for i in items) and QMessageBox.question(
+                self, "Arp patterns",
+                "Also write transcribed KARMA arp patterns (Nautilus bank B) for patches whose KARMA GE has no "
+                "Nautilus preset?\n\nOne slot is used per distinct GE; each is backed up first.") \
+                == QMessageBox.StandardButton.Yes:
+            n, ok = QInputDialog.getInt(self, "Arp pattern slot",
+                                        "First bank-B slot to use (B000-B042 and B127 held earlier test patterns):",
+                                        43, 0, 127)
+            if ok:
+                arp_start = n
+        summary = "\n".join(f"{sum(1 for i in items if i.obj_type == t)} x {object_types.REGISTRY[t].display_name}"
+                            f" -> {dest_label(t, *dest[t])} onward" for t in dest)
+        if QMessageBox.question(self, "Convert to Nautilus",
+                                f"{summary}\n{'Arp patterns from B%03d onward.' % arp_start if arp_start is not None else ''}"
+                                "\n\nThis overwrites those Nautilus slots. Their current contents are "
+                                "backed up first.") != QMessageBox.StandardButton.Yes:
+            return
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        backup_path = str(Models.storage.backup_dir() / f"{stamp}_nautilus_convert.syx")
+        self._converting = True
+        self._log(f"Converting {len(items)} object(s) to the Nautilus...")
+
+        def worker() -> None:
+            try:
+                reports = push_converted(service, items, dest, ConvertTables.load(), backup_path,
+                                         progress=lambda m: self._safe_emit(self._progress, m), arp_start=arp_start)
+            except Exception as e:
+                log.exception("Convert to Nautilus failed")
+                reports = [ItemReport("(conversion)", "", "failed", [f"{type(e).__name__}: {e}"])]
+            self._safe_emit(self._convert_done, reports, backup_path)
+
+        threading.Thread(target=worker, daemon=True, name="LibShellConvert").start()
+
+    def _on_convert_done(self, reports, backup_path: str) -> None:
+        self._converting = False
+        ok = sum(1 for r in reports if r.status == "written")
+        lines = []
+        for r in reports:
+            lines.append(f"[{r.status.upper()}] {r.name} -> {r.dest}")
+            lines += [f"    {m}" for m in r.messages]
+        for line in lines:
+            self._log(line)
+        self._log(f"Convert to Nautilus: {ok} of {len(reports)} written. Backup: {backup_path}")
+        box = QMessageBox(self)
+        box.setWindowTitle("Convert to Nautilus")
+        box.setText(f"{ok} of {len(reports)} object(s) written to the Nautilus.")
+        box.setInformativeText(f"Previous contents of the target slots are in:\n{backup_path}")
+        box.setDetailedText("\n".join(lines))
+        box.exec()
 
     def _show_pcg_properties(self) -> None:
         payload = self._leaf_payload(self._tree_pcg)
