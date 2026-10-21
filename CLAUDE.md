@@ -75,8 +75,8 @@ Repeat this pattern:
 needs `pip install -r requirements-dev.txt` — a fresh environment must install it). Read `pipeline/out/digest.txt`,
 then only the one `pipeline/out/<test>.log` it names; don't re-run the suite to see the same output. Tests are
 standalone scripts (exit code = result), not pytest. Persona scenarios live in `pipeline/personas/` and are scripted
-as `tests/test_scenario_*.py` using `tests/pipeline_fakes.py` (fault-injecting fake FTP). Two scenario tests are
-known-failing on purpose (see `pipeline/baseline.json`): they encode real defects until the app is fixed.
+as `tests/test_scenario_*.py` using `tests/pipeline_fakes.py` (fault-injecting fake FTP). A scenario test that
+exposes a real defect is fixed in the app; `pipeline/baseline.json` is for failures the user chooses to defer.
 Pre-commit runs tier 0: enable with `git config core.hooksPath pipeline/hooks`.
 
 ## Environment quirks
