@@ -166,6 +166,16 @@ def coverage_gaps(files, base):
     return gaps
 
 
+def hw_verify_notes():
+    """Source notes marking behaviour that only a real instrument can confirm: file:line, as a standing reminder."""
+    found = []
+    for f in all_py():
+        for n, line in enumerate((ROOT / f).read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+            if "HW-VERIFY" in line:
+                found.append(f"{Path(f).name}:{n}")
+    return found
+
+
 def failure_line(text):
     lines = [l for l in text.strip().splitlines() if l.strip()]
     for l in reversed(lines):
@@ -224,6 +234,9 @@ def main():
     out += [f"LAYER {x}" for x in lay]
     out += [f"FAIL {t}: {failure_line(text)}  [pipeline/out/{Path(t).stem}.log]" for t, _, text in new_fail]
     out += gaps
+    hw = hw_verify_notes()
+    if hw:
+        out.append(f"HW-VERIFY: {len(hw)} open hardware checks ({', '.join(hw)}); grep -rn HW-VERIFY")
     known = sorted(Path(t).stem for t, _, _ in failed if t in base["failing_tests"])
     if known:
         out.append("known failing (baseline): " + ", ".join(known))
