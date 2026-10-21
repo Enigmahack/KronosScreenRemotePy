@@ -396,6 +396,7 @@ def backup_dir() -> pathlib.Path:
 # Plain scalar settings persisted verbatim (type taken from the dataclass default).
 _SCALAR_FIELDS = (
     "librarian_full_sync_on_launch", "librarian_force_destructive_write", "librarian_sync_mode",
+    "convert_arp_next_slot",
     "proactive_sysex_polling", "sysex_poll_interval_sec", "sysex_poll_on_changes",
     "midi_output_channel", "value_slider_cc", "pull_names_on_change",
     "vu_device_id", "sample_editor_output_device_id", "file_manager_default_local_folder",

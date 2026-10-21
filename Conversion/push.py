@@ -6,6 +6,7 @@ re-read to verify. A target the conversion can't use (wrong Program bank type, r
 the bank) is skipped with a reason; it never aborts the others."""
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Callable, Dict, List, Optional, Set, Tuple
@@ -116,13 +117,58 @@ class _ArpSlots:
         return karma.ArpOptions()
 
 
+class PushReports(list):
+    """The per-item ItemReports, plus the arp bank-B slots that were actually written (for the next default)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.arp_used: List[int] = []
+
+
+def plan_arp_slots(items: List[ConvertItem], tables: ConvertTables, arp_start: Optional[int]) -> List[int]:
+    """The bank-B slots push_converted would write for these items (an upper bound: a refused conversion frees its)."""
+    arp = _ArpSlots(arp_start, tables)
+    for item in items:
+        arp.options_for(item)
+    return sorted(arp.by_ge.values())
+
+
+def _connection_problem(service, still_valid: Optional[Callable[[], bool]]) -> Optional[str]:
+    """Why it is no longer safe to send this push's messages to `service`, or None. A reconnect may be to a different
+    instrument (SysExService.stop() resets the codec to Kronos), so nothing is sent once the link is not the same
+    live Nautilus connection the user confirmed."""
+    if getattr(service, "is_nautilus", True) is False:
+        return "the connection is no longer a Nautilus"
+    if getattr(service, "can_dump", True) is False:
+        return "the SysEx link is down"
+    if still_valid is not None and not still_valid():
+        return "the instrument connection changed"
+    return None
+
+
 def push_converted(service, items: List[ConvertItem], dest: Dict[int, Tuple[int, int]], tables: ConvertTables,
                    backup_path: str, progress: Callable[[str], None] = lambda m: None,
-                   arp_start: Optional[int] = None) -> List[ItemReport]:
+                   arp_start: Optional[int] = None,
+                   still_valid: Optional[Callable[[], bool]] = None) -> PushReports:
     """`dest` maps object type -> (wire bank, first slot). `arp_start` = first bank-B slot for transcribed arp
     patterns (None = don't use transcriptions). `service` needs dump_object_parsed, backup_objects, write_object
-    and store_bank (SysExService, already switched to the Nautilus codec)."""
-    reports: List[ItemReport] = []
+    and store_bank (SysExService, already switched to the Nautilus codec). `still_valid` is checked, with the
+    service's own family/link state, before every phase and write; once it fails nothing more is sent.
+    When the service offers hold_dump_gate() the whole push runs inside it, so the perf loop and name pulls do not
+    interleave their requests and replies with ours."""
+    reports = PushReports()
+    hold = getattr(service, "hold_dump_gate", None)
+    with (hold() if hold is not None else contextlib.nullcontext()):
+        _push(service, items, dest, tables, backup_path, progress, arp_start, still_valid, reports)
+    return reports
+
+
+def _push(service, items: List[ConvertItem], dest: Dict[int, Tuple[int, int]], tables: ConvertTables,
+          backup_path: str, progress: Callable[[str], None], arp_start: Optional[int],
+          still_valid: Optional[Callable[[], bool]], reports: PushReports) -> None:
+    def guard() -> Optional[str]:
+        return _connection_problem(service, still_valid)
+
     pending: List[Tuple[ItemReport, SimpleNamespace, bytes, Set[int]]] = []   # report, op, pre-image, arp slots needed
     next_slot = {t: s for t, (_, s) in dest.items()}
     arp = _ArpSlots(arp_start, tables)
@@ -137,6 +183,11 @@ def push_converted(service, items: List[ConvertItem], dest: Dict[int, Tuple[int,
         reports.append(rep)
         if slot >= object_types.slot_count(item.obj_type, bank):
             rep.messages.append(f"Past the last slot of bank {object_types.label_for(item.obj_type, bank)}.")
+            continue
+        problem = guard()
+        if problem:
+            rep.status = "failed"
+            rep.messages.append(f"Not read: {problem}.")
             continue
         progress(f"Reading {where}")
         target = service.dump_object_parsed(item.obj_type, bank, slot, no_response_ms=6000)
@@ -163,11 +214,14 @@ def push_converted(service, items: List[ConvertItem], dest: Dict[int, Tuple[int,
         pending.append((rep, op, target.body, needed))
 
     if not pending:
-        return reports
+        return
 
     arp_ops: Dict[int, Tuple[SimpleNamespace, bytes]] = {}
     arp_failed: Dict[int, str] = {}
     for s, pattern in sorted(arp_patterns.items()):
+        if guard():
+            arp_failed[s] = f"Not read: {guard()}."
+            continue
         progress(f"Reading arp pattern slot B{s:03d}")
         cur = service.dump_object_parsed(OBJ_ARP_PATTERN, ARP_BANK_B, s, no_response_ms=6000)
         if cur is None:
@@ -180,15 +234,24 @@ def push_converted(service, items: List[ConvertItem], dest: Dict[int, Tuple[int,
                for _, op, pre, _ in pending]
     backups += [SimpleNamespace(obj=op.obj, bank=op.bank, index=op.index, version=op.version, body=pre)
                 for op, pre in arp_ops.values()]
+    aborted = guard()
+    if aborted:
+        for rep, _, _, _ in pending:
+            rep.messages.append(f"Not written: {aborted}.")
+        return
     service.backup_objects(backups, backup_path)
     problem = _verify_backup(backup_path, backups)
     if problem:
         for rep, _, _, _ in pending:
             rep.messages.append(f"Backup could not be verified ({problem}); nothing was written.")
-        return reports
+        return
     progress(f"Backed up and verified {len(backups)} target slot(s) in {backup_path}")
 
     for s, (op, pre) in sorted(arp_ops.items()):
+        aborted = aborted or guard()
+        if aborted:
+            arp_failed[s] = f"Not written: {aborted}."
+            continue
         progress(f"Writing arp pattern B{s:03d}")
         code = service.write_object(op)
         if code == NO_REPLY:
@@ -201,8 +264,13 @@ def push_converted(service, items: List[ConvertItem], dest: Dict[int, Tuple[int,
         elif code != 0:
             arp_failed[s] = f"Arp pattern write to B{s:03d} refused by the instrument (reply {code})."
     if any(s not in arp_failed for s in arp_ops):
-        progress("Storing arp pattern bank B")
-        committed, note = _store_checked(service, OBJ_ARP_PATTERN, ARP_BANK_B)
+        aborted = aborted or guard()
+        if aborted:
+            committed, note = False, (f"Not stored: {aborted}; the patterns are only in volatile memory of the "
+                                      f"original instrument. Backup: {backup_path}")
+        else:
+            progress("Storing arp pattern bank B")
+            committed, note = _store_checked(service, OBJ_ARP_PATTERN, ARP_BANK_B)
         if committed is not True:
             for s in arp_ops:
                 arp_failed.setdefault(s, f"Arp bank B: {note}")
@@ -219,6 +287,10 @@ def push_converted(service, items: List[ConvertItem], dest: Dict[int, Tuple[int,
         bad = [arp_failed[s] for s in sorted(needed) if s in arp_failed]
         if bad:
             rep.messages += bad + ["Not written: it depends on an arp pattern that is missing."]
+            continue
+        aborted = aborted or guard()
+        if aborted:
+            rep.messages.append(f"Not written: {aborted}.")
             continue
         progress(f"Writing {rep.dest}")
         code = service.write_object(op)
@@ -242,8 +314,13 @@ def push_converted(service, items: List[ConvertItem], dest: Dict[int, Tuple[int,
     committed_banks: Set[Tuple[int, int]] = set()
     failed_banks: Dict[Tuple[int, int], str] = {}
     for obj, bank in sorted({(op.obj, op.bank) for _, op in written}):
-        progress(f"Storing bank {bank_label(obj, bank)}")
-        committed, note = _store_checked(service, obj, bank)
+        aborted = aborted or guard()
+        if aborted:
+            committed, note = False, (f"Not stored: {aborted}. The slot was written to the volatile memory of the "
+                                      f"original instrument only; the previous contents are in {backup_path}.")
+        else:
+            progress(f"Storing bank {bank_label(obj, bank)}")
+            committed, note = _store_checked(service, obj, bank)
         if committed:
             committed_banks.add((obj, bank))
             if note:
@@ -264,6 +341,9 @@ def push_converted(service, items: List[ConvertItem], dest: Dict[int, Tuple[int,
     written = [(r, o) for r, o in written if (o.obj, o.bank) in committed_banks]
 
     for rep, op in written:
+        if aborted:
+            rep.messages.append(f"Not re-read: {aborted}.")
+            continue
         back = service.dump_object_parsed(op.obj, op.bank, op.index, no_response_ms=6000)
         if back is not None and back.body == op.body:
             rep.status = "written"
@@ -274,6 +354,8 @@ def push_converted(service, items: List[ConvertItem], dest: Dict[int, Tuple[int,
             rep.messages.append("Stored, but the re-read " + (
                 "got no reply." if back is None else "differs from what was sent (the instrument may normalise bodies)."))
     for rep, op, pre in unknown:
+        if aborted:
+            continue
         state = _state_after_no_reply(service, op, pre)
         if state == "applied" and (op.obj, op.bank) in committed_banks:
             rep.status = "written"
@@ -282,7 +364,7 @@ def push_converted(service, items: List[ConvertItem], dest: Dict[int, Tuple[int,
             rep.messages.append("The slot holds the new content but only in volatile memory (its bank was not Stored).")
         elif state == "unchanged":
             rep.messages.append("A later re-read shows the slot unchanged.")
-    return reports
+    reports.arp_used = sorted(s for s in arp_ops if s not in arp_failed)
 
 
 def _verify_backup(path: str, backups) -> Optional[str]:

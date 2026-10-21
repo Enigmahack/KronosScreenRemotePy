@@ -20,6 +20,7 @@ Not ported: USB-direct transport (no daemon link), and the storage-change counte
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import threading
 import time
@@ -705,10 +706,26 @@ class SysExService(QObject):
         raw = self.dump_object(obj, bank, index, **kw)
         return self._codec.parse_object_dump(raw) if raw else None
 
+    @contextlib.contextmanager
+    def hold_dump_gate(self):
+        """Pauses the perf loop and the per-change name pull for a multi-step write sequence (e.g. a conversion
+        push), so none of their requests or replies interleave with it; refreshes once afterwards."""
+        epoch = self._dump_gate.begin()
+        try:
+            yield
+        finally:
+            self._dump_gate.end(epoch)
+            self.refresh_now()
+
     def _send_expect_reply(self, data: bytes, timeout_s: float) -> Optional[int]:
         """Send raw bytes, wait for the next func-0x24 Reply, return its code
         (0 = OK — a real reply value the sentinel in _await_reply keeps distinct
-        from "no reply"). None on timeout / no link."""
+        from "no reply"). None on timeout / no link.
+
+        HW-VERIFY: replies are matched by function only (the next 0x24 of any operation). Holding the dump gate
+        keeps THIS app's own requests from interleaving, but a Reply caused by another client or by the front
+        panel during a write burst cannot be told apart. Check on the unit that a panel Store mid-push does not
+        produce a false OK, and whether a Reply carries anything (an object address) to correlate on."""
         bridge = self._bridge
 
         def match(m: bytes) -> Optional[int]:

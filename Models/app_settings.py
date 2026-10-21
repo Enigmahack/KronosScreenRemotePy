@@ -173,6 +173,11 @@ class AppSettings:
     librarian_force_destructive_write: bool = False
     # Which direction the Sync button's plain click runs: "TwoWay" | "PullOnly" | "PushOnly"
     librarian_sync_mode: str = "TwoWay"
+    # First bank-B slot Convert to Nautilus offers for transcribed arp patterns: one past the last one it wrote, so a
+    # second conversion does not default onto the first batch's patterns. 128 = bank B is full.
+    # HW-VERIFY: whether a bank-B slot is occupied cannot be detected offline (what an Init arp pattern looks like
+    # is unknown), so this only avoids this app's own earlier patterns, not patterns made on the instrument.
+    convert_arp_next_slot: int = 43
 
     # MIDI / SysEx (Settings > MIDI/SysEx)
     proactive_sysex_polling: bool = False

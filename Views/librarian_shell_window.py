@@ -3914,7 +3914,7 @@ class LibrarianShellWindow(QDialog):
                 == QMessageBox.StandardButton.Yes:
             n, ok = QInputDialog.getInt(self, "Arp pattern slot",
                                         "First bank-B slot to use (B000-B042 and B127 held earlier test patterns):",
-                                        43, 0, 127)
+                                        min(max(int(self._settings.convert_arp_next_slot), 0), 127), 0, 127)
             if ok:
                 arp_start = n
         summary = "\n".join(f"{sum(1 for i in items if i.obj_type == t)} x {object_types.REGISTRY[t].display_name}"
@@ -3926,22 +3926,36 @@ class LibrarianShellWindow(QDialog):
             return
         stamp = time.strftime("%Y%m%d_%H%M%S")
         backup_path = str(Models.storage.backup_dir() / f"{stamp}_nautilus_convert.syx")
+        # The same protection a Sync push gets: MainWindow refuses to disconnect, reconnect, change the connection
+        # or close while this is set (it asks request_shutdown()/hardware_transaction_active).
+        with self._transaction_lock:
+            if self._closed:
+                return
+            self._hardware_transaction_active = True
         self._converting = True
         self._log(f"Converting {len(items)} object(s) to the Nautilus...")
 
         def worker() -> None:
             try:
                 reports = push_converted(service, items, dest, ConvertTables.load(), backup_path,
-                                         progress=lambda m: self._safe_emit(self._progress, m), arp_start=arp_start)
+                                         progress=lambda m: self._safe_emit(self._progress, m), arp_start=arp_start,
+                                         still_valid=lambda: self._service is service)
             except Exception as e:
                 log.exception("Convert to Nautilus failed")
                 reports = [ItemReport("(conversion)", "", "failed", [f"{type(e).__name__}: {e}"])]
+            finally:
+                with self._transaction_lock:
+                    self._hardware_transaction_active = False
             self._safe_emit(self._convert_done, reports, backup_path)
 
         threading.Thread(target=worker, daemon=True, name="LibShellConvert").start()
 
     def _on_convert_done(self, reports, backup_path: str) -> None:
         self._converting = False
+        used = getattr(reports, "arp_used", None)
+        if used:
+            self._settings.convert_arp_next_slot = max(used) + 1
+            Models.storage.save_settings(self._settings)
         ok = sum(1 for r in reports if r.status == "written")
         lines = []
         for r in reports:
