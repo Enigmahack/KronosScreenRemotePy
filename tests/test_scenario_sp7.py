@@ -53,23 +53,30 @@ with tempfile.TemporaryDirectory(prefix="kr_sp7_") as tmp:
     new = {f"{DEST}/{k}": v for k, v in snapshot(new_root).items()}
     check("fixture-old-new-differ", all(old[k] != new[k] for k in old if k.endswith(".KSF")))
 
-    clean = FaultyFtp(old)
-    check("clean-push-no-failures", ftp.push_closure(clean, str(new_ksc), new_col, DEST) == [])
-    check("clean-push-new-content", all(clean.files.get(k) == v for k, v in new.items()))
-    n_ops = clean.ops
+    for overwrite in (True, False):
+        clean = FaultyFtp(old, overwrite=overwrite)
+        check(f"overwrite={overwrite} clean-push-no-failures", ftp.push_closure(clean, str(new_ksc), new_col, DEST) == [])
+        check(f"overwrite={overwrite} clean-push-new-content", all(clean.files.get(k) == v for k, v in new.items()))
+        check(f"overwrite={overwrite} clean-push-nothing-left-behind", sorted(clean.files) == sorted(new))
+        n_ops = clean.ops
 
-    for dead in (True, False):
-        for i in range(n_ops):
-            tag = f"push dead={dead} op={i}"
-            f = FaultyFtp(old, fail_at=i, dead=dead)
-            failures = ftp.push_closure(f, str(new_ksc), new_col, DEST)
-            check(f"{tag}: failure reported", bool(failures))
-            for path, was in old.items():
-                got = f.files.get(path)
-                # a missing final file is the delete->rename window, covered separately in test_scenario_sp7_replace_window
-                check(f"{tag}: {path.rsplit('/', 1)[-1]} not truncated", got is None or got in (was, new[path]))
-            if not dead:
-                check(f"{tag}: no leftover .part", not [p for p in f.files if p.endswith(".part")])
+        for dead in (True, False):
+            for i in range(n_ops):
+                tag = f"push overwrite={overwrite} dead={dead} op={i}"
+                f = FaultyFtp(old, fail_at=i, dead=dead, overwrite=overwrite)
+                failures = ftp.push_closure(f, str(new_ksc), new_col, DEST)
+                # silent success is only legitimate when a retry absorbed a one-off error (deleting the replaced
+                # .old file) and the result is exactly the new collection with nothing left behind
+                absorbed = not dead and sorted(f.files) == sorted(new) and all(f.files[k] == v for k, v in new.items())
+                check(f"{tag}: failure reported", bool(failures) or absorbed)
+                for path, was in old.items():
+                    got = f.files.get(path)
+                    name = path.rsplit('/', 1)[-1]
+                    check(f"{tag}: {name} not truncated", got is None or got in (was, new[path]))
+                    # the previous version survives at the final path or, mid-swap, at a named .old file
+                    check(f"{tag}: {name} previous or new version survives", got in (was, new[path]) or was in f.files.values())
+                if not dead:
+                    check(f"{tag}: no leftover .part/.old", not [p for p in f.files if p.endswith((".part", ".old"))])
 
     # pull
     remote = FaultyFtp(new)
@@ -95,7 +102,7 @@ with tempfile.TemporaryDirectory(prefix="kr_sp7_") as tmp:
                 for k, v in local.items():
                     check(f"{tag}: local {k} complete", v == new[DEST + "/" + k.split("SSD2/Show/", 1)[-1]] if "SSD2/Show/" in k else True)
 
-print(f"{n_ops} push ops x2 modes, {pull_ops} pull ops x2 modes; {len(fails)} violations")
+print(f"{n_ops} push ops x2 servers x2 modes, {pull_ops} pull ops x2 modes; {len(fails)} violations")
 for n in fails[:12]:
     print("  FAIL " + n)
 sys.exit(1 if fails else 0)

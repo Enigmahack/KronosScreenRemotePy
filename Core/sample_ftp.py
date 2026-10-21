@@ -12,6 +12,7 @@ promote pattern on top for both directions, since `_FtpWorker.upload`/
 """
 from __future__ import annotations
 
+import ftplib
 import logging
 import os
 import uuid
@@ -63,22 +64,29 @@ def _upload_one(ftp: _FtpWorker, local_path: str, remote_path: str,
                 on_progress: Optional[Callable[[str], None]], failures: List[str]) -> None:
     """Stage to a unique sibling and promote only once the upload verifiably
     succeeds — a disconnect mid-transfer must not truncate a previously-valid
-    remote file. The one chokepoint every sample push goes through."""
+    remote file. The one chokepoint every sample push goes through.
+
+    The previous remote file is never deleted until the new one is in place:
+    the staged file is renamed straight over it, and only a server that refuses
+    to overwrite (a 5xx reply) gets the swap — old file renamed to a `.old`
+    sibling, new one renamed in, `.old` deleted. If the swap fails the old file
+    is renamed back; if even that fails the failure message names the `.old`
+    file that still holds the previous version."""
     if on_progress:
         on_progress(f"Uploading {os.path.basename(local_path)}...")
-    part = f"{remote_path}.{uuid.uuid4().hex[:8]}.part"
-    # Checked against `part`, not `remote_path` — it's the longer of the two
-    # and what's actually sent to the server first.
-    if len(part) > _MAX_REMOTE_PATH_LENGTH:
+    token = uuid.uuid4().hex[:8]
+    part = f"{remote_path}.{token}.part"
+    aside = f"{remote_path}.{token}.old"
+    # Checked against the longer name, not `remote_path` — it's what's
+    # actually sent to the server first.
+    if max(len(part), len(aside)) > _MAX_REMOTE_PATH_LENGTH:
         failures.append(f"{os.path.basename(local_path)}: destination path too long "
                         f"({len(remote_path)} characters) — choose a shallower destination folder")
         return
     try:
         _ensure_remote_dir(ftp, os.path.dirname(part))
         ftp.upload(local_path, part)
-        if ftp.file_exists(remote_path):
-            ftp.delete_file(remote_path)
-        ftp.rename(part, remote_path)  # already guards top-level-volume + path-length
+        _promote(ftp, part, remote_path, aside)
     except Exception as ex:
         log.warning("Sample push: '%s' -> '%s' failed: %s", local_path, remote_path, ex)
         failures.append(f"{os.path.basename(local_path)}: {ex}")
@@ -86,6 +94,34 @@ def _upload_one(ftp: _FtpWorker, local_path: str, remote_path: str,
             ftp.delete_file(part)
         except Exception:
             pass
+
+
+def _promote(ftp: _FtpWorker, part: str, remote_path: str, aside: str) -> None:
+    try:
+        ftp.rename(part, remote_path)  # already guards top-level-volume + path-length
+        return
+    except ftplib.error_perm:
+        # The server refused (typically "file exists"). A connection drop or any other
+        # error is not a refusal and propagates with the old file untouched.
+        if not ftp.file_exists(remote_path):
+            raise
+    ftp.rename(remote_path, aside)
+    try:
+        ftp.rename(part, remote_path)
+    except Exception as ex:
+        try:
+            ftp.rename(aside, remote_path)
+        except Exception:
+            raise OSError(f"{ex}; the previous version is still on the instrument as {aside}") from ex
+        raise
+    try:
+        ftp.delete_file(aside)
+    except Exception:
+        try:
+            ftp.delete_file(aside)
+        except Exception as ex:
+            raise OSError(f"the new file is in place but the replaced one couldn't be deleted ({ex}); "
+                          f"delete {aside} on the instrument") from ex
 
 
 def _download_one(ftp: _FtpWorker, remote_path: str, local_root: str,

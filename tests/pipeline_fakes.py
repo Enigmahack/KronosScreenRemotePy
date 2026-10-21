@@ -3,18 +3,21 @@
 Every transport call counts as one op. `fail_at=N` makes op N raise ConnectionError; with `dead=True` every
 later op raises too (cable pulled), otherwise only op N fails (a blip). `partial=True` makes a failing
 upload leave half the bytes at the destination, as a dropped STOR does on a real server.
+`overwrite=False` makes rename refuse an existing target with a 550, as some FTP servers do.
 """
+import ftplib
 from pathlib import Path
 
 
 class FaultyFtp:
-    def __init__(self, files=None, fail_at=None, dead=True, partial=True):
+    def __init__(self, files=None, fail_at=None, dead=True, partial=True, overwrite=True):
         self.files = dict(files or {})
         self.dirs = {"/" + "/".join(f.strip("/").split("/")[:i]) for f in self.files for i in range(1, f.strip("/").count("/") + 1)}
         self.ops = 0
         self.fail_at = fail_at
         self.dead = dead
         self.partial = partial
+        self.overwrite = overwrite   # False models a server whose RNTO refuses an existing target (550)
         self.tripped = False
 
     def _op(self, name):
@@ -46,6 +49,8 @@ class FaultyFtp:
 
     def rename(self, old, new):
         self._op("rename")
+        if new in self.files and not self.overwrite:
+            raise ftplib.error_perm("550 target exists")
         self.files[new] = self.files.pop(old)
 
     def delete_file(self, path):

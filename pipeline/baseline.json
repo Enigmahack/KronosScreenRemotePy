@@ -1,7 +1,6 @@
 {
  "failing_tests": [
-  "tests/test_scenario_sd6_truncation.py",
-  "tests/test_scenario_sp7_replace_window.py"
+  "tests/test_scenario_sd6_truncation.py"
  ],
  "layering": []
 }
