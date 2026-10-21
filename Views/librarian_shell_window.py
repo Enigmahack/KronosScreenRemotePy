@@ -228,8 +228,8 @@ from Commands.session_dependency_clipboard import SessionDependencyClipboard, Se
 from Utils.setlist_colors import ALL_COLORS as SETLIST_COLORS, get_by_index_or_default as setlist_color
 from Tools.setlist_data import MAX_COUNT
 import Models.storage
-from Conversion.push import (CONVERTIBLE_TYPES, ConvertItem, ConvertTables, ItemReport,
-                             bank_label as nautilus_bank_label, dest_label, push_converted)
+from Conversion.push import (ARP_BANK_B_SLOTS, CONVERTIBLE_TYPES, ConvertItem, ConvertTables, ItemReport,
+                             bank_label as nautilus_bank_label, dest_label, plan_arp_slots, push_converted)
 from Core.sysex_service import SysExService
 import Utils.theme as T
 
@@ -660,6 +660,84 @@ class _DestinationDialog(QDialog):
 
     def selected(self) -> Tuple[int, int]:
         return int(self._bank_combo.currentData()), self._number_spin.value()
+
+
+def _slot_range(obj_type: int, bank: int, first: int, n: int) -> str:
+    """'S000-S007', with a note when the batch runs past the end of the bank."""
+    fit = max(0, min(n, object_types.slot_count(obj_type, bank) - first))
+    if fit == 0:
+        return f"{dest_label(obj_type, bank, first)} (past the end of the bank: none can be written)"
+    text = dest_label(obj_type, bank, first)
+    if fit > 1:
+        text += f"-{dest_label(obj_type, bank, first + fit - 1)}"
+    if fit < n:
+        text += f" ({n - fit} past the end of the bank will be skipped)"
+    return text
+
+
+class _ConvertConfirmDialog(QDialog):
+    """Final step of Convert to Nautilus: the exact slot ranges, the optional arp patterns and where the backup
+    goes. Cancel is the default button: this overwrites instrument slots."""
+
+    def __init__(self, parent, items, dest, tables, arp_default: int, backup_path: str):
+        super().__init__(parent)
+        self.setWindowTitle("Convert to Nautilus")
+        self.setStyleSheet(f"QDialog {{ background-color: {T.BG}; color: {T.TEXT}; }}")
+        self._items, self._dest, self._tables = items, dest, tables
+        v = QVBoxLayout(self)
+        self._summary = QLabel()
+        v.addWidget(self._summary)
+        self._arp_chk: Optional[QCheckBox] = None
+        self._arp_spin: Optional[QSpinBox] = None
+        self._arp_line = QLabel()
+        if any(i.obj_type in (OBJ_PROGRAM, OBJ_COMBI) for i in items):
+            row = QHBoxLayout()
+            self._arp_chk = QCheckBox("Also write arp patterns (bank B)")
+            self._arp_chk.setToolTip("A transcribed KARMA pattern for patches whose GE has no Nautilus preset. "
+                                     "One slot per distinct GE; each target slot is backed up first.")
+            self._arp_spin = QSpinBox()
+            self._arp_spin.setRange(0, ARP_BANK_B_SLOTS - 1)
+            self._arp_spin.setValue(min(max(int(arp_default), 0), ARP_BANK_B_SLOTS - 1))
+            self._arp_spin.setPrefix("from B")
+            self._arp_spin.setEnabled(False)
+            self._arp_chk.toggled.connect(self._arp_spin.setEnabled)
+            self._arp_chk.toggled.connect(self._refresh)
+            self._arp_spin.valueChanged.connect(self._refresh)
+            row.addWidget(self._arp_chk)
+            row.addWidget(self._arp_spin)
+            v.addLayout(row)
+            v.addWidget(self._arp_line)
+        note = QLabel(f"This overwrites those slots. Their current contents are backed up to {backup_path} first.")
+        note.setWordWrap(True)
+        v.addWidget(note)
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        ok, cancel = btns.button(QDialogButtonBox.StandardButton.Ok), btns.button(QDialogButtonBox.StandardButton.Cancel)
+        ok.setText("Convert")
+        ok.setAutoDefault(False)
+        cancel.setDefault(True)
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        v.addWidget(btns)
+        self._refresh()
+
+    def arp_start(self) -> Optional[int]:
+        return self._arp_spin.value() if self._arp_chk is not None and self._arp_chk.isChecked() else None
+
+    def _refresh(self, *_args) -> None:
+        self._summary.setText("\n".join(
+            f"{sum(1 for i in self._items if i.obj_type == t)} x {object_types.REGISTRY[t].display_name}  ->  "
+            f"{_slot_range(t, bank, first, sum(1 for i in self._items if i.obj_type == t))}"
+            for t, (bank, first) in self._dest.items()))
+        start = self.arp_start()
+        if start is None:
+            self._arp_line.setText("")
+            return
+        slots = plan_arp_slots(self._items, self._tables, start)
+        if not slots:
+            self._arp_line.setText("No patch here needs an arp pattern.")
+        else:
+            span = f"B{slots[0]:03d}" if len(slots) == 1 else f"B{slots[0]:03d}-B{slots[-1]:03d}"
+            self._arp_line.setText(f"Arp patterns overwrite {span} (bank B).")
 
 
 class _TransferCancelled(Exception):
@@ -1663,7 +1741,7 @@ class LibrarianShellWindow(QDialog):
         menu.addAction("More Info...", self._show_pcg_properties)
         menu.addSeparator()
         menu.addAction("Move to Merge Window", self._pull_pcg_selected_into_merge)
-        menu.addAction("Convert to Nautilus...", lambda: self._convert_to_nautilus("pcg"))
+        self._add_convert_action(menu, "pcg")
         self._add_expand_collapse(menu, self._tree_pcg, item)
         menu.exec(self._tree_pcg.viewport().mapToGlobal(local_pos))
 
@@ -2926,7 +3004,7 @@ class LibrarianShellWindow(QDialog):
         a_move = menu.addAction("Move to Merge Window", self._stage_local_selected_to_merge)
         a_move.setToolTip("Stage this (and its dependencies) in the Merge Window to rearrange "
                           "and push it somewhere else.")
-        menu.addAction("Convert to Nautilus...", lambda: self._convert_to_nautilus("local"))
+        self._add_convert_action(menu, "local")
         if is_leaf and payload[1] in (OBJ_PROGRAM, OBJ_COMBI, OBJ_SET_LIST):
             a_scan = menu.addAction("Scan PCG for dependencies...", self._scan_dependencies_for_selected)
             a_scan.setToolTip("Pick a .pcg file and stage whatever it holds of this object's "
@@ -3863,21 +3941,41 @@ class LibrarianShellWindow(QDialog):
     # ── Convert to Nautilus ──────────────────────────────────────────────────
 
     _CONVERT_DEFAULT_DEST = {OBJ_PROGRAM: (0x4C, 0)}   # Nautilus Program bank "S", slot 000
+    _CONVERT_TIP = "Write the selected objects to the connected Nautilus. Target slots are backed up first."
+
+    def _convert_selected_locs(self, source: str):
+        return self._selected_pcg_object_locs() if source == "pcg" else self._selected_local_object_locs()
+
+    def _convert_block_reason(self, source: str) -> Optional[str]:
+        """Why Convert to Nautilus can't run right now (shown as the menu tooltip / status line), or None."""
+        if self._busy or getattr(self, "_auto_fill_active", False) or getattr(self, "_converting", False):
+            return "Another Librarian operation is running."
+        service = self._service
+        if service is None or not service.can_dump or not getattr(service, "is_nautilus", False):
+            return ("Connect to a Nautilus first. Just connected? Wait a moment: the instrument type "
+                    "is still being detected.")
+        if not any(loc.obj_type in CONVERTIBLE_TYPES for loc in self._convert_selected_locs(source)):
+            return "Select Programs, Combinations, Drum Kits or Wave Sequences."
+        return None
+
+    def _add_convert_action(self, menu: QMenu, source: str) -> None:
+        reason = self._convert_block_reason(source)
+        act = menu.addAction("Convert to Nautilus...", lambda: self._convert_to_nautilus(source))
+        act.setEnabled(reason is None)
+        act.setToolTip(reason or self._CONVERT_TIP)
+        menu.setToolTipsVisible(True)
 
     def _convert_to_nautilus(self, source: str) -> None:
-        """Kronos Programs/Combis/Drum Kits/Wave Sequences from the PCG or Local pane -> consecutive slots on
-        the connected Nautilus, over SysEx. Every target slot is backed up to a .syx first."""
+        """Kronos Programs/Combis/Drum Kits/Wave Sequences from the PCG or Keyboard Library pane -> consecutive slots
+        on the connected Nautilus, over SysEx. Every target slot is backed up to a .syx first."""
+        reason = self._convert_block_reason(source)
+        if reason:
+            self._log(f"Convert to Nautilus: {reason}")
+            self._set_status(reason)
+            return
         service = self._service
-        if getattr(self, "_converting", False):
-            return
-        if service is None or not service.can_dump or not getattr(service, "is_nautilus", False):
-            QMessageBox.information(self, "Convert to Nautilus",
-                                    "Connect to a Nautilus first (SysEx must be available and the instrument "
-                                    "detected as a Nautilus).")
-            return
-        locs = self._selected_pcg_object_locs() if source == "pcg" else self._selected_local_object_locs()
         items: List[ConvertItem] = []
-        for loc in locs:
+        for loc in self._convert_selected_locs(source):
             if loc.obj_type not in CONVERTIBLE_TYPES:
                 continue
             if source == "pcg":
@@ -3899,33 +3997,19 @@ class LibrarianShellWindow(QDialog):
             n = sum(1 for i in items if i.obj_type == obj_type)
             if not n:
                 continue
-            dlg = _DestinationDialog(obj_type, f"Convert {n} {object_types.REGISTRY[obj_type].display_name}(s) "
-                                     "to Nautilus, starting at...", self,
-                                     default=self._CONVERT_DEFAULT_DEST.get(obj_type),
+            dlg = _DestinationDialog(obj_type, f"Convert {n} {object_types.REGISTRY[obj_type].display_name}(s) - start at",
+                                     self, default=self._CONVERT_DEFAULT_DEST.get(obj_type),
                                      bank_label=lambda b, t=obj_type: nautilus_bank_label(t, b))
             if dlg.exec() != QDialog.DialogCode.Accepted:
                 return
             dest[obj_type] = dlg.selected()
-        arp_start: Optional[int] = None
-        if any(i.obj_type in (OBJ_PROGRAM, OBJ_COMBI) for i in items) and QMessageBox.question(
-                self, "Arp patterns",
-                "Also write transcribed KARMA arp patterns (Nautilus bank B) for patches whose KARMA GE has no "
-                "Nautilus preset?\n\nOne slot is used per distinct GE; each is backed up first.") \
-                == QMessageBox.StandardButton.Yes:
-            n, ok = QInputDialog.getInt(self, "Arp pattern slot",
-                                        "First bank-B slot to use (B000-B042 and B127 held earlier test patterns):",
-                                        min(max(int(self._settings.convert_arp_next_slot), 0), 127), 0, 127)
-            if ok:
-                arp_start = n
-        summary = "\n".join(f"{sum(1 for i in items if i.obj_type == t)} x {object_types.REGISTRY[t].display_name}"
-                            f" -> {dest_label(t, *dest[t])} onward" for t in dest)
-        if QMessageBox.question(self, "Convert to Nautilus",
-                                f"{summary}\n{'Arp patterns from B%03d onward.' % arp_start if arp_start is not None else ''}"
-                                "\n\nThis overwrites those Nautilus slots. Their current contents are "
-                                "backed up first.") != QMessageBox.StandardButton.Yes:
-            return
+        tables = ConvertTables.load()
         stamp = time.strftime("%Y%m%d_%H%M%S")
         backup_path = str(Models.storage.backup_dir() / f"{stamp}_nautilus_convert.syx")
+        confirm = _ConvertConfirmDialog(self, items, dest, tables, self._settings.convert_arp_next_slot, backup_path)
+        if confirm.exec() != QDialog.DialogCode.Accepted:
+            return
+        arp_start = confirm.arp_start()
         # The same protection a Sync push gets: MainWindow refuses to disconnect, reconnect, change the connection
         # or close while this is set (it asks request_shutdown()/hardware_transaction_active).
         with self._transaction_lock:
@@ -3933,11 +4017,12 @@ class LibrarianShellWindow(QDialog):
                 return
             self._hardware_transaction_active = True
         self._converting = True
+        self._set_busy(True)
         self._log(f"Converting {len(items)} object(s) to the Nautilus...")
 
         def worker() -> None:
             try:
-                reports = push_converted(service, items, dest, ConvertTables.load(), backup_path,
+                reports = push_converted(service, items, dest, tables, backup_path,
                                          progress=lambda m: self._safe_emit(self._progress, m), arp_start=arp_start,
                                          still_valid=lambda: self._service is service)
             except Exception as e:
@@ -3948,26 +4033,46 @@ class LibrarianShellWindow(QDialog):
                     self._hardware_transaction_active = False
             self._safe_emit(self._convert_done, reports, backup_path)
 
-        threading.Thread(target=worker, daemon=True, name="LibShellConvert").start()
+        try:
+            threading.Thread(target=worker, daemon=True, name="LibShellConvert").start()
+        except Exception:
+            with self._transaction_lock:
+                self._hardware_transaction_active = False
+            self._converting = False
+            self._set_busy(False)
+            raise
 
     def _on_convert_done(self, reports, backup_path: str) -> None:
         self._converting = False
+        self._set_busy(False)
         used = getattr(reports, "arp_used", None)
         if used:
             self._settings.convert_arp_next_slot = max(used) + 1
             Models.storage.save_settings(self._settings)
-        ok = sum(1 for r in reports if r.status == "written")
         lines = []
         for r in reports:
             lines.append(f"[{r.status.upper()}] {r.name} -> {r.dest}")
             lines += [f"    {m}" for m in r.messages]
         for line in lines:
             self._log(line)
+        crashed = len(reports) == 1 and reports[0].name == "(conversion)"
+        not_written = [r for r in reports if r.status != "written"]
+        ok = len(reports) - len(not_written)
         self._log(f"Convert to Nautilus: {ok} of {len(reports)} written. Backup: {backup_path}")
         box = QMessageBox(self)
         box.setWindowTitle("Convert to Nautilus")
-        box.setText(f"{ok} of {len(reports)} object(s) written to the Nautilus.")
-        box.setInformativeText(f"Previous contents of the target slots are in:\n{backup_path}")
+        box.setIcon(QMessageBox.Icon.Warning if not_written else QMessageBox.Icon.Information)
+        if crashed:
+            text = "The conversion stopped with an error before it finished."
+        else:
+            text = f"{ok} of {len(reports)} object(s) written to the Nautilus."
+            if not_written:
+                names = [f"{r.name or r.dest} ({r.status})" for r in not_written[:5]]
+                text += "\n\nNot written: " + ", ".join(names) + (
+                    f" and {len(not_written) - 5} more" if len(not_written) > 5 else "")
+        box.setText(text)
+        box.setInformativeText(f"Details lists what happened to each object. The previous contents of the target "
+                               f"slots are in:\n{backup_path}")
         box.setDetailedText("\n".join(lines))
         box.exec()
 

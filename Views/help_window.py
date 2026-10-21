@@ -366,6 +366,29 @@ def _build_html() -> str:
                 "identifies the product; it does not prove the pack is installed on your instrument. To pick up "
                 "packs released later, drop a newer <b>exs_catalog.json</b> in the data folder. Drum Kit "
                 "and Wave Sequence references are not shown yet.")),
+        _h2("Convert to Nautilus"),
+        _p("Right-click Programs, Combinations, Drum Kits or Wave Sequences in the <b>Loaded PCG File</b> or "
+           "<b>Keyboard Library</b> pane and choose <b>Convert to Nautilus…</b> to write them, converted, into "
+           "consecutive slots on the connected Nautilus. The item is greyed out, with the reason in its tooltip, "
+           "until a Nautilus is connected and something convertible is selected."),
+        _kbd_table(
+            _kb_row("Destination", "Pick the first bank and slot for each type. The last box lists the exact "
+                                   "range (for example S000-S007) and flags anything past the end of the bank."),
+            _kb_row("Arp patterns", "Tick <b>Also write arp patterns (bank B)</b> to write a transcribed KARMA "
+                                    "pattern, one slot per distinct GE, for patches whose GE has no Nautilus "
+                                    "preset. The next conversion offers the slot after the last one used."),
+            _kb_row("Backup",      "Every target slot is saved to a .syx in the Librarian's backup folder first, "
+                                   "and nothing is written unless that file reads back correctly. The path is "
+                                   "shown before and after."),
+            _kb_row("Result",      "Each object is written, Stored and re-read. The result box lists any that "
+                                   "were not written and Details says why. <i>Stored, but the re-read differs</i> "
+                                   "means the instrument may have changed the data when it Stored it."),
+            _kb_row("While it runs", "Disconnecting, reconnecting, changing the connection and closing are "
+                                     "blocked until it finishes."),
+        ),
+        _p(_dim("A write or Store the instrument never answers is reported as unknown rather than refused: the "
+                "app re-reads to find out, and says so when it can't. Nothing restores a backup from the "
+                "menu yet.")),
         _h2("Sync button"),
         _p("One button whose label names what a plain click does; the <b>▾</b> beside it picks the mode, "
            "and your choice is remembered."),

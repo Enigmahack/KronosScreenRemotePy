@@ -100,7 +100,9 @@ assert any("[WRITTEN]" in shown[-1] for _ in [0]) and "HD-1 bank" in shown[-1], 
 # not connected to a Nautilus -> explains, writes nothing
 fake.is_nautilus = False
 n = len(fake.calls)
+noted = []
+w._log = noted.append
 w._convert_to_nautilus("pcg")
-assert len(fake.calls) == n and "Connect to a Nautilus" in shown[-1]
+assert len(fake.calls) == n and any("Connect to a Nautilus" in m for m in noted), noted
 w._closed = True
 print("ALL PASS")
