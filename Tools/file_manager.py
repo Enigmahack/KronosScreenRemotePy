@@ -219,10 +219,19 @@ _MAX_REMOTE_PATH_LENGTH = 245
 
 
 def _is_top_level_ftp_path(path: str) -> bool:
-    """A path is "top-level" when it names a direct child of the FTP root —
-    no other slash in it besides (at most) the leading one."""
-    clean = path.rstrip("/")
-    return clean.rfind("/") <= 0
+    """A path is "top-level" when it names a direct child of the FTP root (or the root itself), however it is
+    spelled: "." and ".." segments and repeated slashes are resolved first, so "/SSD1/.." or "/SSD1/../X" can't
+    slip past a purely textual check."""
+    parts: List[str] = []
+    for seg in path.split("/"):
+        if seg in ("", "."):
+            continue
+        if seg == "..":
+            if parts:
+                parts.pop()
+            continue
+        parts.append(seg)
+    return len(parts) <= 1
 
 
 class FtpTopLevelPathError(Exception):
