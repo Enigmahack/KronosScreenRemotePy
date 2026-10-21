@@ -59,6 +59,27 @@ for kind, parse in (("KSF", KsfSample.open), ("KMP", KmpMultisample.open)):
                 check(f"{kind} {name}: prefix of {c}/{len(d)} bytes accepted", False)
 check("fixtures include header-only/stub KSF files", header_only > 0)
 
+# every real .KMP we have (fixtures + PCG EXAMPLES) opens and round-trips; RLP3/RLP2 are present on all of them
+from fixture_paths import PCG_EXAMPLES
+real_kmps = files["KMP"] + sorted(glob.glob(f"{PCG_EXAMPLES}/**/*.KMP", recursive=True))
+for f in real_kmps:
+    d = Path(f).read_bytes()
+    m = KmpMultisample.open(d)
+    check(f"real KMP {Path(f).name}: opens", m is not None)
+    if m is not None:
+        tags = [t for t, _ in riff.read_chunks(d)]
+        check(f"real KMP {Path(f).name}: has RLP1/RLP3/RLP2", all(t in tags for t in ("RLP1", "RLP3", "RLP2")))
+
+# documented rule: RLP3/RLP2 are mandatory, so a KMP that lost them (a cut after RLP1) is refused
+k = KmpMultisample(name="Cut", mno1=1)
+k.zones += [KmpZone(filename="MS001000.KSF", original_key=60, top_key=60)]
+whole = k.to_bytes()
+chunks = riff.read_chunks(whole)
+check("synthetic KMP with all chunks opens", KmpMultisample.open(whole) is not None)
+for drop in (("RLP2",), ("RLP3", "RLP2")):
+    cut = b"".join(riff.build_chunk(t, p) for t, p in chunks if t not in drop)
+    check(f"KMP without {'/'.join(drop)} is refused", KmpMultisample.open(cut) is None)
+
 # a pull that meets a cut-off KMP says so instead of silently skipping its samples
 kmp = KmpMultisample(name="Show", mno1=1)
 kmp.zones += [KmpZone(filename="MS001000.KSF", original_key=60, top_key=60),

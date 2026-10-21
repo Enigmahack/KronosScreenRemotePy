@@ -69,7 +69,15 @@ class KmpMultisample:
         Also None for a truncated file: a chunk (or chunk header) is cut off, or
         RLP1/RLP3/RLP2 hold fewer zones than MSP1's own zone count declares, so
         a download cut at a chunk boundary can't silently lose zones. Deliberately
-        stricter than C#'s KmpMultisample.Open, which accepts both."""
+        stricter than C#'s KmpMultisample.Open, which accepts both.
+
+        RLP3 and RLP2 are treated as mandatory (one record per RLP1 zone) because every
+        real file has them: all 170 .KMP in SampleFixtures and PCG EXAMPLES carry all
+        three chunks with matching counts, and the format doc's write order
+        (MSP1, MNO1, NAME, RLP1, RLP3, RLP2) and its external-writer recipe both always
+        write them. A cut that lands exactly after RLP1 or RLP3 is only detectable
+        this way. The doc does not say whether the firmware tolerates a .KMP that omits
+        them, so a third-party file without them is refused here."""
         chunks = riff.read_chunks(data)
         if not chunks or chunks[0][0] != "MSP1" or len(chunks[0][1]) < 18:
             return None
@@ -115,6 +123,10 @@ class KmpMultisample:
                     rlp2.append(bytes(payload[i:i + 4]))
                     i += 4
 
+        # HW-VERIFY: the format doc is silent on whether a real Kronos loads a .KMP whose RLP3/RLP2 are missing or
+        # shorter than RLP1 (every file Eva writes has all three). If hardware loads such files, relax this to
+        # `len(rlp1) < declared` plus chunk integrity; test by uploading a hand-cut .KMP without RLP2/RLP3 and
+        # selecting it in the multisample list.
         declared = chunks[0][1][16] | (chunks[0][1][17] << 8)   # MSP1 tail: zone count, LE u16
         if len(rlp1) < declared or len(rlp3) < len(rlp1) or len(rlp2) < len(rlp1):
             return None
