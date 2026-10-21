@@ -20,6 +20,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 from Data.ksc_collection import KscCollection
 from Data.kmp_multisample import KmpMultisample
+from Data.ksf_sample import KsfSample
 import Data.sample_path_guard as path_guard
 from Tools.file_manager import _FtpWorker, _MAX_REMOTE_PATH_LENGTH
 
@@ -229,7 +230,10 @@ def push_closure(ftp: _FtpWorker, local_ksc_path: str, collection: KscCollection
     remote_dest_trimmed = remote_dest_dir.rstrip("/")
     ksc_remote_path = f"{remote_dest_trimmed}/{ksc_name}"
 
-    _upload_one(ftp, local_ksc_path, ksc_remote_path, on_progress, failures)
+    # Every file is checked before the first byte is sent: a truncated or unreadable local file must
+    # never replace the instrument's good copy, and a closure must not land half-pushed.
+    plan: List[Tuple[str, str]] = [(local_ksc_path, ksc_remote_path)]
+    invalid: List[str] = []
 
     # _UserBank.KSC — a save already wrote this sibling locally if it exists;
     # pushing just uploads whatever's there. Missing is not a failure (an
@@ -239,8 +243,7 @@ def push_closure(ftp: _FtpWorker, local_ksc_path: str, collection: KscCollection
         os.path.dirname(local_ksc_path),
         os.path.splitext(ksc_name)[0] + "_UserBank.KSC")
     if os.path.isfile(user_bank_local_path):
-        user_bank_remote_path = f"{remote_dest_trimmed}/{os.path.basename(user_bank_local_path)}"
-        _upload_one(ftp, user_bank_local_path, user_bank_remote_path, on_progress, failures)
+        plan.append((user_bank_local_path, f"{remote_dest_trimmed}/{os.path.basename(user_bank_local_path)}"))
 
     content_dir = os.path.join(os.path.dirname(local_ksc_path), os.path.splitext(ksc_name)[0])
     ksc_base_remote_dir = f"{remote_dest_trimmed}/{os.path.splitext(ksc_name)[0]}"
@@ -252,7 +255,7 @@ def push_closure(ftp: _FtpWorker, local_ksc_path: str, collection: KscCollection
             if not os.path.isfile(ksf_local_path):
                 failures.append(f"{entry}: not found locally")
                 continue
-            _upload_one(ftp, ksf_local_path, f"{ksc_base_remote_dir}/{entry}", on_progress, failures)
+            plan.append((ksf_local_path, f"{ksc_base_remote_dir}/{entry}"))
             continue
         if not entry.upper().endswith(".KMP"):
             continue
@@ -262,16 +265,16 @@ def push_closure(ftp: _FtpWorker, local_ksc_path: str, collection: KscCollection
                 failures.append(f"{entry}: not found locally")
             continue
         kmp_remote_path = f"{ksc_base_remote_dir}/{entry}"
-        _upload_one(ftp, kmp_local_path, kmp_remote_path, on_progress, failures)
+        plan.append((kmp_local_path, kmp_remote_path))
 
         try:
             with open(kmp_local_path, "rb") as f:
                 m = KmpMultisample.open(f.read())
         except Exception as ex:
-            failures.append(f"{entry}: couldn't read to find its zones ({ex})")
+            invalid.append(f"{entry}: couldn't read to find its zones ({ex})")
             continue
         if m is None:
-            failures.append(f"{entry}: not a recognizable .KMP")
+            invalid.append(f"{entry}: not a recognizable or complete .KMP")
             continue
 
         kmp_base_remote_dir = kmp_remote_path[:-4]  # strip ".KMP"
@@ -284,7 +287,24 @@ def push_closure(ftp: _FtpWorker, local_ksc_path: str, collection: KscCollection
             if not os.path.isfile(ksf_local_path):
                 failures.append(f"{zone.filename}: not found locally")
                 continue
-            ksf_remote_path = f"{kmp_base_remote_dir}/{zone.filename}"
-            _upload_one(ftp, ksf_local_path, ksf_remote_path, on_progress, failures)
+            plan.append((ksf_local_path, f"{kmp_base_remote_dir}/{zone.filename}"))
 
+    for local_path, _ in plan:
+        if not local_path.upper().endswith(".KSF"):
+            continue   # KMPs were opened above while finding their zones
+        name = os.path.basename(local_path)
+        try:
+            with open(local_path, "rb") as f:
+                ok = KsfSample.open(f.read()) is not None
+        except OSError as ex:
+            invalid.append(f"{name}: couldn't be read ({ex})")
+            continue
+        if not ok:
+            invalid.append(f"{name}: not a recognizable or complete .KSF (truncated?)")
+    if invalid:
+        log.warning("Sample push refused before uploading anything: %s", invalid)
+        return failures + invalid + ["Nothing was uploaded; the instrument's copies were left untouched."]
+
+    for local_path, remote_path in plan:
+        _upload_one(ftp, local_path, remote_path, on_progress, failures)
     return failures
