@@ -13,5 +13,13 @@ disk, unchecked indices, swallowed exceptions, a write path with no confirm or b
 into Core/Models. Check claimed behavior against `../KronosScreenRemoteDaemon/docs/api.md` and the sample
 format doc before trusting code comments. Confirm a feature isn't retired in C# before calling it missing.
 
+For every new refusal, validation or guard, trace the write paths that run BEFORE it: a check that fires after the
+bytes are already sent or the file already replaced is an ordering bug a hunk-only read misses. A commit message
+that claims "can no longer happen" is a claim to test, not a fact.
+Scope is the paths and commits you are given; read callees as needed but report only on in-scope changes unless a
+callee makes the change unsafe.
+
 Read-only: make no edits and no commits, and say "no edits made" at the end.
-Report: at most 8 findings, each as file:line, the failure scenario, and a confidence. Nothing else.
+Report: at most 8 findings, each as `file:line | high/med/low | failure scenario`. Confidence: high = you traced the
+exact path and inputs, med = path traced but an input/format assumption is unchecked, low = plausible only; say which
+assumption. Then at most 3 one-line "checked, clean" notes for risks you ruled out. Nothing else.

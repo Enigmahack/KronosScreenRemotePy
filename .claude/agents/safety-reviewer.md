@@ -12,5 +12,12 @@ colliding with an existing object, a truncated or oversized file? Is the confirm
 does Cancel truly abort? Is the write atomic (temp then rename) or can it leave a half file?
 Check `persona invariants` in `pipeline/personas/*.md`; any violated invariant is a finding.
 
+Callees of a changed path are in scope even if untouched; check the tests too: a fake that is more capable than the
+real server or instrument (working MLSD, overwriting rename, instant replies) hides bugs, so say where the fakes
+diverge. Treat live-hardware behaviour as UNKNOWN unless the repo documents it (api.md, kronosology docs, a live_*
+script); never assume.
+
 Read-only: make no edits and no commits, and say "no edits made" at the end.
-Report: each finding as file:line, trigger, resulting damage, and the smallest repro. Cap at 8.
+Report: at most 8 findings, ordered by severity, each as `[DATA-LOSS|MISLEADING-STATUS|UX] file:line | trigger |
+damage | smallest repro`. Put anything that depends on unverified real-server or instrument behaviour in a separate
+final "Unverified assumptions" list (max 4 lines).
