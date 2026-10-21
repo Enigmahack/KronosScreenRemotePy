@@ -20,6 +20,7 @@ Not ported: USB-direct transport (no daemon link), and the storage-change counte
 """
 from __future__ import annotations
 
+import os
 import threading
 import time
 from typing import Callable, Dict, List, Optional, Set, Tuple
@@ -761,11 +762,23 @@ class SysExService(QObject):
     def backup_objects(self, ops, path: str) -> None:
         """Serialize the given object pre-images to a .syx file as func-0x73
         Object Dumps. Restore = replay this file's messages, then Store the
-        affected banks."""
-        with open(path, "wb") as f:
-            for op in ops:
-                f.write(self._codec.object_dump_write(op.obj, op.bank, op.index,
-                                                       op.version, op.body))
+        affected banks. Written to a sibling temp file, flushed and fsynced, then moved into place, so a failure
+        part-way (disk full, dropped SMB share) never leaves a truncated file under the real name."""
+        tmp = f"{path}.tmp"
+        try:
+            with open(tmp, "wb") as f:
+                for op in ops:
+                    f.write(self._codec.object_dump_write(op.obj, op.bank, op.index,
+                                                           op.version, op.body))
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, path)
+        except BaseException:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            raise
 
     def backup_bank_to_syx(self, obj: int, bank: int, path: str,
                            slot_count: int = 128,

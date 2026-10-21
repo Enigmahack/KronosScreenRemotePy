@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from Conversion.data import (ARP_ENCODING_NORMAL, ARP_PATTERN_SIZE, GePatternEntry, KarmaGeCatalog,
                              KarmaGePatternLibrary, ProgramRefMap, RomWaveformMap)
 from Conversion.push import ConvertItem, ConvertTables, push_converted
+import Data.nautilus_sysex as nsx
 from Data.librarian_sysex import OBJ_COMBI, OBJ_PROGRAM
 from Tools.exs_option_index import ExsOptionIndex
 
@@ -35,8 +36,11 @@ class FakeNautilus:
         return SimpleNamespace(version=6, body=body)
 
     def backup_objects(self, ops, path):
-        self.calls.append(("backup", len(list(ops))))
-        open(path, "wb").write(b"x")
+        ops = list(ops)
+        self.calls.append(("backup", len(ops)))
+        with open(path, "wb") as f:   # a real dump per object: push_converted re-parses the file before writing
+            for op in ops:
+                f.write(nsx.object_dump_write(op.obj, op.bank, op.index, op.version, op.body))
 
     def write_object(self, op):
         self.calls.append(("write", op.bank, op.index))

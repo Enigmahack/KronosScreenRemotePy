@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from PySide6.QtWidgets import QApplication, QDialog, QInputDialog, QMessageBox
 app = QApplication([])
 
+import Data.nautilus_sysex as nsx
 from Data.librarian_model import ObjLoc
 from Data.librarian_sysex import OBJ_COMBI, OBJ_PROGRAM
 from Data.pcg_file import open_pcg
@@ -52,7 +53,10 @@ class FakeNautilus:
         return SimpleNamespace(version=6, body=self.slots.get((obj, bank, index)) or b"I" * self.sizes[(obj, bank)])
 
     def backup_objects(self, ops, path):
-        self.calls.append("backup"); open(path, "wb").write(b"x")
+        self.calls.append("backup")
+        with open(path, "wb") as f:   # a real dump per object: push_converted re-parses the backup before writing
+            for op in ops:
+                f.write(nsx.object_dump_write(op.obj, op.bank, op.index, op.version, op.body))
 
     def write_object(self, op):
         self.calls.append("write"); self.slots[(op.obj, op.bank, op.index)] = op.body; return 0

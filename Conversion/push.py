@@ -181,7 +181,12 @@ def push_converted(service, items: List[ConvertItem], dest: Dict[int, Tuple[int,
     backups += [SimpleNamespace(obj=op.obj, bank=op.bank, index=op.index, version=op.version, body=pre)
                 for op, pre in arp_ops.values()]
     service.backup_objects(backups, backup_path)
-    progress(f"Backed up {len(backups)} target slot(s) to {backup_path}")
+    problem = _verify_backup(backup_path, backups)
+    if problem:
+        for rep, _, _, _ in pending:
+            rep.messages.append(f"Backup could not be verified ({problem}); nothing was written.")
+        return reports
+    progress(f"Backed up and verified {len(backups)} target slot(s) in {backup_path}")
 
     for s, (op, pre) in sorted(arp_ops.items()):
         progress(f"Writing arp pattern B{s:03d}")
@@ -278,6 +283,31 @@ def push_converted(service, items: List[ConvertItem], dest: Dict[int, Tuple[int,
         elif state == "unchanged":
             rep.messages.append("A later re-read shows the slot unchanged.")
     return reports
+
+
+def _verify_backup(path: str, backups) -> Optional[str]:
+    """None when the file re-parses (Nautilus codec) to exactly the pre-images, in order; else why not. The backup
+    is the only way back from a bad conversion, so no write happens on an unverified one."""
+    try:
+        with open(path, "rb") as f:
+            raw = f.read()
+    except OSError as ex:
+        return f"cannot be read: {ex}"
+    parts = raw.split(b"\xf7")
+    if parts[-1]:
+        return "it ends mid-record"
+    got = []
+    for chunk in parts[:-1]:
+        d = nsx.parse_object_dump(chunk + b"\xf7")
+        if d is None:
+            return "it holds an unreadable record"
+        got.append((d.obj, d.bank, d.index, d.body))
+    want = [(b.obj, b.bank, b.index, b.body) for b in backups]
+    if len(got) != len(want):
+        return f"it holds {len(got)} of {len(want)} objects"
+    if got != want:
+        return "its contents differ from the pre-images"
+    return None
 
 
 def _digest(service, obj: int, bank: int) -> Optional[bytes]:
