@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Callable, Dict, List, Optional, Set, Tuple
 
+import Data.nautilus_sysex as nsx
 import Data.object_types as object_types
 from Conversion import karma
 from Conversion.combi import convert_combi
@@ -48,11 +49,16 @@ class ConvertTables:
                    ProgramRefMap.from_catalog(), KarmaGePatternLibrary.from_catalog())
 
 
+# SysExService.write_object / store_bank return this when no Reply arrived (timeout or lost link). It is NOT a
+# refusal: the instrument may or may not have acted on the message.
+NO_REPLY = -1
+
+
 @dataclass
 class ItemReport:
     name: str
     dest: str
-    status: str                 # "written" | "refused" | "failed"
+    status: str                 # "written" | "refused" | "failed" | "unverified" (stored, but the re-read differs)
     messages: List[str] = field(default_factory=list)
 
 
@@ -177,17 +183,24 @@ def push_converted(service, items: List[ConvertItem], dest: Dict[int, Tuple[int,
     service.backup_objects(backups, backup_path)
     progress(f"Backed up {len(backups)} target slot(s) to {backup_path}")
 
-    for s, (op, _) in sorted(arp_ops.items()):
+    for s, (op, pre) in sorted(arp_ops.items()):
         progress(f"Writing arp pattern B{s:03d}")
         code = service.write_object(op)
-        if code != 0:
+        if code == NO_REPLY:
+            state = _state_after_no_reply(service, op, pre)
+            if state == "unchanged":
+                arp_failed[s] = f"No reply writing arp pattern B{s:03d}; a re-read shows the slot unchanged."
+            elif state == "unknown":
+                arp_failed[s] = (f"No reply writing arp pattern B{s:03d}; it may or may not have changed. "
+                                 f"Backup: {backup_path}")
+        elif code != 0:
             arp_failed[s] = f"Arp pattern write to B{s:03d} refused by the instrument (reply {code})."
     if any(s not in arp_failed for s in arp_ops):
         progress("Storing arp pattern bank B")
-        code = service.store_bank(OBJ_ARP_PATTERN, ARP_BANK_B)
-        if code != 0:
+        committed, note = _store_checked(service, OBJ_ARP_PATTERN, ARP_BANK_B)
+        if committed is not True:
             for s in arp_ops:
-                arp_failed.setdefault(s, f"Store Bank failed for arp bank B (reply {code}).")
+                arp_failed.setdefault(s, f"Arp bank B: {note}")
     for s, (op, _) in arp_ops.items():
         if s in arp_failed:
             continue
@@ -195,33 +208,175 @@ def push_converted(service, items: List[ConvertItem], dest: Dict[int, Tuple[int,
         if back is None or back.body != op.body:
             arp_failed[s] = f"Arp pattern B{s:03d} did not read back as written."
 
-    written = []
-    for rep, op, _, needed in pending:
+    written: List[Tuple[ItemReport, SimpleNamespace]] = []
+    unknown: List[Tuple[ItemReport, SimpleNamespace, bytes]] = []   # no reply to the write, state unproven
+    for rep, op, pre, needed in pending:
         bad = [arp_failed[s] for s in sorted(needed) if s in arp_failed]
         if bad:
             rep.messages += bad + ["Not written: it depends on an arp pattern that is missing."]
             continue
         progress(f"Writing {rep.dest}")
         code = service.write_object(op)
-        if code != 0:
+        if code == 0:
+            written.append((rep, op))
+        elif code == NO_REPLY:
+            state = _state_after_no_reply(service, op, pre)
+            if state == "applied":
+                rep.messages.append("No reply to the write, but a re-read matches what was sent.")
+                written.append((rep, op))
+            elif state == "unchanged":
+                rep.messages.append("No reply to the write; a re-read shows the slot unchanged.")
+            else:
+                rep.messages.append("No reply to the write and the slot could not be confirmed; it may or may not "
+                                    f"have changed. Backup: {backup_path}")
+                unknown.append((rep, op, pre))
+        else:
             rep.messages.append(f"Write refused by the instrument (reply {code}).")
-            continue
-        written.append((rep, op))
+
+    # A bank is Stored only for slots that were proven written; an unknown slot never triggers a Store itself.
+    committed_banks: Set[Tuple[int, int]] = set()
+    failed_banks: Dict[Tuple[int, int], str] = {}
     for obj, bank in sorted({(op.obj, op.bank) for _, op in written}):
-        progress(f"Storing bank {object_types.label_for(obj, bank)}")
-        code = service.store_bank(obj, bank)
-        if code != 0:
+        progress(f"Storing bank {bank_label(obj, bank)}")
+        committed, note = _store_checked(service, obj, bank)
+        if committed:
+            committed_banks.add((obj, bank))
+            if note:
+                for rep, op in written:
+                    if (op.obj, op.bank) == (obj, bank):
+                        rep.messages.append(note)
+        else:
+            failed_banks[(obj, bank)] = note
             for rep, op in written:
                 if (op.obj, op.bank) == (obj, bank):
-                    rep.messages.append(f"Store Bank failed (reply {code}); the object is only in volatile memory.")
-            written = [(r, o) for r, o in written if (o.obj, o.bank) != (obj, bank)]
+                    rep.messages.append(note)
+    if failed_banks and committed_banks:
+        done = ", ".join(bank_label(o, b) for o, b in sorted(committed_banks))
+        for rep, op in written:
+            if (op.obj, op.bank) in failed_banks:
+                rep.messages.append(f"Bank(s) already stored: {done}. The previous contents of every target slot are "
+                                    f"in {backup_path}.")
+    written = [(r, o) for r, o in written if (o.obj, o.bank) in committed_banks]
+
     for rep, op in written:
         back = service.dump_object_parsed(op.obj, op.bank, op.index, no_response_ms=6000)
         if back is not None and back.body == op.body:
             rep.status = "written"
         else:
-            rep.messages.append("Written, but the re-read did not match what was sent.")
+            # HW-VERIFY: whether the instrument normalises bodies on Store (so an exact re-read can differ even when
+            # the write is fine). Convert on the unit, then compare the re-read with the sent body byte for byte.
+            rep.status = "unverified"
+            rep.messages.append("Stored, but the re-read " + (
+                "got no reply." if back is None else "differs from what was sent (the instrument may normalise bodies)."))
+    for rep, op, pre in unknown:
+        state = _state_after_no_reply(service, op, pre)
+        if state == "applied" and (op.obj, op.bank) in committed_banks:
+            rep.status = "written"
+            rep.messages.append("Verified by re-read after the reply was lost.")
+        elif state == "applied":
+            rep.messages.append("The slot holds the new content but only in volatile memory (its bank was not Stored).")
+        elif state == "unchanged":
+            rep.messages.append("A later re-read shows the slot unchanged.")
     return reports
+
+
+def _digest(service, obj: int, bank: int) -> Optional[bytes]:
+    fn = getattr(service, "bank_digest", None)
+    if fn is None:
+        return None
+    try:
+        return fn(obj, bank)
+    except Exception:
+        return None
+
+
+def _state_after_no_reply(service, op, pre: bytes) -> str:
+    """What a slot looks like after a write whose Reply never arrived: "applied", "unchanged" or "unknown"."""
+    back = service.dump_object_parsed(op.obj, op.bank, op.index, no_response_ms=6000)
+    if back is None:
+        return "unknown"
+    if back.body == op.body:
+        return "applied"
+    return "unchanged" if back.body == pre else "unknown"
+
+
+def _store_checked(service, obj: int, bank: int) -> Tuple[Optional[bool], str]:
+    """Store a bank. (True|False|None, note): committed, not committed, or unknown. A lost Reply is decided by
+    comparing the bank's storage digest before and after, when the service can provide it."""
+    before = _digest(service, obj, bank)
+    code = service.store_bank(obj, bank)
+    if code == 0:
+        return True, ""
+    if code != NO_REPLY:
+        return False, f"Store Bank failed (reply {code}); the object is only in volatile memory."
+    after = _digest(service, obj, bank)
+    # HW-VERIFY: that the func-0x37 bank digest reflects NON-VOLATILE storage and changes exactly when a Store
+    # commits. Write one slot, Store, and confirm the digest differs; then write without Storing and confirm it
+    # does not. Also: Store Bank commits the WHOLE bank, including unrelated unsaved edits in other slots.
+    if before is not None and after is not None:
+        if after != before:
+            return True, "The Store Bank reply was lost, but the bank's storage digest changed: it was stored."
+        return False, ("No reply to Store Bank and the bank's storage digest is unchanged: not stored; "
+                       "the object is only in volatile memory.")
+    return None, "No reply to Store Bank and it could not be checked; the object may or may not be stored."
+
+
+@dataclass
+class RestoreResult:
+    ok: bool
+    messages: List[str] = field(default_factory=list)
+
+
+def restore_from_backup(service, backup_path: str,
+                        progress: Callable[[str], None] = lambda m: None) -> RestoreResult:
+    """Replays a push's .syx backup (Nautilus codec) and re-Stores every bank it touches, putting the previous
+    contents of the target slots back. The file is parsed completely before the first write. A bank whose writes
+    were not all acknowledged is not Stored. Not wired to any menu yet.
+    HW-VERIFY: restore on a real Nautilus (convert one Init slot, restore, compare the slot byte for byte)."""
+    msgs: List[str] = []
+    try:
+        with open(backup_path, "rb") as f:
+            raw = f.read()
+    except OSError as ex:
+        return RestoreResult(False, [f"Cannot read the backup: {ex}"])
+    ops = []
+    parts = raw.split(b"\xf7")
+    if parts[-1]:
+        return RestoreResult(False, ["The backup ends mid-record (truncated); nothing was written."])
+    for chunk in parts:
+        if not chunk:
+            continue
+        d = nsx.parse_object_dump(chunk + b"\xf7")
+        if d is None:
+            return RestoreResult(False, ["The backup holds an unreadable record; nothing was written."])
+        ops.append(SimpleNamespace(obj=d.obj, bank=d.bank, index=d.index, version=d.version, body=d.body))
+    if not ops:
+        return RestoreResult(False, ["The backup is empty; nothing was written."])
+    bad_banks: Set[Tuple[int, int]] = set()
+    for op in ops:
+        progress(f"Restoring {bank_label(op.obj, op.bank)} slot {op.index}")
+        code = service.write_object(op)
+        if code != 0:
+            bad_banks.add((op.obj, op.bank))
+            msgs.append(f"Write of {bank_label(op.obj, op.bank)} slot {op.index} not acknowledged (reply {code}).")
+    ok = not bad_banks
+    for obj, bank in sorted({(o.obj, o.bank) for o in ops} - bad_banks):
+        committed, note = _store_checked(service, obj, bank)
+        if committed is not True:
+            ok = False
+            msgs.append(f"Bank {bank_label(obj, bank)}: {note}")
+    for obj, bank in sorted(bad_banks):
+        msgs.append(f"Bank {bank_label(obj, bank)} was not Stored.")
+    for op in ops:
+        if (op.obj, op.bank) in bad_banks:
+            continue
+        back = service.dump_object_parsed(op.obj, op.bank, op.index, no_response_ms=6000)
+        if back is None or back.body != op.body:
+            ok = False
+            msgs.append(f"{bank_label(op.obj, op.bank)} slot {op.index} did not read back as the backup.")
+    if ok:
+        msgs.append(f"Restored {len(ops)} object(s) from {backup_path}.")
+    return RestoreResult(ok, msgs)
 
 
 def _convert(item: ConvertItem, template: bytes, tables: ConvertTables, options: karma.ArpOptions):
