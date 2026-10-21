@@ -1,6 +1,4 @@
 {
- "failing_tests": [
-  "tests/test_scenario_sd6_truncation.py"
- ],
+ "failing_tests": [],
  "layering": []
 }

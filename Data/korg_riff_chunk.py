@@ -36,6 +36,20 @@ def read_chunks(data: bytes) -> List[Tuple[str, bytes]]:
     return chunks
 
 
+def is_truncated(data: bytes) -> bool:
+    """True when the chunk walk runs off the end of `data`: a chunk's declared
+    length reaches past the last byte, or 1-7 bytes are left over, too few for
+    another chunk header. read_chunks() deliberately clamps both and carries
+    on; this lets a caller that must not accept a cut-off file tell the
+    difference. All 92 .KSF and 16 .KMP hardware-captured fixtures are exact."""
+    pos = 0
+    while pos + 8 <= len(data):
+        pos += 8 + read_u32be(data, pos + 4)
+        if pos > len(data):
+            return True
+    return pos != len(data)
+
+
 def build_chunk(tag: str, payload: bytes) -> bytes:
     if len(tag) != 4:
         raise ValueError(f"chunk tag must be 4 chars: '{tag}'")

@@ -64,9 +64,16 @@ class KmpMultisample:
     @staticmethod
     def open(data: bytes) -> Optional["KmpMultisample"]:
         """None if `data` isn't a recognizable .KMP (first chunk isn't MSP1)
-        rather than raising — expected file-picker input, not a bug."""
+        rather than raising — expected file-picker input, not a bug.
+
+        Also None for a truncated file: a chunk (or chunk header) is cut off, or
+        RLP1/RLP3/RLP2 hold fewer zones than MSP1's own zone count declares, so
+        a download cut at a chunk boundary can't silently lose zones. Deliberately
+        stricter than C#'s KmpMultisample.Open, which accepts both."""
         chunks = riff.read_chunks(data)
         if not chunks or chunks[0][0] != "MSP1" or len(chunks[0][1]) < 18:
+            return None
+        if riff.is_truncated(data):
             return None
 
         m = KmpMultisample()
@@ -107,6 +114,10 @@ class KmpMultisample:
                 while i + 4 <= len(payload):
                     rlp2.append(bytes(payload[i:i + 4]))
                     i += 4
+
+        declared = chunks[0][1][16] | (chunks[0][1][17] << 8)   # MSP1 tail: zone count, LE u16
+        if len(rlp1) < declared or len(rlp3) < len(rlp1) or len(rlp2) < len(rlp1):
+            return None
 
         for idx, (orig_key, top_key, fname, unknown4) in enumerate(rlp1):
             z = KmpZone(original_key=orig_key, top_key=top_key, filename=fname, unknown4=unknown4)

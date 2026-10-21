@@ -153,11 +153,19 @@ class KsfSample:
         """None if `data` isn't a recognizable .KSF (first chunk isn't SMP1,
         or no SMD1 chunk at all) rather than raising — a genuinely truncated
         download must fail loudly here, not silently produce a default/empty
-        object indistinguishable from a real header-only-corrupted file."""
+        object indistinguishable from a real header-only-corrupted file.
+
+        Truncated means: a chunk (or chunk header) is cut off, or SMD1 holds
+        fewer PCM bytes than its own frame count declares. A header-only file
+        (frame count 0, no PCM) is NOT truncated and still opens. Deliberately
+        stricter than C#'s KsfSample.Open, which clamps the declared frame
+        count to the bytes present and returns a shorter sample."""
         chunks = riff.read_chunks(data)
         if not chunks or chunks[0][0] != "SMP1" or len(chunks[0][1]) < 32:
             return None
         if not any(tag == "SMD1" for tag, _ in chunks):
+            return None
+        if riff.is_truncated(data):
             return None
 
         s = KsfSample()
@@ -187,8 +195,11 @@ class KsfSample:
                 s.bits = payload[7]
                 frame_count = riff.read_u32be(payload, 8)
                 pcm_bytes_wanted = frame_count * 2
-                pcm_bytes_available = max(0, min(pcm_bytes_wanted, len(payload) - 12))
-                s.pcm = bytes(payload[12:12 + pcm_bytes_available])
+                if len(payload) - 12 < pcm_bytes_wanted:
+                    return None
+                s.pcm = bytes(payload[12:12 + pcm_bytes_wanted])
+            elif tag == "SMD1":
+                return None   # SMD1 cut off inside its 12-byte header
         return s
 
     def to_bytes(self) -> bytes:

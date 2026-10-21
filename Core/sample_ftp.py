@@ -154,6 +154,7 @@ def _pull_zones(ftp: _FtpWorker, kmp_bytes: bytes, kmp_remote_path: str, local_r
                 failures: List[str]) -> None:
     m = KmpMultisample.open(kmp_bytes)
     if m is None:
+        failures.append(f"{os.path.basename(kmp_remote_path)}: not a complete .KMP, so its samples weren't pulled")
         return
     kmp_base_remote_dir = kmp_remote_path[:-4]  # strip ".KMP" (4 chars, caller already checked)
     for zone in m.zones:
