@@ -81,15 +81,18 @@ Pre-commit runs tier 0: enable with `git config core.hooksPath pipeline/hooks`.
 
 ## Environment quirks
 
-- `.venv/bin/python3` in this repo is a broken CIFS-symlink placeholder (this
-  tree lives on an SMB/CIFS share) — don't trust `source .venv/bin/activate`
-  to do anything. The system `/usr/bin/python3` (3.11) already has PySide6,
-  numpy, etc. installed and is what actually gets used; verify with `which
-  python3` if in doubt. `pip install` into the venv doesn't work either
-  (no working pip); if you need a package not already installed (this
-  session wanted `pyftpdlib` for real-FTP-server testing and didn't have it),
-  fall back to a duck-typed fake backend against the real calling code
-  instead of blocking on package installation.
+- The checked-in `.venv/` is **a macOS venv** (`pyvenv.cfg`: Homebrew Python
+  3.14.4, created `--without-pip` at `/Volumes/Storage/ALL_KRONOS/...`), not a
+  portable environment. Its `bin/python3` symlinks point at a Mac path, so it
+  is dead on Linux and Windows regardless of the share. The tree itself lives
+  on an SMB share hosted on the build machine (192.168.3.86, per the owner;
+  the Windows dev PC's `Z:` maps to `\\192.168.3.92\kronos`), which is fine
+  to build from. Don't use `.venv`; on the Linux box the system
+  `/usr/bin/python3` (3.11) already has PySide6, numpy, etc. For
+  reproducible/packaged builds use a fresh local venv or `uv` (see
+  `packaging/`), and build from a local copy, not over SMB. If you need a
+  package that isn't installed (e.g. `pyftpdlib`), fall back to a duck-typed
+  fake backend against the real calling code instead of blocking on it.
 - `git push` fails in this environment (no credentials) — commit locally,
   the user pushes.
 - The harness blocks plain `git rm`/destructive deletes as "irreversible
@@ -506,14 +509,20 @@ cached pull baselines cannot substitute for unavailable live dumps.
 Not done, deliberately: UDP discovery
 (neither app has it), a v2 stream fallback for pre-3.0.2 daemons (a v3 hello gets status `0x01` there, indistinguishable from bad
 credentials, and the existing credential-wipe on `0x01` still applies), and the daemon's SYSEX/MIDI_SEND ctrl-port MIDI path
-(Python uses the 9875 bridge). Kronos-to-Nautilus conversion in C# stays untouched (WIP).
-
+(Python uses the 9875 bridge).
 ## What's left
 
-**Nautilus PCG format-conversion (`Core/Pcg/Nautilus/`,
-`Core/Pcg/NautilusConversion/` in C#) is explicitly OUT OF SCOPE** — confirmed
-CLI-only in C# (`--nautilus-convert-*` flags), never reachable from its own
-GUI, so not a screen-remote client feature.
+**Python is now the primary app (2026-10-16).** The C# app is the behavioral reference only. The gap list is
+`PARITY_AUDIT.md`. Kronos -> Nautilus conversion (C# `Core/Pcg/Nautilus/`, `Core/Pcg/NautilusConversion/`) is
+now IN SCOPE and lives in `Conversion/` (UI-free, no Qt; data in `Resources/Conversion/`; test
+`python tests/test_conversion.py`). Program conversion takes an explicit `ProgramKind` because EXi and HD-1 PCG
+slots are both 4960 bytes. C# files stay untouched. Done: Nautilus PCG reader/writer (`Conversion/nautilus_pcg.py`, file writer
+not loaded by hardware - send over SysEx instead), Librarian right-click "Convert to Nautilus..." (PCG and Local panes;
+`Conversion/push.py`: read targets, convert, back up to .syx, write, store, verify; default Program target is Nautilus
+bank S = wire 0x4C), live-verified 8 Programs into S000-S007. Tests: `tests/test_conversion.py`, `test_conversion_push.py`,
+`test_conversion_ui.py`; live: `tests/live_nautilus_push.py`. Arp patterns: the convert flow asks for a first bank-B slot (default B043; B000-B042 and B127 held earlier test patterns),
+allocates one slot per distinct GE, writes obj 0x19 bank 0x40 before the Programs and aborts a patch whose pattern failed
+(live-verified: Airy Shakuhachi -> B043, Dyna Hits -> B044). Still to do: Song Timbre Sets, Combi live test, EXi target banks. (The dialog and reports use Nautilus bank letters, G.. for wire 0x40+, via `Conversion.push.bank_label`; the Combi mapping is by analogy, unverified.)
 
 Phases 1–3 (above) are done; the live to-do list is the Pass 4 "Remaining" list right above.
 C# itself calls the whole Nautilus area preliminary (its own
