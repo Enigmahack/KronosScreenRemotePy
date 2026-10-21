@@ -1,0 +1,8183 @@
+[
+ {
+  "kronos_bank": 0,
+  "kronos_index": 0,
+  "kronos_name": "Berlin Grand SW2 U.C.",
+  "nautilus_bank": 0,
+  "nautilus_index": 11,
+  "nautilus_name": "Dark Italian Grand",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 0,
+  "kronos_index": 13,
+  "kronos_name": "SaturdayInThePark Piano",
+  "nautilus_bank": 0,
+  "nautilus_index": 19,
+  "nautilus_name": "SaturdayInThePark Piano",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 0,
+  "kronos_index": 17,
+  "kronos_name": "Virtual Insanity Piano",
+  "nautilus_bank": 0,
+  "nautilus_index": 18,
+  "nautilus_name": "Virtual Insanity Piano",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 0,
+  "kronos_index": 21,
+  "kronos_name": "Head Over Heels Piano",
+  "nautilus_bank": 0,
+  "nautilus_index": 34,
+  "nautilus_name": "Head Over Heels Piano",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 0,
+  "kronos_index": 23,
+  "kronos_name": "In Your Eyes EP",
+  "nautilus_bank": 1,
+  "nautilus_index": 13,
+  "nautilus_name": "In Your Eyes EP",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 0,
+  "kronos_index": 26,
+  "kronos_name": "Still Crazy EP",
+  "nautilus_bank": 0,
+  "nautilus_index": 87,
+  "nautilus_name": "Still Crazy EP",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 0,
+  "kronos_index": 33,
+  "kronos_name": "Stronger Everyday EP",
+  "nautilus_bank": 0,
+  "nautilus_index": 115,
+  "nautilus_name": "Stronger Everyday EP",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 0,
+  "kronos_index": 34,
+  "kronos_name": "Heard It Through the EP",
+  "nautilus_bank": 0,
+  "nautilus_index": 108,
+  "nautilus_name": "Heard It Through the EP",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 0,
+  "kronos_index": 35,
+  "kronos_name": "Mercy, Mercy, Mercy EP",
+  "nautilus_bank": 0,
+  "nautilus_index": 104,
+  "nautilus_name": "Mercy, Mercy, Mercy EP",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 0,
+  "kronos_index": 38,
+  "kronos_name": "You're My Best Friend EP",
+  "nautilus_bank": 0,
+  "nautilus_index": 113,
+  "nautilus_name": "You're My Best Friend EP",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 0,
+  "kronos_index": 40,
+  "kronos_name": "KE My Sound (Amp1)",
+  "nautilus_bank": 1,
+  "nautilus_index": 52,
+  "nautilus_name": "KE My Sound (Amp1)",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 0,
+  "kronos_index": 42,
+  "kronos_name": "KE PicturesAtnExhibition",
+  "nautilus_bank": 1,
+  "nautilus_index": 53,
+  "nautilus_name": "KE PicturesAtnExhibition",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 0,
+  "kronos_index": 43,
+  "kronos_name": "KE Eruption Split",
+  "nautilus_bank": 1,
+  "nautilus_index": 55,
+  "nautilus_name": "KE Eruption Split",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 0,
+  "kronos_index": 44,
+  "kronos_name": "KE Barbarian Split",
+  "nautilus_bank": 1,
+  "nautilus_index": 54,
+  "nautilus_name": "KE Barbarian Split",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 0,
+  "kronos_index": 46,
+  "kronos_name": "NE Half Moon",
+  "nautilus_bank": 1,
+  "nautilus_index": 82,
+  "nautilus_name": "NE Half Moon",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 0,
+  "kronos_index": 47,
+  "kronos_name": "KORG Jimmy's Organ",
+  "nautilus_bank": 1,
+  "nautilus_index": 26,
+  "nautilus_name": "KORG Jimmy's Organ",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 0,
+  "kronos_index": 49,
+  "kronos_name": "Foreplay/Long Time Organ",
+  "nautilus_bank": 1,
+  "nautilus_index": 59,
+  "nautilus_name": "Foreplay/Long Time Organ",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 0,
+  "kronos_index": 50,
+  "kronos_name": "Follow You,Follow Me Org",
+  "nautilus_bank": 1,
+  "nautilus_index": 41,
+  "nautilus_name": "Follow You,Follow Me Org",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 0,
+  "kronos_index": 51,
+  "kronos_name": "Time Is Tight Organ",
+  "nautilus_bank": 1,
+  "nautilus_index": 85,
+  "nautilus_name": "Time Is Tight Organ",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 0,
+  "kronos_index": 52,
+  "kronos_name": "Good Vibrations Organ",
+  "nautilus_bank": 1,
+  "nautilus_index": 83,
+  "nautilus_name": "Good Vibrations Organ",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 0,
+  "kronos_index": 53,
+  "kronos_name": "Green Onions Organ",
+  "nautilus_bank": 1,
+  "nautilus_index": 84,
+  "nautilus_name": "Green Onions Organ",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 0,
+  "kronos_index": 59,
+  "kronos_name": "Chameleon Bass",
+  "nautilus_bank": 2,
+  "nautilus_index": 94,
+  "nautilus_name": "Chameleon Bass",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 0,
+  "kronos_index": 63,
+  "kronos_name": "Thriller Bass",
+  "nautilus_bank": 2,
+  "nautilus_index": 93,
+  "nautilus_name": "Thriller Bass",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 0,
+  "kronos_index": 72,
+  "kronos_name": "Africa Brass",
+  "nautilus_bank": 2,
+  "nautilus_index": 41,
+  "nautilus_name": "Africa Brass",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 0,
+  "kronos_index": 73,
+  "kronos_name": "OB Four Voice Brass",
+  "nautilus_bank": 2,
+  "nautilus_index": 36,
+  "nautilus_name": "OB Four Voice Brass",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 0,
+  "kronos_index": 77,
+  "kronos_name": "Final Countdown",
+  "nautilus_bank": 3,
+  "nautilus_index": 109,
+  "nautilus_name": "Final Countdown",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 0,
+  "kronos_index": 78,
+  "kronos_name": "Jump",
+  "nautilus_bank": 3,
+  "nautilus_index": 103,
+  "nautilus_name": "Jump",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 0,
+  "kronos_index": 83,
+  "kronos_name": "Thriller Chords",
+  "nautilus_bank": 3,
+  "nautilus_index": 110,
+  "nautilus_name": "Thriller Chords",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 0,
+  "kronos_index": 84,
+  "kronos_name": "Fletch Brass",
+  "nautilus_bank": 2,
+  "nautilus_index": 35,
+  "nautilus_name": "Fletch Brass",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 0,
+  "kronos_index": 97,
+  "kronos_name": "Tom Sawyer Lead",
+  "nautilus_bank": 3,
+  "nautilus_index": 44,
+  "nautilus_name": "Tom Sawyer Lead",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 0,
+  "kronos_index": 98,
+  "kronos_name": "Subdivision Lead",
+  "nautilus_bank": 3,
+  "nautilus_index": 42,
+  "nautilus_name": "Subdivision Lead",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 0,
+  "kronos_index": 101,
+  "kronos_name": "Lucky Man Lead",
+  "nautilus_bank": 3,
+  "nautilus_index": 27,
+  "nautilus_name": "Lucky Man Lead",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 0,
+  "kronos_index": 105,
+  "kronos_name": "Let's Go",
+  "nautilus_bank": 3,
+  "nautilus_index": 60,
+  "nautilus_name": "Let's Go",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 0,
+  "kronos_index": 106,
+  "kronos_name": "Wanna Go Square",
+  "nautilus_bank": 3,
+  "nautilus_index": 108,
+  "nautilus_name": "Wanna Go Square",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 0,
+  "kronos_index": 107,
+  "kronos_name": "Scary Sprites Lead",
+  "nautilus_bank": 3,
+  "nautilus_index": 48,
+  "nautilus_name": "Scary Sprites Lead",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 0,
+  "kronos_index": 111,
+  "kronos_name": "Cars Lead",
+  "nautilus_bank": 3,
+  "nautilus_index": 94,
+  "nautilus_name": "Cars Lead",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 1,
+  "kronos_index": 0,
+  "kronos_name": "De La Salsa Brass EXs18",
+  "nautilus_bank": 19,
+  "nautilus_index": 58,
+  "nautilus_name": "De La Salsa Brass",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 1,
+  "kronos_index": 1,
+  "kronos_name": "Bay Area Funk BrassEXs18",
+  "nautilus_bank": 19,
+  "nautilus_index": 85,
+  "nautilus_name": "Bay Area Funk Brass",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 1,
+  "kronos_index": 2,
+  "kronos_name": "Trumpets Velo ShakeEXs18",
+  "nautilus_bank": 19,
+  "nautilus_index": 62,
+  "nautilus_name": "Trumpets Velo Shake",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 1,
+  "kronos_index": 4,
+  "kronos_name": "2TpAlwaysFall/GlissEXs18",
+  "nautilus_bank": 19,
+  "nautilus_index": 66,
+  "nautilus_name": "2Tp Always Fall/Gliss",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 1,
+  "kronos_index": 8,
+  "kronos_name": "Small Pop Strings EXs18",
+  "nautilus_bank": 22,
+  "nautilus_index": 62,
+  "nautilus_name": "Birds in the Kalimba SW1",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 1,
+  "kronos_index": 9,
+  "kronos_name": "Slow Pop Strings EXs18",
+  "nautilus_bank": 18,
+  "nautilus_index": 58,
+  "nautilus_name": "Slow Pop Strings",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 1,
+  "kronos_index": 12,
+  "kronos_name": "M/F Humming 1 EXs18",
+  "nautilus_bank": 25,
+  "nautilus_index": 35,
+  "nautilus_name": "Jazz Kit Dry Mic",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 1,
+  "kronos_index": 17,
+  "kronos_name": "Let It Be Piano",
+  "nautilus_bank": 5,
+  "nautilus_index": 18,
+  "nautilus_name": "Let It Be Piano",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 1,
+  "kronos_index": 20,
+  "kronos_name": "Imagine Piano",
+  "nautilus_bank": 5,
+  "nautilus_index": 19,
+  "nautilus_name": "Imagine Piano",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 1,
+  "kronos_index": 21,
+  "kronos_name": "Lady Madonna Piano",
+  "nautilus_bank": 5,
+  "nautilus_index": 20,
+  "nautilus_name": "Lady Madonna Piano",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 1,
+  "kronos_index": 23,
+  "kronos_name": "Ob-La-Di,Ob-La-Da Piano",
+  "nautilus_bank": 5,
+  "nautilus_index": 28,
+  "nautilus_name": "Ob-La-Di,Ob-La-Da Piano",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 1,
+  "kronos_index": 26,
+  "kronos_name": "Don't Pass Me By Piano",
+  "nautilus_bank": 5,
+  "nautilus_index": 32,
+  "nautilus_name": "Don't Pass Me By Piano",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 1,
+  "kronos_index": 31,
+  "kronos_name": "Vogue M1 Piano",
+  "nautilus_bank": 5,
+  "nautilus_index": 25,
+  "nautilus_name": "Vogue M1 Piano",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 1,
+  "kronos_index": 32,
+  "kronos_name": "Rendezvous 6:02 Piano",
+  "nautilus_bank": 5,
+  "nautilus_index": 55,
+  "nautilus_name": "Rendezvous 6:02 Piano",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 1,
+  "kronos_index": 33,
+  "kronos_name": "VideoKilledTheRadioStar",
+  "nautilus_bank": 5,
+  "nautilus_index": 56,
+  "nautilus_name": "VideoKilledTheRadioStar",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 1,
+  "kronos_index": 34,
+  "kronos_name": "My Life Piano",
+  "nautilus_bank": 5,
+  "nautilus_index": 57,
+  "nautilus_name": "My Life Piano",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 1,
+  "kronos_index": 36,
+  "kronos_name": "Reverse Piano",
+  "nautilus_bank": 5,
+  "nautilus_index": 37,
+  "nautilus_name": "Reverse Piano",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 1,
+  "kronos_index": 38,
+  "kronos_name": "Greatest Love EP",
+  "nautilus_bank": 5,
+  "nautilus_index": 81,
+  "nautilus_name": "Greatest Love EP",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 1,
+  "kronos_index": 42,
+  "kronos_name": "Cause We've Ended EP",
+  "nautilus_bank": 5,
+  "nautilus_index": 76,
+  "nautilus_name": "Cause We've Ended EP",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 1,
+  "kronos_index": 45,
+  "kronos_name": "Superstition Clav",
+  "nautilus_bank": 17,
+  "nautilus_index": 7,
+  "nautilus_name": "Superstition Clav",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 1,
+  "kronos_index": 46,
+  "kronos_name": "Higher Ground Clav SW2",
+  "nautilus_bank": 17,
+  "nautilus_index": 9,
+  "nautilus_name": "Higher Ground Clav SW2",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 1,
+  "kronos_index": 47,
+  "kronos_name": "Kid Charlmagne Clav",
+  "nautilus_bank": 17,
+  "nautilus_index": 10,
+  "nautilus_name": "Kid Charlmagne Clav",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 1,
+  "kronos_index": 48,
+  "kronos_name": "Trampled Under Foot Clav",
+  "nautilus_bank": 17,
+  "nautilus_index": 8,
+  "nautilus_name": "Trampled Under Foot Clav",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 1,
+  "kronos_index": 51,
+  "kronos_name": "All Good People Organ",
+  "nautilus_bank": 17,
+  "nautilus_index": 38,
+  "nautilus_name": "All Good People Organ",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 1,
+  "kronos_index": 52,
+  "kronos_name": "Karn Evil #9 Organ",
+  "nautilus_bank": 17,
+  "nautilus_index": 35,
+  "nautilus_name": "Karn Evil #9 Organ",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 1,
+  "kronos_index": 54,
+  "kronos_name": "Roundabout Organ",
+  "nautilus_bank": 17,
+  "nautilus_index": 39,
+  "nautilus_name": "Roundabout Organ",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 1,
+  "kronos_index": 55,
+  "kronos_name": "Light My Fire Organ",
+  "nautilus_bank": 17,
+  "nautilus_index": 63,
+  "nautilus_name": "Light My Fire Organ",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 1,
+  "kronos_index": 60,
+  "kronos_name": "Eleanor Rigby Strings",
+  "nautilus_bank": 18,
+  "nautilus_index": 51,
+  "nautilus_name": "Eleanor Rigby Strings",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 1,
+  "kronos_index": 63,
+  "kronos_name": "A 1000 Miles Strings",
+  "nautilus_bank": 18,
+  "nautilus_index": 81,
+  "nautilus_name": "A 1000 Miles Strings",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 1,
+  "kronos_index": 65,
+  "kronos_name": "Your Song Strings",
+  "nautilus_bank": 18,
+  "nautilus_index": 64,
+  "nautilus_name": "Your Song Strings",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 1,
+  "kronos_index": 76,
+  "kronos_name": "September Brass",
+  "nautilus_bank": 19,
+  "nautilus_index": 88,
+  "nautilus_name": "September Brass",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 1,
+  "kronos_index": 77,
+  "kronos_name": "Our House Brass",
+  "nautilus_bank": 19,
+  "nautilus_index": 93,
+  "nautilus_name": "Our House Brass",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 1,
+  "kronos_index": 78,
+  "kronos_name": "Sir Duke Brass",
+  "nautilus_bank": 19,
+  "nautilus_index": 87,
+  "nautilus_name": "Sir Duke Brass",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 1,
+  "kronos_index": 81,
+  "kronos_name": "Mambo #5 Saxes",
+  "nautilus_bank": 20,
+  "nautilus_index": 21,
+  "nautilus_name": "Mambo #5 Saxes",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 1,
+  "kronos_index": 85,
+  "kronos_name": "Pump Up the Bass",
+  "nautilus_bank": 21,
+  "nautilus_index": 112,
+  "nautilus_name": "Pump Up the Bass",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 1,
+  "kronos_index": 87,
+  "kronos_name": "The Sign Bass",
+  "nautilus_bank": 21,
+  "nautilus_index": 99,
+  "nautilus_name": "The Sign Bass",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 1,
+  "kronos_index": 89,
+  "kronos_name": "Rather Be",
+  "nautilus_bank": 23,
+  "nautilus_index": 77,
+  "nautilus_name": "Rather Be",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 1,
+  "kronos_index": 94,
+  "kronos_name": "Run It Synth",
+  "nautilus_bank": 23,
+  "nautilus_index": 54,
+  "nautilus_name": "Run It Synth",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 1,
+  "kronos_index": 99,
+  "kronos_name": "Bad Romance Octa",
+  "nautilus_bank": 23,
+  "nautilus_index": 52,
+  "nautilus_name": "Bad Romance Octa",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 1,
+  "kronos_index": 100,
+  "kronos_name": "Only Girl Synth",
+  "nautilus_bank": 23,
+  "nautilus_index": 53,
+  "nautilus_name": "Only Girl Synth",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 1,
+  "kronos_index": 103,
+  "kronos_name": "California Gurls Synth",
+  "nautilus_bank": 23,
+  "nautilus_index": 55,
+  "nautilus_name": "California Gurls Synth",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 1,
+  "kronos_index": 106,
+  "kronos_name": "The Sign Lead",
+  "nautilus_bank": 22,
+  "nautilus_index": 113,
+  "nautilus_name": "The Sign Lead",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 1,
+  "kronos_index": 107,
+  "kronos_name": "Jump Krossed Lead",
+  "nautilus_bank": 22,
+  "nautilus_index": 127,
+  "nautilus_name": "Jump Krossed Lead",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 1,
+  "kronos_index": 111,
+  "kronos_name": "YoursIsNoDisgrace Lead",
+  "nautilus_bank": 22,
+  "nautilus_index": 126,
+  "nautilus_name": "YoursIsNoDisgrace Lead",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 1,
+  "kronos_index": 114,
+  "kronos_name": "Da Funk Dirty Lead",
+  "nautilus_bank": 23,
+  "nautilus_index": 4,
+  "nautilus_name": "Da Funk Dirty Lead",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 1,
+  "kronos_index": 116,
+  "kronos_name": "Get Lucky Lead",
+  "nautilus_bank": 22,
+  "nautilus_index": 122,
+  "nautilus_name": "Get Lucky Lead",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 1,
+  "kronos_index": 120,
+  "kronos_name": "Karn Evil #9 S+H (G#4)",
+  "nautilus_bank": 24,
+  "nautilus_index": 45,
+  "nautilus_name": "Karn Evil #9 S+H (G#4)",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 1,
+  "kronos_index": 122,
+  "kronos_name": "Sandstorm Gated",
+  "nautilus_bank": 23,
+  "nautilus_index": 5,
+  "nautilus_name": "Sandstorm Gated",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 1,
+  "kronos_index": 123,
+  "kronos_name": "Titanium Riser",
+  "nautilus_bank": 24,
+  "nautilus_index": 71,
+  "nautilus_name": "Titanium Riser",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 0,
+  "kronos_name": "KRONOS German Grand",
+  "nautilus_bank": 0,
+  "nautilus_index": 16,
+  "nautilus_name": "Bright Italian Grand",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 2,
+  "kronos_name": "R.Ferrante German Grand",
+  "nautilus_bank": 0,
+  "nautilus_index": 19,
+  "nautilus_name": "SaturdayInThePark Piano",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 3,
+  "kronos_name": "German New Age Grand",
+  "nautilus_bank": 0,
+  "nautilus_index": 16,
+  "nautilus_name": "Bright Italian Grand",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 4,
+  "kronos_name": "L.Mays German Grand",
+  "nautilus_bank": 0,
+  "nautilus_index": 16,
+  "nautilus_name": "Bright Italian Grand",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 5,
+  "kronos_name": "German Grand + VPM",
+  "nautilus_bank": 0,
+  "nautilus_index": 7,
+  "nautilus_name": "Italian Studio Grand",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 8,
+  "kronos_name": "J.Rudess Japanese Grand",
+  "nautilus_bank": 0,
+  "nautilus_index": 16,
+  "nautilus_name": "Bright Italian Grand",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 14,
+  "kronos_name": "Herbie's \"Butterfly\" EP",
+  "nautilus_bank": 0,
+  "nautilus_index": 74,
+  "nautilus_name": "Herbie's \"Butterfly\" EP",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 15,
+  "kronos_name": "G.Duke Mark I Phaser EP",
+  "nautilus_bank": 0,
+  "nautilus_index": 75,
+  "nautilus_name": "G.Duke Mark I Phaser EP",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 16,
+  "kronos_name": "E.Piano Mark I Chorus",
+  "nautilus_bank": 0,
+  "nautilus_index": 76,
+  "nautilus_name": "E.Piano Mark I Chorus",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 17,
+  "kronos_name": "EP Mark I PreAmp/Wah Kn7",
+  "nautilus_bank": 0,
+  "nautilus_index": 80,
+  "nautilus_name": "EP Mark I PreAmp Wah Kn5",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 18,
+  "kronos_name": "EP Mark I PreAmp&Cabinet",
+  "nautilus_bank": 0,
+  "nautilus_index": 73,
+  "nautilus_name": "EP Mark I PreAmp&Cabinet",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 20,
+  "kronos_name": "E.Piano Mark I Rotary",
+  "nautilus_bank": 0,
+  "nautilus_index": 78,
+  "nautilus_name": "E.Piano Mark I Rotary",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 28,
+  "kronos_name": "J.Lorber MarkV EP w/Pad",
+  "nautilus_bank": 0,
+  "nautilus_index": 93,
+  "nautilus_name": "J.Lorber MarkV EP w/Pad",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 30,
+  "kronos_name": "E.Piano Dyno Chorus",
+  "nautilus_bank": 0,
+  "nautilus_index": 90,
+  "nautilus_name": "E.Piano Dyno Chorus",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 32,
+  "kronos_name": "T.Coster Dyno EP Tremolo",
+  "nautilus_bank": 0,
+  "nautilus_index": 91,
+  "nautilus_name": "T.Coster Dyno EP Tremolo",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 34,
+  "kronos_name": "Reed EP 200 Tremolo SW1",
+  "nautilus_bank": 0,
+  "nautilus_index": 105,
+  "nautilus_name": "Reed EP 200 Tremolo SW1",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 35,
+  "kronos_name": "Reed EP 200A Overdrive",
+  "nautilus_bank": 0,
+  "nautilus_index": 114,
+  "nautilus_name": "Reed EP 200A Overdrive",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 36,
+  "kronos_name": "F.McComb Reed EP 200A",
+  "nautilus_bank": 0,
+  "nautilus_index": 109,
+  "nautilus_name": "F.McComb Reed EP 200A",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 37,
+  "kronos_name": "Reed EP 200A Tremolo SW1",
+  "nautilus_bank": 0,
+  "nautilus_index": 111,
+  "nautilus_name": "Reed EP 200A Tremolo SW1",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 41,
+  "kronos_name": "Tom Coster's Rhythm Comp",
+  "nautilus_bank": 1,
+  "nautilus_index": 87,
+  "nautilus_name": "Tom Coster's Rhythm Comp",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 46,
+  "kronos_name": "Tom Coster's Solo & Comp",
+  "nautilus_bank": 1,
+  "nautilus_index": 86,
+  "nautilus_name": "Tom Coster's Solo & Comp",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 49,
+  "kronos_name": "Mr. Nice :-) V2",
+  "nautilus_bank": 1,
+  "nautilus_index": 57,
+  "nautilus_name": "Mr. Nice :-)",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 51,
+  "kronos_name": "NIACIN Wah (Pitchbend)",
+  "nautilus_bank": 1,
+  "nautilus_index": 62,
+  "nautilus_name": "NIACIN Wah (Pitchbend)",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 54,
+  "kronos_name": "CX-3 Organ 888 SW1 V2",
+  "nautilus_bank": 21,
+  "nautilus_index": 90,
+  "nautilus_name": "Slap Bass V.Switch",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 55,
+  "kronos_name": "MOD-7 E.Piano Pad SW1",
+  "nautilus_bank": 1,
+  "nautilus_index": 6,
+  "nautilus_name": "MOD-7 E.Piano Pad SW1",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 56,
+  "kronos_name": "Piano Wire SW1",
+  "nautilus_bank": 1,
+  "nautilus_index": 12,
+  "nautilus_name": "Piano Wire SW1",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 57,
+  "kronos_name": "Clav 1 STR-1",
+  "nautilus_bank": 1,
+  "nautilus_index": 14,
+  "nautilus_name": "Clav 1 STR-1",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 60,
+  "kronos_name": "Custom Clav Knob5,6",
+  "nautilus_bank": 1,
+  "nautilus_index": 19,
+  "nautilus_name": "Custom Clav",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 63,
+  "kronos_name": "The Mist Singing Softly",
+  "nautilus_bank": 2,
+  "nautilus_index": 31,
+  "nautilus_name": "The Mist Singing Softly",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 64,
+  "kronos_name": "Russian Winter SW1",
+  "nautilus_bank": 2,
+  "nautilus_index": 30,
+  "nautilus_name": "Russian Winter SW1",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 66,
+  "kronos_name": "6 Steel Strings",
+  "nautilus_bank": 2,
+  "nautilus_index": 54,
+  "nautilus_name": "6 Steel Strings",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 67,
+  "kronos_name": "Nylon STR-1 Acoustic",
+  "nautilus_bank": 25,
+  "nautilus_index": 22,
+  "nautilus_name": "Rock Kit Dry Mic SnOn",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 70,
+  "kronos_name": "Classik Punch Bass",
+  "nautilus_bank": 2,
+  "nautilus_index": 108,
+  "nautilus_name": "Classik Punch Bass",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 71,
+  "kronos_name": "Stack Bass",
+  "nautilus_bank": 2,
+  "nautilus_index": 96,
+  "nautilus_name": "Stack Bass",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 72,
+  "kronos_name": "TB Bang On !",
+  "nautilus_bank": 2,
+  "nautilus_index": 85,
+  "nautilus_name": "TB Bang On !",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 73,
+  "kronos_name": "Acid Square Bass",
+  "nautilus_bank": 2,
+  "nautilus_index": 88,
+  "nautilus_name": "Acid Square Bass",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 75,
+  "kronos_name": "TB Rez Square",
+  "nautilus_bank": 2,
+  "nautilus_index": 89,
+  "nautilus_name": "TB Rez Square",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 76,
+  "kronos_name": "Legato TB333 Bass",
+  "nautilus_bank": 25,
+  "nautilus_index": 81,
+  "nautilus_name": "Tekno Klub Kit",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 78,
+  "kronos_name": "Old Style Syn Bass",
+  "nautilus_bank": 2,
+  "nautilus_index": 99,
+  "nautilus_name": "Old Style Syn Bass",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 81,
+  "kronos_name": "Deep Finger Bass",
+  "nautilus_bank": 2,
+  "nautilus_index": 70,
+  "nautilus_name": "Deep Finger Bass",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 82,
+  "kronos_name": "Grand Wirey Pad SW1",
+  "nautilus_bank": 4,
+  "nautilus_index": 23,
+  "nautilus_name": "Grand Wirey Pad SW1",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 84,
+  "kronos_name": "Sad Saw Slow",
+  "nautilus_bank": 2,
+  "nautilus_index": 9,
+  "nautilus_name": "Sad Saw Slow",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 85,
+  "kronos_name": "Polysix Strings",
+  "nautilus_bank": 2,
+  "nautilus_index": 13,
+  "nautilus_name": "Polysix Strings",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 87,
+  "kronos_name": "Big Pad",
+  "nautilus_bank": 4,
+  "nautilus_index": 26,
+  "nautilus_name": "Big Pad",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 88,
+  "kronos_name": "Molecular Surgery",
+  "nautilus_bank": 4,
+  "nautilus_index": 44,
+  "nautilus_name": "Molecular Surgery",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 89,
+  "kronos_name": "Deep Asleep Squares",
+  "nautilus_bank": 4,
+  "nautilus_index": 8,
+  "nautilus_name": "Deep Asleep Squares",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 91,
+  "kronos_name": "Vintage 80 Warm Saw",
+  "nautilus_bank": 4,
+  "nautilus_index": 11,
+  "nautilus_name": "Vintage 80 Warm Saw",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 93,
+  "kronos_name": "Power Ana Brass",
+  "nautilus_bank": 2,
+  "nautilus_index": 40,
+  "nautilus_name": "Power Ana Brass",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 94,
+  "kronos_name": "5th World Stab",
+  "nautilus_bank": 4,
+  "nautilus_index": 4,
+  "nautilus_name": "5th World Stab",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 95,
+  "kronos_name": "Super Saw Brass",
+  "nautilus_bank": 2,
+  "nautilus_index": 38,
+  "nautilus_name": "Super Saw Brass",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 97,
+  "kronos_name": "Cathedral Fanfare SW1",
+  "nautilus_bank": 2,
+  "nautilus_index": 45,
+  "nautilus_name": "Cathedral Fanfare SW1",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 100,
+  "kronos_name": "Breathing Ocean Synth",
+  "nautilus_bank": 3,
+  "nautilus_index": 121,
+  "nautilus_name": "Breathing Ocean Synth",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 101,
+  "kronos_name": "STR-1 & Poly6 Pad Layer",
+  "nautilus_bank": 3,
+  "nautilus_index": 13,
+  "nautilus_name": "STR-1 & Poly6 Pad Layer",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 102,
+  "kronos_name": "Raising Hammer Synth",
+  "nautilus_bank": 3,
+  "nautilus_index": 125,
+  "nautilus_name": "Raising Hammer Synth",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 105,
+  "kronos_name": "Vintage SciFi Lead",
+  "nautilus_bank": 3,
+  "nautilus_index": 43,
+  "nautilus_name": "Vintage SciFi Lead",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 107,
+  "kronos_name": "Stradivarious Sync",
+  "nautilus_bank": 3,
+  "nautilus_index": 59,
+  "nautilus_name": "Stradivarious Sync",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 109,
+  "kronos_name": "Simple Saw Lead",
+  "nautilus_bank": 3,
+  "nautilus_index": 40,
+  "nautilus_name": "Simple Saw Lead",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 114,
+  "kronos_name": "BPF Sweep Pad",
+  "nautilus_bank": 4,
+  "nautilus_index": 28,
+  "nautilus_name": "BPF Sweep Pad",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 116,
+  "kronos_name": "WindSong",
+  "nautilus_bank": 4,
+  "nautilus_index": 43,
+  "nautilus_name": "Wind Song",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 120,
+  "kronos_name": "Bounce Shot",
+  "nautilus_bank": 4,
+  "nautilus_index": 57,
+  "nautilus_name": "Bounce Shot",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 123,
+  "kronos_name": "Auto Picking (xform)",
+  "nautilus_bank": 4,
+  "nautilus_index": 60,
+  "nautilus_name": "Auto Picking (xform)",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 124,
+  "kronos_name": "Night Times",
+  "nautilus_bank": 4,
+  "nautilus_index": 65,
+  "nautilus_name": "Night Times",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 126,
+  "kronos_name": "When a Robot Dreams",
+  "nautilus_bank": 4,
+  "nautilus_index": 106,
+  "nautilus_name": "When a Robot Dreams",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 2,
+  "kronos_index": 127,
+  "kronos_name": "Sea World",
+  "nautilus_bank": 4,
+  "nautilus_index": 108,
+  "nautilus_name": "Sea World",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 0,
+  "kronos_name": "Dynamic FM Keys",
+  "nautilus_bank": 1,
+  "nautilus_index": 11,
+  "nautilus_name": "Dynamic FM Keys",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 1,
+  "kronos_name": "Grand Electric",
+  "nautilus_bank": 1,
+  "nautilus_index": 10,
+  "nautilus_name": "Grand Electric",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 8,
+  "kronos_name": "Contemplative E. Piano",
+  "nautilus_bank": 1,
+  "nautilus_index": 7,
+  "nautilus_name": "Synth EP & Pad",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 9,
+  "kronos_name": "Custom Harpsichord Kn5,6",
+  "nautilus_bank": 1,
+  "nautilus_index": 20,
+  "nautilus_name": "Custom Harpsichord",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 10,
+  "kronos_name": "Double Harpsi AL-1 SW1",
+  "nautilus_bank": 1,
+  "nautilus_index": 21,
+  "nautilus_name": "Double Harpsi AL-1 SW1",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 11,
+  "kronos_name": "String/Brass Pad",
+  "nautilus_bank": 2,
+  "nautilus_index": 6,
+  "nautilus_name": "String/Brass Pad",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 13,
+  "kronos_name": "Lucious Strings",
+  "nautilus_bank": 2,
+  "nautilus_index": 5,
+  "nautilus_name": "Lucious Strings",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 14,
+  "kronos_name": "Dreamweaver Strings",
+  "nautilus_bank": 2,
+  "nautilus_index": 14,
+  "nautilus_name": "Dreamweaver Strings",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 15,
+  "kronos_name": "Big Texture Strings",
+  "nautilus_bank": 2,
+  "nautilus_index": 15,
+  "nautilus_name": "Big Texture Strings",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 16,
+  "kronos_name": "Saw Strings",
+  "nautilus_bank": 2,
+  "nautilus_index": 19,
+  "nautilus_name": "Saw Strings",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 19,
+  "kronos_name": "Tremolo Tension Strings",
+  "nautilus_bank": 2,
+  "nautilus_index": 21,
+  "nautilus_name": "Tremolo Tension Strings",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 20,
+  "kronos_name": "Vox Oasis",
+  "nautilus_bank": 2,
+  "nautilus_index": 25,
+  "nautilus_name": "Vox Oasis",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 21,
+  "kronos_name": "Cumulus Voxalicus",
+  "nautilus_bank": 2,
+  "nautilus_index": 29,
+  "nautilus_name": "Cumulus Voxalicus",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 22,
+  "kronos_name": "Vocalisms SW2 Split",
+  "nautilus_bank": 2,
+  "nautilus_index": 26,
+  "nautilus_name": "Vocalisms SW2 Split",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 24,
+  "kronos_name": "PWM Pad",
+  "nautilus_bank": 4,
+  "nautilus_index": 19,
+  "nautilus_name": "PWM Pad",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 29,
+  "kronos_name": "The Sublime Mariner",
+  "nautilus_bank": 4,
+  "nautilus_index": 48,
+  "nautilus_name": "The Sublime Mariner",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 30,
+  "kronos_name": "Harmonium",
+  "nautilus_bank": 4,
+  "nautilus_index": 17,
+  "nautilus_name": "Harmonium",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 32,
+  "kronos_name": "Saw Sweep-n-Drop",
+  "nautilus_bank": 4,
+  "nautilus_index": 38,
+  "nautilus_name": "Saw Sweep-n-Drop",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 33,
+  "kronos_name": "Combination Filters",
+  "nautilus_bank": 4,
+  "nautilus_index": 31,
+  "nautilus_name": "Combination Filters",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 34,
+  "kronos_name": "Slow-Filter Pad",
+  "nautilus_bank": 4,
+  "nautilus_index": 37,
+  "nautilus_name": "Slow Filter Pad",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 37,
+  "kronos_name": "Gliding Squares",
+  "nautilus_bank": 3,
+  "nautilus_index": 91,
+  "nautilus_name": "Gliding Squares",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 38,
+  "kronos_name": "The Power & The Glory",
+  "nautilus_bank": 3,
+  "nautilus_index": 112,
+  "nautilus_name": "Glory Keys",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 42,
+  "kronos_name": "Uniformity",
+  "nautilus_bank": 3,
+  "nautilus_index": 73,
+  "nautilus_name": "Uniformity",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 44,
+  "kronos_name": "Softy Pad",
+  "nautilus_bank": 4,
+  "nautilus_index": 11,
+  "nautilus_name": "Vintage 80 Warm Saw",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 48,
+  "kronos_name": "Rez Sweep",
+  "nautilus_bank": 3,
+  "nautilus_index": 124,
+  "nautilus_name": "Rez Sweep",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 49,
+  "kronos_name": "Afterburn",
+  "nautilus_bank": 3,
+  "nautilus_index": 111,
+  "nautilus_name": "Afterburn",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 51,
+  "kronos_name": "Funky Comp Synth",
+  "nautilus_bank": 3,
+  "nautilus_index": 123,
+  "nautilus_name": "Funky Comp Synth",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 55,
+  "kronos_name": "Power of Synth",
+  "nautilus_bank": 3,
+  "nautilus_index": 104,
+  "nautilus_name": "Power of Synth",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 56,
+  "kronos_name": "Phone Boy",
+  "nautilus_bank": 4,
+  "nautilus_index": 0,
+  "nautilus_name": "Phone Boy",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 58,
+  "kronos_name": "Random Arp Pulser",
+  "nautilus_bank": 3,
+  "nautilus_index": 127,
+  "nautilus_name": "Random Arp Pulser",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 61,
+  "kronos_name": "Widow Maker",
+  "nautilus_bank": 4,
+  "nautilus_index": 1,
+  "nautilus_name": "Widow Maker",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 62,
+  "kronos_name": "Glory Keys",
+  "nautilus_bank": 3,
+  "nautilus_index": 112,
+  "nautilus_name": "Glory Keys",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 66,
+  "kronos_name": "Synthy Plinky",
+  "nautilus_bank": 3,
+  "nautilus_index": 72,
+  "nautilus_name": "Synthy Plinky",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 67,
+  "kronos_name": "PWM Stab Synth",
+  "nautilus_bank": 3,
+  "nautilus_index": 70,
+  "nautilus_name": "PWM Stab Synth",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 68,
+  "kronos_name": "Velocity Filter LPF",
+  "nautilus_bank": 24,
+  "nautilus_index": 20,
+  "nautilus_name": "Time Machines",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 69,
+  "kronos_name": "Trancosyzer",
+  "nautilus_bank": 3,
+  "nautilus_index": 98,
+  "nautilus_name": "Techno Anthem Pad",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 70,
+  "kronos_name": "Techno Anthem Pad",
+  "nautilus_bank": 3,
+  "nautilus_index": 98,
+  "nautilus_name": "Techno Anthem Pad",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 71,
+  "kronos_name": "Filter Rez Choir",
+  "nautilus_bank": 3,
+  "nautilus_index": 122,
+  "nautilus_name": "Filter Rez Choir",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 76,
+  "kronos_name": "Pure Square Lead",
+  "nautilus_bank": 3,
+  "nautilus_index": 23,
+  "nautilus_name": "Pure Square Lead",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 78,
+  "kronos_name": "Lead w/ a Vengence",
+  "nautilus_bank": 3,
+  "nautilus_index": 51,
+  "nautilus_name": "Lead with a Vengence",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 82,
+  "kronos_name": "Mega Lead",
+  "nautilus_bank": 25,
+  "nautilus_index": 81,
+  "nautilus_name": "Tekno Klub Kit",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 83,
+  "kronos_name": "TaBoo Lead",
+  "nautilus_bank": 3,
+  "nautilus_index": 39,
+  "nautilus_name": "TaBoo Lead",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 84,
+  "kronos_name": "Huggy Lead",
+  "nautilus_bank": 3,
+  "nautilus_index": 36,
+  "nautilus_name": "Huggy Lead",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 85,
+  "kronos_name": "Sharp Saw Lead",
+  "nautilus_bank": 3,
+  "nautilus_index": 38,
+  "nautilus_name": "Sharp Saw Lead",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 88,
+  "kronos_name": "Sync Commentary",
+  "nautilus_bank": 3,
+  "nautilus_index": 63,
+  "nautilus_name": "Sync Commentary",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 89,
+  "kronos_name": "Detune Hop Lead",
+  "nautilus_bank": 25,
+  "nautilus_index": 81,
+  "nautilus_name": "Tekno Klub Kit",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 92,
+  "kronos_name": "Pulsing Screaming Thing",
+  "nautilus_bank": 5,
+  "nautilus_index": 101,
+  "nautilus_name": "\"...lead to Rome\" E.P.",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 94,
+  "kronos_name": "Going Up?",
+  "nautilus_bank": 3,
+  "nautilus_index": 64,
+  "nautilus_name": "Going Up?",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 99,
+  "kronos_name": "Leading Triangle",
+  "nautilus_bank": 3,
+  "nautilus_index": 16,
+  "nautilus_name": "Leading Triangle",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 101,
+  "kronos_name": "Hookie Lead",
+  "nautilus_bank": 21,
+  "nautilus_index": 84,
+  "nautilus_name": "PB Muted Pick Bass 2",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 102,
+  "kronos_name": "Trance Form Lead",
+  "nautilus_bank": 3,
+  "nautilus_index": 32,
+  "nautilus_name": "Trance Form Lead",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 104,
+  "kronos_name": "4 Guys Whistling",
+  "nautilus_bank": 3,
+  "nautilus_index": 15,
+  "nautilus_name": "4 Guys Whistling",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 107,
+  "kronos_name": "Rez Calming Down",
+  "nautilus_bank": 4,
+  "nautilus_index": 76,
+  "nautilus_name": "Rez Calming Down",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 108,
+  "kronos_name": "Clock Dance",
+  "nautilus_bank": 4,
+  "nautilus_index": 53,
+  "nautilus_name": "Clock Dance",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 110,
+  "kronos_name": "Aromatherapy",
+  "nautilus_bank": 4,
+  "nautilus_index": 41,
+  "nautilus_name": "Aromatherapy",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 117,
+  "kronos_name": "Offbeat Dancerific",
+  "nautilus_bank": 4,
+  "nautilus_index": 81,
+  "nautilus_name": "Offbeat Dancerific",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 120,
+  "kronos_name": "A New Reggae",
+  "nautilus_bank": 4,
+  "nautilus_index": 88,
+  "nautilus_name": "A New Reggae",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 121,
+  "kronos_name": "Echoing Gooberation",
+  "nautilus_bank": 25,
+  "nautilus_index": 65,
+  "nautilus_name": "Gated/Distorted DnB Kit",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 122,
+  "kronos_name": "Giant Pad w/Pulse",
+  "nautilus_bank": 4,
+  "nautilus_index": 78,
+  "nautilus_name": "Giant Pad w/Pulse",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 124,
+  "kronos_name": "Perpetual Random Motion",
+  "nautilus_bank": 4,
+  "nautilus_index": 86,
+  "nautilus_name": "Perpetual Random Motion",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 126,
+  "kronos_name": "Watchamacallit",
+  "nautilus_bank": 4,
+  "nautilus_index": 77,
+  "nautilus_name": "Watchamacallit",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 3,
+  "kronos_index": 127,
+  "kronos_name": "Rhythm Scanner",
+  "nautilus_bank": 4,
+  "nautilus_index": 85,
+  "nautilus_name": "Rhythm Scanner",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 4,
+  "kronos_index": 0,
+  "kronos_name": "Perc Organ 1 SW1 V2",
+  "nautilus_bank": 1,
+  "nautilus_index": 37,
+  "nautilus_name": "Perc Organ 1 SW1",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 4,
+  "kronos_index": 11,
+  "kronos_name": "LS DirtyFunk V2",
+  "nautilus_bank": 1,
+  "nautilus_index": 58,
+  "nautilus_name": "LS Dirty Funk",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 4,
+  "kronos_index": 16,
+  "kronos_name": "Jazzy Organ 1 SW1 V2",
+  "nautilus_bank": 1,
+  "nautilus_index": 81,
+  "nautilus_name": "Jazzy Organ 2 SW1",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 4,
+  "kronos_index": 20,
+  "kronos_name": "Prog Chords 2 SW1 V2",
+  "nautilus_bank": 1,
+  "nautilus_index": 70,
+  "nautilus_name": "Prog Chords 2 SW1",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 4,
+  "kronos_index": 25,
+  "kronos_name": "Low.Manual/Jazz.Comp2 V2",
+  "nautilus_bank": 1,
+  "nautilus_index": 35,
+  "nautilus_name": "Low.Manual/Jazz.Comp 2",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 4,
+  "kronos_index": 26,
+  "kronos_name": "Classic Organ SW1 V2",
+  "nautilus_bank": 1,
+  "nautilus_index": 78,
+  "nautilus_name": "Classic Organ SW1",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 4,
+  "kronos_index": 33,
+  "kronos_name": "Carpet Magic V2",
+  "nautilus_bank": 13,
+  "nautilus_index": 90,
+  "nautilus_name": "",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 4,
+  "kronos_index": 42,
+  "kronos_name": "Pipes on Sunday",
+  "nautilus_bank": 1,
+  "nautilus_index": 101,
+  "nautilus_name": "Pipes on Sunday",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 4,
+  "kronos_index": 44,
+  "kronos_name": "Organ.Dance.Now",
+  "nautilus_bank": 25,
+  "nautilus_index": 74,
+  "nautilus_name": "House Kit",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 4,
+  "kronos_index": 51,
+  "kronos_name": "The Air Dance",
+  "nautilus_bank": 4,
+  "nautilus_index": 67,
+  "nautilus_name": "The Air Dance",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 4,
+  "kronos_index": 52,
+  "kronos_name": "Aeronautics",
+  "nautilus_bank": 4,
+  "nautilus_index": 80,
+  "nautilus_name": "Aeronautics",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 4,
+  "kronos_index": 53,
+  "kronos_name": "Euro Bureau =C2=",
+  "nautilus_bank": 4,
+  "nautilus_index": 91,
+  "nautilus_name": "Euro Bureau =C2=",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 4,
+  "kronos_index": 61,
+  "kronos_name": "Klub Bass",
+  "nautilus_bank": 3,
+  "nautilus_index": 43,
+  "nautilus_name": "Vintage SciFi Lead",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 4,
+  "kronos_index": 62,
+  "kronos_name": "Blatt Bass",
+  "nautilus_bank": 2,
+  "nautilus_index": 111,
+  "nautilus_name": "Blatt Bass",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 4,
+  "kronos_index": 64,
+  "kronos_name": "Pulse Octave Bass",
+  "nautilus_bank": 2,
+  "nautilus_index": 98,
+  "nautilus_name": "Pulse Octave Bass",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 4,
+  "kronos_index": 66,
+  "kronos_name": "TuBaSs + Xtras",
+  "nautilus_bank": 2,
+  "nautilus_index": 80,
+  "nautilus_name": "TuBaSs + Xtras",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 4,
+  "kronos_index": 67,
+  "kronos_name": "Antic Bass",
+  "nautilus_bank": 25,
+  "nautilus_index": 99,
+  "nautilus_name": "Nu Style Kit",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 4,
+  "kronos_index": 68,
+  "kronos_name": "Dark Bass",
+  "nautilus_bank": 2,
+  "nautilus_index": 74,
+  "nautilus_name": "Deep Decay Bass",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 4,
+  "kronos_index": 70,
+  "kronos_name": "Deep Decay Bass",
+  "nautilus_bank": 2,
+  "nautilus_index": 74,
+  "nautilus_name": "Deep Decay Bass",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 4,
+  "kronos_index": 71,
+  "kronos_name": "Falling Jungle Bass",
+  "nautilus_bank": 2,
+  "nautilus_index": 79,
+  "nautilus_name": "Falling Jungle Bass",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 4,
+  "kronos_index": 73,
+  "kronos_name": "Mushroom Bassman",
+  "nautilus_bank": 2,
+  "nautilus_index": 117,
+  "nautilus_name": "Mushroom Bassman",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 4,
+  "kronos_index": 74,
+  "kronos_name": "Upbeat Bass Morpher",
+  "nautilus_bank": 1,
+  "nautilus_index": 116,
+  "nautilus_name": "Rated (P)PG for \"Bell\"",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 4,
+  "kronos_index": 81,
+  "kronos_name": "80's Stereo Bass SW1",
+  "nautilus_bank": 2,
+  "nautilus_index": 92,
+  "nautilus_name": "80's Stereo Bass SW1",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 4,
+  "kronos_index": 82,
+  "kronos_name": "FM Sync Bass",
+  "nautilus_bank": 2,
+  "nautilus_index": 106,
+  "nautilus_name": "FM Sync Bass",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 4,
+  "kronos_index": 83,
+  "kronos_name": "Timpanic Bass",
+  "nautilus_bank": 2,
+  "nautilus_index": 113,
+  "nautilus_name": "Timpanic Bass",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 4,
+  "kronos_index": 84,
+  "kronos_name": "Velocity Filter Bassss",
+  "nautilus_bank": 2,
+  "nautilus_index": 91,
+  "nautilus_name": "Velocity Filter Bassss",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 4,
+  "kronos_index": 86,
+  "kronos_name": "Mystery Bells",
+  "nautilus_bank": 2,
+  "nautilus_index": 1,
+  "nautilus_name": "Mystery Bells",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 4,
+  "kronos_index": 89,
+  "kronos_name": "Stop Following Me Bells",
+  "nautilus_bank": 4,
+  "nautilus_index": 59,
+  "nautilus_name": "Stop Following Me Bells",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 4,
+  "kronos_index": 90,
+  "kronos_name": "Atmosphere Bells SW1",
+  "nautilus_bank": 1,
+  "nautilus_index": 120,
+  "nautilus_name": "Atmosphere Bells SW1",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 4,
+  "kronos_index": 91,
+  "kronos_name": "WineGlass Bell + Xtras",
+  "nautilus_bank": 1,
+  "nautilus_index": 121,
+  "nautilus_name": "Wineglass Bell + Xtras",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 4,
+  "kronos_index": 92,
+  "kronos_name": "BP Noise Sweep",
+  "nautilus_bank": 4,
+  "nautilus_index": 100,
+  "nautilus_name": "BP Noise Sweep",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 4,
+  "kronos_index": 94,
+  "kronos_name": "Noize Blizzard",
+  "nautilus_bank": 4,
+  "nautilus_index": 102,
+  "nautilus_name": "Noize Blizzard",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 4,
+  "kronos_index": 95,
+  "kronos_name": "Syn-Orchestra Warming Up",
+  "nautilus_bank": 4,
+  "nautilus_index": 111,
+  "nautilus_name": "Syn-Orchestra Warming Up",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 4,
+  "kronos_index": 97,
+  "kronos_name": "Shepard Tone",
+  "nautilus_bank": 4,
+  "nautilus_index": 110,
+  "nautilus_name": "Shepard Tone",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 4,
+  "kronos_index": 98,
+  "kronos_name": "Transition Sweep Up",
+  "nautilus_bank": 4,
+  "nautilus_index": 99,
+  "nautilus_name": "Transition Sweep Up",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 4,
+  "kronos_index": 99,
+  "kronos_name": "Beyond the Crypt",
+  "nautilus_bank": 4,
+  "nautilus_index": 107,
+  "nautilus_name": "Beyond the Crypt",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 4,
+  "kronos_index": 102,
+  "kronos_name": "Shorty Saw Lead",
+  "nautilus_bank": 3,
+  "nautilus_index": 78,
+  "nautilus_name": "Shorty Saw Lead",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 4,
+  "kronos_index": 103,
+  "kronos_name": "Shorty Square Lead",
+  "nautilus_bank": 3,
+  "nautilus_index": 79,
+  "nautilus_name": "Shorty Square Lead",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 4,
+  "kronos_index": 108,
+  "kronos_name": "Popcorn Hit Bright",
+  "nautilus_bank": 3,
+  "nautilus_index": 81,
+  "nautilus_name": "Popcorn Hit Bright",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 4,
+  "kronos_index": 115,
+  "kronos_name": "Haus Kick =C2= SW2",
+  "nautilus_bank": 4,
+  "nautilus_index": 117,
+  "nautilus_name": "Haus Kick =C2= SW2",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 4,
+  "kronos_index": 117,
+  "kronos_name": "Stereo Fat Claps =C4=",
+  "nautilus_bank": 4,
+  "nautilus_index": 119,
+  "nautilus_name": "Stereo Fat Claps =C4=",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 4,
+  "kronos_index": 118,
+  "kronos_name": "Aero Claps =C4=",
+  "nautilus_bank": 4,
+  "nautilus_index": 120,
+  "nautilus_name": "Aero Claps =C4=",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 4,
+  "kronos_index": 119,
+  "kronos_name": "AL-1 TomTom Variations",
+  "nautilus_bank": 4,
+  "nautilus_index": 121,
+  "nautilus_name": "AL-1 TomTom Variations",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 4,
+  "kronos_index": 125,
+  "kronos_name": "Multi-Hat =F#2= SW1",
+  "nautilus_bank": 4,
+  "nautilus_index": 122,
+  "nautilus_name": "Multi-Hat =F#2= SW1",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 4,
+  "kronos_index": 126,
+  "kronos_name": "Ana HAT + TRI =F#2= SW2",
+  "nautilus_bank": 4,
+  "nautilus_index": 123,
+  "nautilus_name": "Ana HAT + TRI =F#2= SW2",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 5,
+  "kronos_index": 1,
+  "kronos_name": "Acoustic STR-1 Guitar",
+  "nautilus_bank": 2,
+  "nautilus_index": 52,
+  "nautilus_name": "Acoustic STR-1 Guitar",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 5,
+  "kronos_index": 5,
+  "kronos_name": "Flamenco Guitar",
+  "nautilus_bank": 2,
+  "nautilus_index": 56,
+  "nautilus_name": "Flamenco Guitar",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 5,
+  "kronos_index": 6,
+  "kronos_name": "Nylon Dynamic Guitar",
+  "nautilus_bank": 2,
+  "nautilus_index": 49,
+  "nautilus_name": "Nylon Dynamic Guitar",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 5,
+  "kronos_index": 8,
+  "kronos_name": "Nylon Stalkings",
+  "nautilus_bank": 2,
+  "nautilus_index": 48,
+  "nautilus_name": "Nylon Stalkings",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 5,
+  "kronos_index": 9,
+  "kronos_name": "Low Bridge Blues Guitar",
+  "nautilus_bank": 2,
+  "nautilus_index": 57,
+  "nautilus_name": "Low Bridge Blues Guitar",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 5,
+  "kronos_index": 10,
+  "kronos_name": "Old Hat Jazz Guitar",
+  "nautilus_bank": 2,
+  "nautilus_index": 66,
+  "nautilus_name": "Old Hat Jazz Guitar",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 5,
+  "kronos_index": 13,
+  "kronos_name": "Spaghetti Guitar",
+  "nautilus_bank": 2,
+  "nautilus_index": 62,
+  "nautilus_name": "Spaghetti Guitar",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 5,
+  "kronos_index": 14,
+  "kronos_name": "Tremolo/Surf Guitar",
+  "nautilus_bank": 2,
+  "nautilus_index": 61,
+  "nautilus_name": "Tremolo/Surf Guitar",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 5,
+  "kronos_index": 19,
+  "kronos_name": "Buzzy String Guitar",
+  "nautilus_bank": 2,
+  "nautilus_index": 64,
+  "nautilus_name": "Buzzy String Guitar",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 5,
+  "kronos_index": 24,
+  "kronos_name": "Harp Bisbigliando SW1",
+  "nautilus_bank": 19,
+  "nautilus_index": 40,
+  "nautilus_name": "Mountain Voices",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 5,
+  "kronos_index": 25,
+  "kronos_name": "Celtic Harp",
+  "nautilus_bank": 0,
+  "nautilus_index": 32,
+  "nautilus_name": "Classic 80's Piano Layer",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 5,
+  "kronos_index": 31,
+  "kronos_name": "Hammered Dulcimer",
+  "nautilus_bank": 2,
+  "nautilus_index": 127,
+  "nautilus_name": "Hammered Dulcimer",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 5,
+  "kronos_index": 32,
+  "kronos_name": "Sympathetic Sitar",
+  "nautilus_bank": 3,
+  "nautilus_index": 7,
+  "nautilus_name": "Sympathetic Sitar",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 5,
+  "kronos_index": 33,
+  "kronos_name": "Ambient Sitar SW1,2",
+  "nautilus_bank": 3,
+  "nautilus_index": 6,
+  "nautilus_name": "Tambura/Sitar SW1",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 5,
+  "kronos_index": 34,
+  "kronos_name": "Tamboura/Sitar SW1",
+  "nautilus_bank": 3,
+  "nautilus_index": 6,
+  "nautilus_name": "Tambura/Sitar SW1",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 5,
+  "kronos_index": 35,
+  "kronos_name": "Tsugaru Shamisen",
+  "nautilus_bank": 3,
+  "nautilus_index": 9,
+  "nautilus_name": "Tsugaru Shamisen",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 5,
+  "kronos_index": 42,
+  "kronos_name": "E.Bass STR-1",
+  "nautilus_bank": 2,
+  "nautilus_index": 69,
+  "nautilus_name": "E.Bass STR-1",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 5,
+  "kronos_index": 43,
+  "kronos_name": "Fretless Bass STR-1",
+  "nautilus_bank": 2,
+  "nautilus_index": 73,
+  "nautilus_name": "Fretless Bass STR-1",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 5,
+  "kronos_index": 52,
+  "kronos_name": "Stanky Hybrid Slap",
+  "nautilus_bank": 3,
+  "nautilus_index": 84,
+  "nautilus_name": "Pick Guitar-Wah JS-Y",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 5,
+  "kronos_index": 53,
+  "kronos_name": "Mandoloid Trem Pad JS",
+  "nautilus_bank": 3,
+  "nautilus_index": 5,
+  "nautilus_name": "Mandoloid Trem Pad JS",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 5,
+  "kronos_index": 56,
+  "kronos_name": "Motionspheres",
+  "nautilus_bank": 3,
+  "nautilus_index": 120,
+  "nautilus_name": "Motionspheres",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 5,
+  "kronos_index": 57,
+  "kronos_name": "The Magic Box SW1,2",
+  "nautilus_bank": 4,
+  "nautilus_index": 52,
+  "nautilus_name": "The Magic Box SW1/2",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 5,
+  "kronos_index": 64,
+  "kronos_name": "Chomp Comp",
+  "nautilus_bank": 4,
+  "nautilus_index": 83,
+  "nautilus_name": "Chomp Comp",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 5,
+  "kronos_index": 65,
+  "kronos_name": "Rhythm Jet Pad",
+  "nautilus_bank": 4,
+  "nautilus_index": 63,
+  "nautilus_name": "Rhythm Jet Pad",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 5,
+  "kronos_index": 67,
+  "kronos_name": "Rhythm Monkey Grv 1",
+  "nautilus_bank": 25,
+  "nautilus_index": 115,
+  "nautilus_name": "Orch./Ethnic Kit",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 5,
+  "kronos_index": 69,
+  "kronos_name": "Pluck Goes Under Cover",
+  "nautilus_bank": 4,
+  "nautilus_index": 92,
+  "nautilus_name": "Pluck Goes Under Cover",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 5,
+  "kronos_index": 73,
+  "kronos_name": "Bowed Waterphone",
+  "nautilus_bank": 4,
+  "nautilus_index": 95,
+  "nautilus_name": "Bowed Waterphone",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 5,
+  "kronos_index": 76,
+  "kronos_name": "The Engulfed Cathedral",
+  "nautilus_bank": 4,
+  "nautilus_index": 97,
+  "nautilus_name": "The Engulfed Cathedral",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 5,
+  "kronos_index": 77,
+  "kronos_name": "Desert Racer",
+  "nautilus_bank": 4,
+  "nautilus_index": 101,
+  "nautilus_name": "Desert Racer",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 5,
+  "kronos_index": 79,
+  "kronos_name": "Spectra Chime SW1",
+  "nautilus_bank": 2,
+  "nautilus_index": 0,
+  "nautilus_name": "Spectra Chime SW1",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 5,
+  "kronos_index": 80,
+  "kronos_name": "Thinner Chimes",
+  "nautilus_bank": 1,
+  "nautilus_index": 123,
+  "nautilus_name": "Thinner Chimes",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 5,
+  "kronos_index": 81,
+  "kronos_name": "Xylotopia",
+  "nautilus_bank": 2,
+  "nautilus_index": 4,
+  "nautilus_name": "Xylotopia",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 5,
+  "kronos_index": 84,
+  "kronos_name": "Xylophone STR-1",
+  "nautilus_bank": 1,
+  "nautilus_index": 103,
+  "nautilus_name": "Xylophone STR-1",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 5,
+  "kronos_index": 85,
+  "kronos_name": "Cavernous Toy Pluk",
+  "nautilus_bank": 1,
+  "nautilus_index": 117,
+  "nautilus_name": "Cavernous Toy Pluk",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 5,
+  "kronos_index": 86,
+  "kronos_name": "Cel-limba",
+  "nautilus_bank": 1,
+  "nautilus_index": 107,
+  "nautilus_name": "Cel-limba",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 5,
+  "kronos_index": 88,
+  "kronos_name": "Kalimba STR-1",
+  "nautilus_bank": 3,
+  "nautilus_index": 11,
+  "nautilus_name": "Kalimba STR-1",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 5,
+  "kronos_index": 89,
+  "kronos_name": "Honey Comb",
+  "nautilus_bank": 3,
+  "nautilus_index": 47,
+  "nautilus_name": "Honey Comb",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 5,
+  "kronos_index": 95,
+  "kronos_name": "Motion String Pad",
+  "nautilus_bank": 2,
+  "nautilus_index": 8,
+  "nautilus_name": "Motion String Pad",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 5,
+  "kronos_index": 96,
+  "kronos_name": "EvilDispersionSyn SW1,2",
+  "nautilus_bank": 4,
+  "nautilus_index": 3,
+  "nautilus_name": "EvilDispersionSyn SW1/2",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 5,
+  "kronos_index": 100,
+  "kronos_name": "White Light Pad",
+  "nautilus_bank": 4,
+  "nautilus_index": 27,
+  "nautilus_name": "White Light Pad",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 5,
+  "kronos_index": 101,
+  "kronos_name": "Slow Metal Stryker",
+  "nautilus_bank": 4,
+  "nautilus_index": 39,
+  "nautilus_name": "Slow Metal Stryker",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 5,
+  "kronos_index": 105,
+  "kronos_name": "Moooving Vox Pad",
+  "nautilus_bank": 2,
+  "nautilus_index": 24,
+  "nautilus_name": "Moooving Vox Pad",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 5,
+  "kronos_index": 109,
+  "kronos_name": "Classic STR-1 E.Piano",
+  "nautilus_bank": 0,
+  "nautilus_index": 99,
+  "nautilus_name": "Classic STR-1 E.Piano",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 5,
+  "kronos_index": 110,
+  "kronos_name": "Physical E.Piano",
+  "nautilus_bank": 0,
+  "nautilus_index": 102,
+  "nautilus_name": "Physical E.Piano",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 5,
+  "kronos_index": 112,
+  "kronos_name": "Vintage STR-1 E.Piano",
+  "nautilus_bank": 0,
+  "nautilus_index": 100,
+  "nautilus_name": "Vintage STR-1 E.Piano",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 5,
+  "kronos_index": 114,
+  "kronos_name": "Magic Tine EP",
+  "nautilus_bank": 1,
+  "nautilus_index": 2,
+  "nautilus_name": "Magic Tine EP",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 5,
+  "kronos_index": 118,
+  "kronos_name": "Clavichord STR-1",
+  "nautilus_bank": 1,
+  "nautilus_index": 24,
+  "nautilus_name": "Clavichord STR-1",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 5,
+  "kronos_index": 122,
+  "kronos_name": "Vn/Va Pizzicato SW1",
+  "nautilus_bank": 2,
+  "nautilus_index": 22,
+  "nautilus_name": "Vn/Va Pizzicato SW1",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 5,
+  "kronos_index": 126,
+  "kronos_name": "Timbale (play C4,5,6,7)",
+  "nautilus_bank": 4,
+  "nautilus_index": 125,
+  "nautilus_name": "Timbale (play C4,5,6,7)",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 5,
+  "kronos_index": 127,
+  "kronos_name": "Tabloop (play 3 16ths)",
+  "nautilus_bank": 4,
+  "nautilus_index": 126,
+  "nautilus_name": "Tabloop (play 3 16ths)",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 6,
+  "kronos_index": 46,
+  "kronos_name": "",
+  "nautilus_bank": 6,
+  "nautilus_index": 46,
+  "nautilus_name": "",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 6,
+  "kronos_index": 116,
+  "kronos_name": "",
+  "nautilus_bank": 25,
+  "nautilus_index": 107,
+  "nautilus_name": "Original Perc. Kit",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 6,
+  "kronos_index": 122,
+  "kronos_name": "",
+  "nautilus_bank": 6,
+  "nautilus_index": 122,
+  "nautilus_name": "",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 6,
+  "kronos_index": 126,
+  "kronos_name": "",
+  "nautilus_bank": 6,
+  "nautilus_index": 126,
+  "nautilus_name": "",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 7,
+  "kronos_index": 62,
+  "kronos_name": "",
+  "nautilus_bank": 25,
+  "nautilus_index": 100,
+  "nautilus_name": "Insane FX Kit",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 7,
+  "kronos_index": 107,
+  "kronos_name": "",
+  "nautilus_bank": 7,
+  "nautilus_index": 107,
+  "nautilus_name": "",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 7,
+  "kronos_index": 122,
+  "kronos_name": "",
+  "nautilus_bank": 7,
+  "nautilus_index": 122,
+  "nautilus_name": "",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 7,
+  "kronos_index": 126,
+  "kronos_name": "",
+  "nautilus_bank": 7,
+  "nautilus_index": 126,
+  "nautilus_name": "",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 8,
+  "kronos_index": 116,
+  "kronos_name": "",
+  "nautilus_bank": 8,
+  "nautilus_index": 116,
+  "nautilus_name": "",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 8,
+  "kronos_index": 122,
+  "kronos_name": "",
+  "nautilus_bank": 8,
+  "nautilus_index": 122,
+  "nautilus_name": "",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 8,
+  "kronos_index": 126,
+  "kronos_name": "",
+  "nautilus_bank": 8,
+  "nautilus_index": 126,
+  "nautilus_name": "",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 9,
+  "kronos_index": 122,
+  "kronos_name": "",
+  "nautilus_bank": 9,
+  "nautilus_index": 122,
+  "nautilus_name": "",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 10,
+  "kronos_index": 122,
+  "kronos_name": "",
+  "nautilus_bank": 10,
+  "nautilus_index": 122,
+  "nautilus_name": "",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 10,
+  "kronos_index": 123,
+  "kronos_name": "",
+  "nautilus_bank": 10,
+  "nautilus_index": 123,
+  "nautilus_name": "",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 13,
+  "kronos_index": 90,
+  "kronos_name": "",
+  "nautilus_bank": 25,
+  "nautilus_index": 99,
+  "nautilus_name": "Nu Style Kit",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 17,
+  "kronos_index": 0,
+  "kronos_name": "Doubled Screamer",
+  "nautilus_bank": 3,
+  "nautilus_index": 96,
+  "nautilus_name": "Doubled Screamer",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 17,
+  "kronos_index": 1,
+  "kronos_name": "Unison Stab Saw",
+  "nautilus_bank": 3,
+  "nautilus_index": 95,
+  "nautilus_name": "Unison Stab Saw",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 17,
+  "kronos_index": 4,
+  "kronos_name": "S&H 5th Comp",
+  "nautilus_bank": 4,
+  "nautilus_index": 6,
+  "nautilus_name": "S&H 5th Comp",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 17,
+  "kronos_index": 7,
+  "kronos_name": "Nu Breaks Drive",
+  "nautilus_bank": 4,
+  "nautilus_index": 2,
+  "nautilus_name": "Nu Breaks Drive",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 17,
+  "kronos_index": 8,
+  "kronos_name": "Big Sunrise Pad",
+  "nautilus_bank": 3,
+  "nautilus_index": 100,
+  "nautilus_name": "Big Sunrise Pad",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 17,
+  "kronos_index": 11,
+  "kronos_name": "VCF Oscillation",
+  "nautilus_bank": 4,
+  "nautilus_index": 7,
+  "nautilus_name": "VCF Oscillation",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 17,
+  "kronos_index": 19,
+  "kronos_name": "Spacious Pad",
+  "nautilus_bank": 4,
+  "nautilus_index": 14,
+  "nautilus_name": "Spacious Pad",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 17,
+  "kronos_index": 20,
+  "kronos_name": "Airy Fairy Pad",
+  "nautilus_bank": 4,
+  "nautilus_index": 25,
+  "nautilus_name": "Airy Fairy Pad",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 17,
+  "kronos_index": 22,
+  "kronos_name": "Silky Hollow Pad",
+  "nautilus_bank": 4,
+  "nautilus_index": 20,
+  "nautilus_name": "Silky Hollow Pad",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 17,
+  "kronos_index": 23,
+  "kronos_name": "Ana Strings",
+  "nautilus_bank": 18,
+  "nautilus_index": 120,
+  "nautilus_name": "Stereo Analog Strings",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 17,
+  "kronos_index": 32,
+  "kronos_name": "Vector Resonance",
+  "nautilus_bank": 4,
+  "nautilus_index": 32,
+  "nautilus_name": "Vector Resonance",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 17,
+  "kronos_index": 36,
+  "kronos_name": "Vaporization Pad",
+  "nautilus_bank": 4,
+  "nautilus_index": 66,
+  "nautilus_name": "Vaporization Pad",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 17,
+  "kronos_index": 46,
+  "kronos_name": "Trill Pad",
+  "nautilus_bank": 4,
+  "nautilus_index": 75,
+  "nautilus_name": "Trill Pad",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 17,
+  "kronos_index": 55,
+  "kronos_name": "Phat Bass",
+  "nautilus_bank": 2,
+  "nautilus_index": 83,
+  "nautilus_name": "Phat Bass",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 17,
+  "kronos_index": 56,
+  "kronos_name": "Electro Clash Bass",
+  "nautilus_bank": 2,
+  "nautilus_index": 125,
+  "nautilus_name": "Electro Clash Bass",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 17,
+  "kronos_index": 57,
+  "kronos_name": "Acid Bass",
+  "nautilus_bank": 2,
+  "nautilus_index": 82,
+  "nautilus_name": "Bad Guy Bass",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 17,
+  "kronos_index": 63,
+  "kronos_name": "Kidz N America",
+  "nautilus_bank": 2,
+  "nautilus_index": 123,
+  "nautilus_name": "Kidz N America",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 17,
+  "kronos_index": 64,
+  "kronos_name": "Punch Bass",
+  "nautilus_bank": 2,
+  "nautilus_index": 107,
+  "nautilus_name": "Punch Bass",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 17,
+  "kronos_index": 65,
+  "kronos_name": "Simple Tri Bass",
+  "nautilus_bank": 2,
+  "nautilus_index": 81,
+  "nautilus_name": "Simple Tri Bass",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 17,
+  "kronos_index": 74,
+  "kronos_name": "Feedback Lead",
+  "nautilus_bank": 25,
+  "nautilus_index": 82,
+  "nautilus_name": "Granular Acid Kit",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 17,
+  "kronos_index": 76,
+  "kronos_name": "Peanut Lead",
+  "nautilus_bank": 3,
+  "nautilus_index": 35,
+  "nautilus_name": "Peanut Lead",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 17,
+  "kronos_index": 84,
+  "kronos_name": "PolysixEX Square Lead",
+  "nautilus_bank": 3,
+  "nautilus_index": 26,
+  "nautilus_name": "PolysixEX Square Lead",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 17,
+  "kronos_index": 86,
+  "kronos_name": "Velo Filter Lead",
+  "nautilus_bank": 3,
+  "nautilus_index": 34,
+  "nautilus_name": "Velo Filter Lead",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 17,
+  "kronos_index": 88,
+  "kronos_name": "PWM Flange Lead",
+  "nautilus_bank": 3,
+  "nautilus_index": 61,
+  "nautilus_name": "PWM Flange Lead",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 17,
+  "kronos_index": 90,
+  "kronos_name": "Lounge Lead",
+  "nautilus_bank": 3,
+  "nautilus_index": 24,
+  "nautilus_name": "Lounge Lead",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 17,
+  "kronos_index": 92,
+  "kronos_name": "Polysix Gamelan",
+  "nautilus_bank": 3,
+  "nautilus_index": 0,
+  "nautilus_name": "Polysix Gamelan",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 17,
+  "kronos_index": 111,
+  "kronos_name": "Glass Arrow Piano",
+  "nautilus_bank": 1,
+  "nautilus_index": 4,
+  "nautilus_name": "Glass Arrow Piano",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 17,
+  "kronos_index": 112,
+  "kronos_name": "Classical AnaSynth",
+  "nautilus_bank": 2,
+  "nautilus_index": 39,
+  "nautilus_name": "Classical Ana Synth",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 17,
+  "kronos_index": 114,
+  "kronos_name": "Loss of Control",
+  "nautilus_bank": 3,
+  "nautilus_index": 101,
+  "nautilus_name": "Loss of Control",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 17,
+  "kronos_index": 116,
+  "kronos_name": "Delicate Flower Pad",
+  "nautilus_bank": 3,
+  "nautilus_index": 90,
+  "nautilus_name": "Delicate Flower Pad",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 17,
+  "kronos_index": 117,
+  "kronos_name": "Analog Plucker",
+  "nautilus_bank": 3,
+  "nautilus_index": 80,
+  "nautilus_name": "Analog Plucker",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 17,
+  "kronos_index": 119,
+  "kronos_name": "Fusion Filter Sweep",
+  "nautilus_bank": 3,
+  "nautilus_index": 126,
+  "nautilus_name": "Fusion Filter Sweep",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 17,
+  "kronos_index": 122,
+  "kronos_name": "Vintage Str Ensemble",
+  "nautilus_bank": 2,
+  "nautilus_index": 17,
+  "nautilus_name": "Vintage Str Ensemble",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 17,
+  "kronos_index": 125,
+  "kronos_name": "Rich Analog Strings",
+  "nautilus_bank": 2,
+  "nautilus_index": 7,
+  "nautilus_name": "Rich Analog Strings",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 17,
+  "kronos_index": 126,
+  "kronos_name": "Bunkka HPF Sweep JS-Y",
+  "nautilus_bank": 4,
+  "nautilus_index": 36,
+  "nautilus_name": "Bunkka HPF Sweep JS-Y",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 17,
+  "kronos_index": 127,
+  "kronos_name": "BPM Lost in Dreamland",
+  "nautilus_bank": 4,
+  "nautilus_index": 58,
+  "nautilus_name": "BPM Lost in Dreamland",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 18,
+  "kronos_index": 1,
+  "kronos_name": "Funky EP",
+  "nautilus_bank": 1,
+  "nautilus_index": 0,
+  "nautilus_name": "Funky EP",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 18,
+  "kronos_index": 9,
+  "kronos_name": "Carillon Variations",
+  "nautilus_bank": 1,
+  "nautilus_index": 124,
+  "nautilus_name": "Carillon Variations",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 18,
+  "kronos_index": 10,
+  "kronos_name": "Crystal Bells SW1",
+  "nautilus_bank": 1,
+  "nautilus_index": 125,
+  "nautilus_name": "Crystal Bells SW1",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 18,
+  "kronos_index": 12,
+  "kronos_name": "JS+Y Stardust(move slow)",
+  "nautilus_bank": 1,
+  "nautilus_index": 109,
+  "nautilus_name": "JS+Y Stardust(move slow)",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 18,
+  "kronos_index": 13,
+  "kronos_name": "Vintage Bell Wind",
+  "nautilus_bank": 1,
+  "nautilus_index": 126,
+  "nautilus_name": "Vintage Bell Wind",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 18,
+  "kronos_index": 14,
+  "kronos_name": "Ensem-Bell",
+  "nautilus_bank": 1,
+  "nautilus_index": 114,
+  "nautilus_name": "Ensem-Bell",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 18,
+  "kronos_index": 16,
+  "kronos_name": "Rated (P)PG for \"Bell\"",
+  "nautilus_bank": 18,
+  "nautilus_index": 30,
+  "nautilus_name": "Itty Bitty Bells",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 18,
+  "kronos_index": 19,
+  "kronos_name": "Trash Can 'Rimba",
+  "nautilus_bank": 3,
+  "nautilus_index": 1,
+  "nautilus_name": "Trash Can 'Rimba",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 18,
+  "kronos_index": 21,
+  "kronos_name": "Andes Pipes",
+  "nautilus_bank": 3,
+  "nautilus_index": 3,
+  "nautilus_name": "Andes Pipes",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 18,
+  "kronos_index": 22,
+  "kronos_name": "Mystery Alto Flute SW1",
+  "nautilus_bank": 2,
+  "nautilus_index": 46,
+  "nautilus_name": "Mystery Alto Flute SW1",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 18,
+  "kronos_index": 24,
+  "kronos_name": "D'Bass SW1",
+  "nautilus_bank": 2,
+  "nautilus_index": 118,
+  "nautilus_name": "D'Bass SW1",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 18,
+  "kronos_index": 25,
+  "kronos_name": "Rappin' Foreva Bass",
+  "nautilus_bank": 2,
+  "nautilus_index": 75,
+  "nautilus_name": "Rappin' Foreva Bass",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 18,
+  "kronos_index": 27,
+  "kronos_name": "Gonzo Bass",
+  "nautilus_bank": 2,
+  "nautilus_index": 112,
+  "nautilus_name": "Gonzo Bass",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 18,
+  "kronos_index": 31,
+  "kronos_name": "Nuklear DOG Bass",
+  "nautilus_bank": 2,
+  "nautilus_index": 84,
+  "nautilus_name": "Nuklear DOG Bass",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 18,
+  "kronos_index": 38,
+  "kronos_name": "Moonlight Parade",
+  "nautilus_bank": 4,
+  "nautilus_index": 61,
+  "nautilus_name": "Moonlight Parade",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 18,
+  "kronos_index": 39,
+  "kronos_name": "Starlight Parade",
+  "nautilus_bank": 4,
+  "nautilus_index": 62,
+  "nautilus_name": "Starlight Parade",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 18,
+  "kronos_index": 41,
+  "kronos_name": "Secret Toy Room",
+  "nautilus_bank": 4,
+  "nautilus_index": 64,
+  "nautilus_name": "Secret Toy Room",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 18,
+  "kronos_index": 45,
+  "kronos_name": "Fantasy Clubland",
+  "nautilus_bank": 4,
+  "nautilus_index": 89,
+  "nautilus_name": "Fantasy Clubland",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 18,
+  "kronos_index": 53,
+  "kronos_name": "Summer Night by the Orb",
+  "nautilus_bank": 4,
+  "nautilus_index": 15,
+  "nautilus_name": "Summer Night by the Orb",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 18,
+  "kronos_index": 54,
+  "kronos_name": "Solar Winds",
+  "nautilus_bank": 4,
+  "nautilus_index": 50,
+  "nautilus_name": "Solar Winds",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 18,
+  "kronos_index": 56,
+  "kronos_name": "Thin Fluid",
+  "nautilus_bank": 4,
+  "nautilus_index": 51,
+  "nautilus_name": "Thin Fluid",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 18,
+  "kronos_index": 60,
+  "kronos_name": "Morning Indication 10sec",
+  "nautilus_bank": 4,
+  "nautilus_index": 55,
+  "nautilus_name": "Morning Indication 10sec",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 18,
+  "kronos_index": 73,
+  "kronos_name": "Syn Sitar & Tambura",
+  "nautilus_bank": 3,
+  "nautilus_index": 8,
+  "nautilus_name": "Syn Sitar & Tambura",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 18,
+  "kronos_index": 77,
+  "kronos_name": "Powerful Universe",
+  "nautilus_bank": 4,
+  "nautilus_index": 22,
+  "nautilus_name": "Powerful Universe",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 18,
+  "kronos_index": 81,
+  "kronos_name": "The Innocence",
+  "nautilus_bank": 4,
+  "nautilus_index": 18,
+  "nautilus_name": "The Innocence",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 18,
+  "kronos_index": 88,
+  "kronos_name": "Angels and Butterflies",
+  "nautilus_bank": 4,
+  "nautilus_index": 29,
+  "nautilus_name": "Angels and Butterflies",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 18,
+  "kronos_index": 91,
+  "kronos_name": "Pointed Anthem",
+  "nautilus_bank": 3,
+  "nautilus_index": 71,
+  "nautilus_name": "Pointed Anthem",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 18,
+  "kronos_index": 93,
+  "kronos_name": "FeedbackNois HP Synth",
+  "nautilus_bank": 4,
+  "nautilus_index": 35,
+  "nautilus_name": "FeedbackNois HP Synth",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 18,
+  "kronos_index": 101,
+  "kronos_name": "Dare 2 B Square",
+  "nautilus_bank": 3,
+  "nautilus_index": 25,
+  "nautilus_name": "Dare 2 B Square",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 18,
+  "kronos_index": 102,
+  "kronos_name": "Funky ReziLead",
+  "nautilus_bank": 3,
+  "nautilus_index": 30,
+  "nautilus_name": "Funky ReziLead",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 18,
+  "kronos_index": 106,
+  "kronos_name": "Convergence",
+  "nautilus_bank": 4,
+  "nautilus_index": 103,
+  "nautilus_name": "Convergence",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 18,
+  "kronos_index": 108,
+  "kronos_name": "Space Siren  SW1",
+  "nautilus_bank": 4,
+  "nautilus_index": 104,
+  "nautilus_name": "Space Siren 1 SW1",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 18,
+  "kronos_index": 109,
+  "kronos_name": "Hold ON for Help",
+  "nautilus_bank": 4,
+  "nautilus_index": 109,
+  "nautilus_name": "Hold ON for Help",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 18,
+  "kronos_index": 113,
+  "kronos_name": "Short Synth Mallet",
+  "nautilus_bank": 3,
+  "nautilus_index": 82,
+  "nautilus_name": "Short Synth Mallet",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 18,
+  "kronos_index": 114,
+  "kronos_name": "PreNuclear Stab Synth",
+  "nautilus_bank": 3,
+  "nautilus_index": 77,
+  "nautilus_name": "PreNuclear Stab Synth",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 18,
+  "kronos_index": 116,
+  "kronos_name": "DONKADrums",
+  "nautilus_bank": 4,
+  "nautilus_index": 124,
+  "nautilus_name": "DONKADrums",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 1,
+  "kronos_name": "Stereo Concert Piano",
+  "nautilus_bank": 5,
+  "nautilus_index": 6,
+  "nautilus_name": "Stereo Concert Piano",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 2,
+  "kronos_name": "Stereo Piano Boesy",
+  "nautilus_bank": 5,
+  "nautilus_index": 8,
+  "nautilus_name": "Stereo Piano Boesy",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 5,
+  "kronos_name": "OASYS Mono Piano",
+  "nautilus_bank": 5,
+  "nautilus_index": 5,
+  "nautilus_name": "OASYS Mono Piano",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 8,
+  "kronos_name": "2 Way Stereo Grand SW1",
+  "nautilus_bank": 5,
+  "nautilus_index": 7,
+  "nautilus_name": "2 Way Stereo Grand SW1",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 9,
+  "kronos_name": "OASYS Piano",
+  "nautilus_bank": 25,
+  "nautilus_index": 49,
+  "nautilus_name": "Native Hop Kit",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 10,
+  "kronos_name": "Sparkling Piano",
+  "nautilus_bank": 5,
+  "nautilus_index": 64,
+  "nautilus_name": "Sparkling Piano",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 16,
+  "kronos_name": "Smooth Operators",
+  "nautilus_bank": 2,
+  "nautilus_index": 92,
+  "nautilus_name": "80's Stereo Bass SW1",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 17,
+  "kronos_name": "L.A. E.Piano",
+  "nautilus_bank": 5,
+  "nautilus_index": 93,
+  "nautilus_name": "L.A. E.Piano",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 18,
+  "kronos_name": "FM Spark Chorus Piano",
+  "nautilus_bank": 5,
+  "nautilus_index": 94,
+  "nautilus_name": "FM Spark Chorus Piano",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 21,
+  "kronos_name": "Tine E.Piano",
+  "nautilus_bank": 5,
+  "nautilus_index": 97,
+  "nautilus_name": "Tine E.Piano",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 24,
+  "kronos_name": "3 Way E.Piano",
+  "nautilus_bank": 5,
+  "nautilus_index": 96,
+  "nautilus_name": "3 Way E.Piano",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 26,
+  "kronos_name": "TX mezzo EP",
+  "nautilus_bank": 5,
+  "nautilus_index": 98,
+  "nautilus_name": "TX mezzo EP",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 27,
+  "kronos_name": "Funky Tine E.Piano",
+  "nautilus_bank": 5,
+  "nautilus_index": 99,
+  "nautilus_name": "Funky Tine E.Piano",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 29,
+  "kronos_name": "Tingly E.Piano",
+  "nautilus_bank": 5,
+  "nautilus_index": 102,
+  "nautilus_name": "Tingly E.Piano",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 34,
+  "kronos_name": "Crystal Vector E.Piano",
+  "nautilus_bank": 5,
+  "nautilus_index": 104,
+  "nautilus_name": "Crystal Vector E.Piano",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 35,
+  "kronos_name": "Ballade E.Piano",
+  "nautilus_bank": 5,
+  "nautilus_index": 100,
+  "nautilus_name": "Ballade E.Piano",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 36,
+  "kronos_name": "\"...lead to Rome\" E.P.",
+  "nautilus_bank": 5,
+  "nautilus_index": 101,
+  "nautilus_name": "\"...lead to Rome\" E.P.",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 37,
+  "kronos_name": "Piano Power Pad",
+  "nautilus_bank": 5,
+  "nautilus_index": 61,
+  "nautilus_name": "Piano Power Pad",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 38,
+  "kronos_name": "Breathy EP Pad",
+  "nautilus_bank": 5,
+  "nautilus_index": 105,
+  "nautilus_name": "Breathy EP Pad",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 39,
+  "kronos_name": "Layered E.Piano Pad",
+  "nautilus_bank": 5,
+  "nautilus_index": 95,
+  "nautilus_name": "Layered E.Piano Pad",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 40,
+  "kronos_name": "4 Way Switch E.Piano",
+  "nautilus_bank": 5,
+  "nautilus_index": 103,
+  "nautilus_name": "4 Way Switch E.Piano",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 41,
+  "kronos_name": "Mild Suitcase E.Piano",
+  "nautilus_bank": 5,
+  "nautilus_index": 77,
+  "nautilus_name": "Mild Suitcase E.Piano",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 43,
+  "kronos_name": "Open E.Piano",
+  "nautilus_bank": 5,
+  "nautilus_index": 74,
+  "nautilus_name": "Open E.Piano",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 44,
+  "kronos_name": "Real Suit E.Piano",
+  "nautilus_bank": 5,
+  "nautilus_index": 73,
+  "nautilus_name": "Real Suit E.Piano",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 50,
+  "kronos_name": "Custom E.Piano",
+  "nautilus_bank": 5,
+  "nautilus_index": 72,
+  "nautilus_name": "Custom E.Piano",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 51,
+  "kronos_name": "Dyno E.Piano",
+  "nautilus_bank": 5,
+  "nautilus_index": 79,
+  "nautilus_name": "Dyno E.Piano",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 52,
+  "kronos_name": "Stereo Dyno E.Piano",
+  "nautilus_bank": 5,
+  "nautilus_index": 80,
+  "nautilus_name": "Stereo Dyno E.Piano",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 54,
+  "kronos_name": "Reed E.Piano",
+  "nautilus_bank": 5,
+  "nautilus_index": 83,
+  "nautilus_name": "Reed E.Piano",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 57,
+  "kronos_name": "Clav Register AD",
+  "nautilus_bank": 17,
+  "nautilus_index": 0,
+  "nautilus_name": "Clav Register AD",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 58,
+  "kronos_name": "Clav Register AC",
+  "nautilus_bank": 5,
+  "nautilus_index": 127,
+  "nautilus_name": "Clav Register AC",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 59,
+  "kronos_name": "Clav Register BC",
+  "nautilus_bank": 17,
+  "nautilus_index": 1,
+  "nautilus_name": "Clav Register BC",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 60,
+  "kronos_name": "Clav Register BD",
+  "nautilus_bank": 17,
+  "nautilus_index": 2,
+  "nautilus_name": "Clav Register BD",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 61,
+  "kronos_name": "Vintage Clav AD",
+  "nautilus_bank": 17,
+  "nautilus_index": 3,
+  "nautilus_name": "Vintage Clav AD",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 62,
+  "kronos_name": "Vintage Clav BC",
+  "nautilus_bank": 17,
+  "nautilus_index": 4,
+  "nautilus_name": "Vintage Clav BC",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 64,
+  "kronos_name": "Clav/Mute 1 SW1",
+  "nautilus_bank": 17,
+  "nautilus_index": 5,
+  "nautilus_name": "Clav/Mute 1 SW1",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 65,
+  "kronos_name": "Clav/Mute 2 SW1",
+  "nautilus_bank": 17,
+  "nautilus_index": 6,
+  "nautilus_name": "Clav/Mute 2 SW1",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 69,
+  "kronos_name": "Crunch Clav",
+  "nautilus_bank": 17,
+  "nautilus_index": 15,
+  "nautilus_name": "Crunch Clav",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 70,
+  "kronos_name": "Buzzy Clav",
+  "nautilus_bank": 17,
+  "nautilus_index": 13,
+  "nautilus_name": "Buzzy Clav",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 71,
+  "kronos_name": "Sticky Finga Clav",
+  "nautilus_bank": 17,
+  "nautilus_index": 11,
+  "nautilus_name": "Sticky Finga Clav",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 72,
+  "kronos_name": "V.Switch WS Clav",
+  "nautilus_bank": 17,
+  "nautilus_index": 12,
+  "nautilus_name": "V.Switch WS Clav",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 73,
+  "kronos_name": "Kompton Clav",
+  "nautilus_bank": 17,
+  "nautilus_index": 14,
+  "nautilus_name": "Kompton Clav",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 74,
+  "kronos_name": "8' Harpsichord + Key Off",
+  "nautilus_bank": 17,
+  "nautilus_index": 23,
+  "nautilus_name": "8' Harpsichord + Key Off",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 75,
+  "kronos_name": "16'+8' Harpsichord +Pluk",
+  "nautilus_bank": 17,
+  "nautilus_index": 24,
+  "nautilus_name": "16'+8' Harpsichord +Pluk",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 78,
+  "kronos_name": "Distortion Organ SW1",
+  "nautilus_bank": 25,
+  "nautilus_index": 29,
+  "nautilus_name": "Processed Kit",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 83,
+  "kronos_name": "WS Organ SW1",
+  "nautilus_bank": 17,
+  "nautilus_index": 44,
+  "nautilus_name": "WS Organ SW1",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 84,
+  "kronos_name": "M1 E.Organ SW1",
+  "nautilus_bank": 17,
+  "nautilus_index": 45,
+  "nautilus_name": "M1 E.Organ SW1",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 85,
+  "kronos_name": "House Organ",
+  "nautilus_bank": 17,
+  "nautilus_index": 46,
+  "nautilus_name": "House Organ",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 87,
+  "kronos_name": "Slow/Fast Organ SW2",
+  "nautilus_bank": 17,
+  "nautilus_index": 40,
+  "nautilus_name": "Slow/Fast Organ SW2",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 88,
+  "kronos_name": "Jazzy(Med) Cel.Vib.",
+  "nautilus_bank": 17,
+  "nautilus_index": 43,
+  "nautilus_name": "Jazzy(Med) Cel.Vib.",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 90,
+  "kronos_name": "Ballade Organ",
+  "nautilus_bank": 17,
+  "nautilus_index": 41,
+  "nautilus_name": "Ballade Organ",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 91,
+  "kronos_name": "Drawbars adds High",
+  "nautilus_bank": 17,
+  "nautilus_index": 42,
+  "nautilus_name": "Drawbars adds High",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 93,
+  "kronos_name": "Church Organ 1",
+  "nautilus_bank": 17,
+  "nautilus_index": 103,
+  "nautilus_name": "Church Organ 1",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 95,
+  "kronos_name": "Positive Organ 1",
+  "nautilus_bank": 17,
+  "nautilus_index": 96,
+  "nautilus_name": "Positive Organ 1",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 101,
+  "kronos_name": "Pipe Organ Mixture",
+  "nautilus_bank": 17,
+  "nautilus_index": 100,
+  "nautilus_name": "Pipe Organ Mixture",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 102,
+  "kronos_name": "Pipe Full Organ",
+  "nautilus_bank": 17,
+  "nautilus_index": 106,
+  "nautilus_name": "Pipe Full Organ",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 103,
+  "kronos_name": "Clear Morning Bells",
+  "nautilus_bank": 18,
+  "nautilus_index": 20,
+  "nautilus_name": "Clear Morning Bells",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 104,
+  "kronos_name": "Happy Kids Bells",
+  "nautilus_bank": 18,
+  "nautilus_index": 21,
+  "nautilus_name": "Happy Kids Bells",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 105,
+  "kronos_name": "VS Bells 1",
+  "nautilus_bank": 18,
+  "nautilus_index": 24,
+  "nautilus_name": "VS Bells 2",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 106,
+  "kronos_name": "VS Bells 2",
+  "nautilus_bank": 18,
+  "nautilus_index": 24,
+  "nautilus_name": "VS Bells 2",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 107,
+  "kronos_name": "VS Bells 3",
+  "nautilus_bank": 18,
+  "nautilus_index": 25,
+  "nautilus_name": "VS Bells 3",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 108,
+  "kronos_name": "Wave Seq Bells",
+  "nautilus_bank": 18,
+  "nautilus_index": 12,
+  "nautilus_name": "Wave Seq Bells",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 109,
+  "kronos_name": "WS/VS Shifting Bells",
+  "nautilus_bank": 18,
+  "nautilus_index": 22,
+  "nautilus_name": "WS/VS Shifting Bells",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 110,
+  "kronos_name": "Bright Waveseq Bell VJS",
+  "nautilus_bank": 18,
+  "nautilus_index": 23,
+  "nautilus_name": "Bright Waveseq Bells X-Y",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 111,
+  "kronos_name": "Itty Bitty Bell EP",
+  "nautilus_bank": 18,
+  "nautilus_index": 30,
+  "nautilus_name": "Itty Bitty Bells",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 113,
+  "kronos_name": "Strung Bells",
+  "nautilus_bank": 18,
+  "nautilus_index": 27,
+  "nautilus_name": "Strung Bells",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 114,
+  "kronos_name": "FM Pluck Bells",
+  "nautilus_bank": 18,
+  "nautilus_index": 18,
+  "nautilus_name": "FM Pluck Bells",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 115,
+  "kronos_name": "Pure Satin Bells",
+  "nautilus_bank": 18,
+  "nautilus_index": 11,
+  "nautilus_name": "Pure Satin Bells",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 116,
+  "kronos_name": "Glass Pluck Bells",
+  "nautilus_bank": 18,
+  "nautilus_index": 19,
+  "nautilus_name": "Glass Pluck Bells",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 117,
+  "kronos_name": "Silver Solar Bells",
+  "nautilus_bank": 18,
+  "nautilus_index": 7,
+  "nautilus_name": "Silver Solar Bells",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 118,
+  "kronos_name": "FM Tubular Bells",
+  "nautilus_bank": 18,
+  "nautilus_index": 34,
+  "nautilus_name": "FM Tubular Bells",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 119,
+  "kronos_name": "Analog Bell/Harp",
+  "nautilus_bank": 18,
+  "nautilus_index": 32,
+  "nautilus_name": "Analog Bell/Harp",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 120,
+  "kronos_name": "Glass Bell",
+  "nautilus_bank": 18,
+  "nautilus_index": 17,
+  "nautilus_name": "Glass Bells",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 121,
+  "kronos_name": "Calm Bell Synth",
+  "nautilus_bank": 18,
+  "nautilus_index": 6,
+  "nautilus_name": "Calm Bell Synth",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 122,
+  "kronos_name": "DigiMetal Bell",
+  "nautilus_bank": 18,
+  "nautilus_index": 31,
+  "nautilus_name": "DigiMetal Bells",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 123,
+  "kronos_name": "Finger Cymbal Bells",
+  "nautilus_bank": 18,
+  "nautilus_index": 35,
+  "nautilus_name": "Finger Cymbal Bells",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 125,
+  "kronos_name": "VS Twinkle Dust Bells",
+  "nautilus_bank": 18,
+  "nautilus_index": 8,
+  "nautilus_name": "VS Twinkle Dust Bells",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 126,
+  "kronos_name": "Orchestral Celesta",
+  "nautilus_bank": 5,
+  "nautilus_index": 71,
+  "nautilus_name": "Orchestral Celesta",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 19,
+  "kronos_index": 127,
+  "kronos_name": "Vibraphone 1",
+  "nautilus_bank": 17,
+  "nautilus_index": 126,
+  "nautilus_name": "Vibraphone 1",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 0,
+  "kronos_name": "Vibraphone 2",
+  "nautilus_bank": 17,
+  "nautilus_index": 127,
+  "nautilus_name": "Vibraphone 2",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 1,
+  "kronos_name": "Soft Glockenspiel",
+  "nautilus_bank": 2,
+  "nautilus_index": 108,
+  "nautilus_name": "Classik Punch Bass",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 2,
+  "kronos_name": "Hard Glockenspiel",
+  "nautilus_bank": 18,
+  "nautilus_index": 1,
+  "nautilus_name": "Hard Glockenspiel",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 3,
+  "kronos_name": "Tubular Bells Rack",
+  "nautilus_bank": 18,
+  "nautilus_index": 37,
+  "nautilus_name": "Tubular Bells Rack",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 4,
+  "kronos_name": "Marimba Hard Mallet",
+  "nautilus_bank": 17,
+  "nautilus_index": 122,
+  "nautilus_name": "Marimba Hard Mallet",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 5,
+  "kronos_name": "Xylophone Dynamic X-Fade",
+  "nautilus_bank": 17,
+  "nautilus_index": 121,
+  "nautilus_name": "Xylophone Dynamic X-Fade",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 6,
+  "kronos_name": "Music Box",
+  "nautilus_bank": 18,
+  "nautilus_index": 5,
+  "nautilus_name": "Music Box 3",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 7,
+  "kronos_name": "The Log Drum",
+  "nautilus_bank": 17,
+  "nautilus_index": 123,
+  "nautilus_name": "The Log Drum",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 9,
+  "kronos_name": "Bali Gamelan",
+  "nautilus_bank": 22,
+  "nautilus_index": 17,
+  "nautilus_name": "Bali Gamelan",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 11,
+  "kronos_name": "The Kalimba",
+  "nautilus_bank": 22,
+  "nautilus_index": 59,
+  "nautilus_name": "The Kalimba",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 12,
+  "kronos_name": "Island Mallets",
+  "nautilus_bank": 17,
+  "nautilus_index": 124,
+  "nautilus_name": "Island Mallets",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 13,
+  "kronos_name": "African Kalimba",
+  "nautilus_bank": 22,
+  "nautilus_index": 60,
+  "nautilus_name": "African Kalimba",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 14,
+  "kronos_name": "Birds in the Kalimba SW1",
+  "nautilus_bank": 22,
+  "nautilus_index": 62,
+  "nautilus_name": "Birds in the Kalimba SW1",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 15,
+  "kronos_name": "Legato Stereo Strings",
+  "nautilus_bank": 18,
+  "nautilus_index": 60,
+  "nautilus_name": "Legato Stereo Strings",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 16,
+  "kronos_name": "Slow StereoStrings",
+  "nautilus_bank": 18,
+  "nautilus_index": 59,
+  "nautilus_name": "Slow Stereo Strings",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 17,
+  "kronos_name": "Legato Strings",
+  "nautilus_bank": 18,
+  "nautilus_index": 61,
+  "nautilus_name": "Legato Strings",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 18,
+  "kronos_name": "Hollywood Strings",
+  "nautilus_bank": 18,
+  "nautilus_index": 83,
+  "nautilus_name": "Hollywood Strings",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 19,
+  "kronos_name": "Symphony Strings",
+  "nautilus_bank": 18,
+  "nautilus_index": 63,
+  "nautilus_name": "Symphony Strings",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 20,
+  "kronos_name": "Symphonic Bows",
+  "nautilus_bank": 18,
+  "nautilus_index": 62,
+  "nautilus_name": "Symphonic Bows",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 21,
+  "kronos_name": "Stereo Strings",
+  "nautilus_bank": 18,
+  "nautilus_index": 84,
+  "nautilus_name": "Stereo Strings",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 23,
+  "kronos_name": "Stereo Oct Strings SW1",
+  "nautilus_bank": 18,
+  "nautilus_index": 85,
+  "nautilus_name": "Stereo Oct Strings SW1",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 24,
+  "kronos_name": "Arco Stereo Strings",
+  "nautilus_bank": 18,
+  "nautilus_index": 80,
+  "nautilus_name": "Arco Stereo Strings",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 25,
+  "kronos_name": "Arco Strings",
+  "nautilus_bank": 18,
+  "nautilus_index": 79,
+  "nautilus_name": "Arco Strings",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 26,
+  "kronos_name": "Section Strings",
+  "nautilus_bank": 18,
+  "nautilus_index": 65,
+  "nautilus_name": "Section Strings",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 27,
+  "kronos_name": "Platinum Strings",
+  "nautilus_bank": 18,
+  "nautilus_index": 66,
+  "nautilus_name": "Platinum Strings",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 28,
+  "kronos_name": "Big Camera Strings",
+  "nautilus_bank": 18,
+  "nautilus_index": 52,
+  "nautilus_name": "Big Camera Strings",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 29,
+  "kronos_name": "Beautiful Camera Strings",
+  "nautilus_bank": 18,
+  "nautilus_index": 50,
+  "nautilus_name": "Beautiful Camera Strings",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 30,
+  "kronos_name": "Supreme Strings",
+  "nautilus_bank": 18,
+  "nautilus_index": 53,
+  "nautilus_name": "Supreme Strings",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 31,
+  "kronos_name": "Intimate Strings",
+  "nautilus_bank": 18,
+  "nautilus_index": 57,
+  "nautilus_name": "Intimate Strings",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 32,
+  "kronos_name": "Few Bows Stereo",
+  "nautilus_bank": 18,
+  "nautilus_index": 49,
+  "nautilus_name": "Few Bows Stereo",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 34,
+  "kronos_name": "Tape 3 Violins 1",
+  "nautilus_bank": 19,
+  "nautilus_index": 6,
+  "nautilus_name": "Tape 3 Violins 1",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 35,
+  "kronos_name": "Tape 3 Violins 2",
+  "nautilus_bank": 19,
+  "nautilus_index": 7,
+  "nautilus_name": "Tape 3 Violins 2",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 36,
+  "kronos_name": "Tape 16 Violins",
+  "nautilus_bank": 18,
+  "nautilus_index": 60,
+  "nautilus_name": "Legato Stereo Strings",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 37,
+  "kronos_name": "Tape Mixed Strings",
+  "nautilus_bank": 19,
+  "nautilus_index": 10,
+  "nautilus_name": "Tape Mixed Strings",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 39,
+  "kronos_name": "Tape 3 Violins 1 & 2",
+  "nautilus_bank": 19,
+  "nautilus_index": 8,
+  "nautilus_name": "Tape 3 Violins 1 & 2",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 40,
+  "kronos_name": "Tape Octave Strings",
+  "nautilus_bank": 19,
+  "nautilus_index": 11,
+  "nautilus_name": "Tape Octave Strings",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 41,
+  "kronos_name": "Tape Flute & Strings",
+  "nautilus_bank": 19,
+  "nautilus_index": 12,
+  "nautilus_name": "Tape Flute & Strings",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 42,
+  "kronos_name": "Pizz Ensemble",
+  "nautilus_bank": 18,
+  "nautilus_index": 89,
+  "nautilus_name": "Pizz Ensemble",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 44,
+  "kronos_name": "Cello Solo/Pizz SW1",
+  "nautilus_bank": 18,
+  "nautilus_index": 115,
+  "nautilus_name": "Cello Solo/Pizz SW1",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 45,
+  "kronos_name": "Solo Viola/Pizz SW1",
+  "nautilus_bank": 18,
+  "nautilus_index": 111,
+  "nautilus_name": "Solo Viola/Pizz SW1",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 46,
+  "kronos_name": "Violin Solo/Pizz SW1",
+  "nautilus_bank": 18,
+  "nautilus_index": 106,
+  "nautilus_name": "Violin 2 Solo/Pizz SW1",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 47,
+  "kronos_name": "Violin Solo RibbonBend",
+  "nautilus_bank": 18,
+  "nautilus_index": 105,
+  "nautilus_name": "Violin 1 Solo/Pizz SW1",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 49,
+  "kronos_name": "Quartet Strings/Pizz SW1",
+  "nautilus_bank": 18,
+  "nautilus_index": 99,
+  "nautilus_name": "Quartet Strings/Pizz SW1",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 50,
+  "kronos_name": "Stereo Analog Strings",
+  "nautilus_bank": 18,
+  "nautilus_index": 120,
+  "nautilus_name": "Stereo Analog Strings",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 51,
+  "kronos_name": "Analog Strings",
+  "nautilus_bank": 18,
+  "nautilus_index": 118,
+  "nautilus_name": "Analog Strings",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 52,
+  "kronos_name": "String Pad 1",
+  "nautilus_bank": 18,
+  "nautilus_index": 122,
+  "nautilus_name": "String Pad 1",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 53,
+  "kronos_name": "String Pad 2",
+  "nautilus_bank": 25,
+  "nautilus_index": 52,
+  "nautilus_name": "Velo-Pitch Hip Hop Kit",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 54,
+  "kronos_name": "Vintage Analog Strings",
+  "nautilus_bank": 19,
+  "nautilus_index": 3,
+  "nautilus_name": "Vintage Analog Strings",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 55,
+  "kronos_name": "Classic Choir",
+  "nautilus_bank": 19,
+  "nautilus_index": 19,
+  "nautilus_name": "Classic Choir",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 56,
+  "kronos_name": "Classical Choir",
+  "nautilus_bank": 19,
+  "nautilus_index": 20,
+  "nautilus_name": "Classical Choir",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 57,
+  "kronos_name": "Vocal Ah",
+  "nautilus_bank": 19,
+  "nautilus_index": 31,
+  "nautilus_name": "Vocal Ah",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 58,
+  "kronos_name": "Aaah Stereo Voices",
+  "nautilus_bank": 19,
+  "nautilus_index": 27,
+  "nautilus_name": "Aaah Stereo Voices",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 59,
+  "kronos_name": "Vintage Tape Choir",
+  "nautilus_bank": 19,
+  "nautilus_index": 49,
+  "nautilus_name": "Vintage Tape Choir",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 60,
+  "kronos_name": "Vocoder",
+  "nautilus_bank": 19,
+  "nautilus_index": 54,
+  "nautilus_name": "Vocoder",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 61,
+  "kronos_name": "Soft & Sweet Voices",
+  "nautilus_bank": 19,
+  "nautilus_index": 33,
+  "nautilus_name": "Soft & Sweet Voices",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 62,
+  "kronos_name": "Hummmmmm M&F Voices",
+  "nautilus_bank": 19,
+  "nautilus_index": 30,
+  "nautilus_name": "Hummmmmm M&F Voices",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 64,
+  "kronos_name": "Uh-Wooh M&F Voices",
+  "nautilus_bank": 19,
+  "nautilus_index": 29,
+  "nautilus_name": "Uh-Wooh M&F Voices",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 65,
+  "kronos_name": "Ooh Voices L&R",
+  "nautilus_bank": 19,
+  "nautilus_index": 32,
+  "nautilus_name": "Ooh Voices L&R",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 66,
+  "kronos_name": "Oooh Stereo Voices",
+  "nautilus_bank": 19,
+  "nautilus_index": 28,
+  "nautilus_name": "Oooh Stereo Voices",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 67,
+  "kronos_name": "4 Way Ooh/Aah Mix",
+  "nautilus_bank": 19,
+  "nautilus_index": 34,
+  "nautilus_name": "4 Way Ooh/Aah Mix",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 69,
+  "kronos_name": "Scat Voices",
+  "nautilus_bank": 19,
+  "nautilus_index": 37,
+  "nautilus_name": "Scat Voices",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 72,
+  "kronos_name": "Ba-Da Scat Voice",
+  "nautilus_bank": 19,
+  "nautilus_index": 38,
+  "nautilus_name": "Ba-Da Scat Voice",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 74,
+  "kronos_name": "Tape 8 Voice Choir",
+  "nautilus_bank": 19,
+  "nautilus_index": 52,
+  "nautilus_name": "Tape 8 Voice Choir",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 75,
+  "kronos_name": "Tape Boys Choir",
+  "nautilus_bank": 19,
+  "nautilus_index": 50,
+  "nautilus_name": "Tape Boys Choir",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 76,
+  "kronos_name": "Mixed Tape Choirs",
+  "nautilus_bank": 19,
+  "nautilus_index": 53,
+  "nautilus_name": "Mixed Tape Choirs",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 77,
+  "kronos_name": "Slow Tape Boys Choir",
+  "nautilus_bank": 19,
+  "nautilus_index": 51,
+  "nautilus_name": "Slow Tape Boys Choir",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 78,
+  "kronos_name": "Alpine Voice Pad",
+  "nautilus_bank": 19,
+  "nautilus_index": 43,
+  "nautilus_name": "Alpine Voice Pad",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 79,
+  "kronos_name": "Air Voices",
+  "nautilus_bank": 19,
+  "nautilus_index": 122,
+  "nautilus_name": "Vibrato Flute",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 80,
+  "kronos_name": "Dreaming of Blue",
+  "nautilus_bank": 19,
+  "nautilus_index": 42,
+  "nautilus_name": "Dreaming of Blue",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 81,
+  "kronos_name": "Dream Voices",
+  "nautilus_bank": 19,
+  "nautilus_index": 41,
+  "nautilus_name": "Dream Voices",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 82,
+  "kronos_name": "Mountain Voices",
+  "nautilus_bank": 19,
+  "nautilus_index": 40,
+  "nautilus_name": "Mountain Voices",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 83,
+  "kronos_name": "Arctic Voices",
+  "nautilus_bank": 19,
+  "nautilus_index": 45,
+  "nautilus_name": "Arctic Voices",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 84,
+  "kronos_name": "Light Voices L&R",
+  "nautilus_bank": 19,
+  "nautilus_index": 35,
+  "nautilus_name": "Light Voices L&R",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 86,
+  "kronos_name": "Thin Stereo Brass",
+  "nautilus_bank": 19,
+  "nautilus_index": 72,
+  "nautilus_name": "Thin Stereo Brass",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 87,
+  "kronos_name": "Big Stereo Brass",
+  "nautilus_bank": 19,
+  "nautilus_index": 73,
+  "nautilus_name": "Big Stereo Brass",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 90,
+  "kronos_name": "Stereo Open Brass",
+  "nautilus_bank": 19,
+  "nautilus_index": 74,
+  "nautilus_name": "Stereo Open Brass",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 91,
+  "kronos_name": "Warm Brass",
+  "nautilus_bank": 19,
+  "nautilus_index": 77,
+  "nautilus_name": "Brass Ens SW1 Octave",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 92,
+  "kronos_name": "Full Brass Section",
+  "nautilus_bank": 19,
+  "nautilus_index": 76,
+  "nautilus_name": "Full Brass Section",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 93,
+  "kronos_name": "Session Brass",
+  "nautilus_bank": 19,
+  "nautilus_index": 75,
+  "nautilus_name": "Session Brass",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 94,
+  "kronos_name": "Stereo Orchestral Brass",
+  "nautilus_bank": 19,
+  "nautilus_index": 97,
+  "nautilus_name": "Stereo Orchestral Brass",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 95,
+  "kronos_name": "Mono Brass",
+  "nautilus_bank": 19,
+  "nautilus_index": 81,
+  "nautilus_name": "Mono Brass",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 96,
+  "kronos_name": "Wide Stereo Brass",
+  "nautilus_bank": 19,
+  "nautilus_index": 78,
+  "nautilus_name": "Wide Stereo Brass",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 98,
+  "kronos_name": "Dark Stereo Brass",
+  "nautilus_bank": 19,
+  "nautilus_index": 79,
+  "nautilus_name": "Dark Stereo Brass",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 100,
+  "kronos_name": "SFZ Brass",
+  "nautilus_bank": 19,
+  "nautilus_index": 80,
+  "nautilus_name": "SFZ Brass",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 101,
+  "kronos_name": "Slow Brass",
+  "nautilus_bank": 19,
+  "nautilus_index": 82,
+  "nautilus_name": "Slow Brass",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 105,
+  "kronos_name": "Mute Tp/Tb Ensemble",
+  "nautilus_bank": 19,
+  "nautilus_index": 83,
+  "nautilus_name": "Mute Tp/Tb Ensemble",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 106,
+  "kronos_name": "Cup Mutes Tp/Tb Ensemble",
+  "nautilus_bank": 19,
+  "nautilus_index": 84,
+  "nautilus_name": "Cup Mute Tp/Tb Ensemble",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 110,
+  "kronos_name": "Trombones X-Fade",
+  "nautilus_bank": 19,
+  "nautilus_index": 70,
+  "nautilus_name": "Trombones X-Fade",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 111,
+  "kronos_name": "Trombone Duo mf",
+  "nautilus_bank": 19,
+  "nautilus_index": 71,
+  "nautilus_name": "Trombone Duo mf",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 113,
+  "kronos_name": "French Horn Ensemble",
+  "nautilus_bank": 19,
+  "nautilus_index": 101,
+  "nautilus_name": "French Horn Ensemble",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 114,
+  "kronos_name": "French Horn Duo",
+  "nautilus_bank": 19,
+  "nautilus_index": 102,
+  "nautilus_name": "French Horn Duo",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 118,
+  "kronos_name": "Tape Brass",
+  "nautilus_bank": 19,
+  "nautilus_index": 117,
+  "nautilus_name": "Tape Brass",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 120,
+  "kronos_name": "Trumpet Open Tone",
+  "nautilus_bank": 19,
+  "nautilus_index": 103,
+  "nautilus_name": "Trumpet Open Tone",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 121,
+  "kronos_name": "Trumpet Overblown",
+  "nautilus_bank": 19,
+  "nautilus_index": 104,
+  "nautilus_name": "Trumpet Overblown",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 122,
+  "kronos_name": "Sensitive Trumpet",
+  "nautilus_bank": 19,
+  "nautilus_index": 105,
+  "nautilus_name": "Sensitive Trumpet",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 123,
+  "kronos_name": "Dyn Legato Trumpet Doit",
+  "nautilus_bank": 25,
+  "nautilus_index": 34,
+  "nautilus_name": "Jazz Dry/Amb Kit",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 125,
+  "kronos_name": "Piccolo Trumpet",
+  "nautilus_bank": 19,
+  "nautilus_index": 107,
+  "nautilus_name": "Piccolo Trumpet",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 126,
+  "kronos_name": "Mute Trumpet",
+  "nautilus_bank": 19,
+  "nautilus_index": 106,
+  "nautilus_name": "Mute Trumpet",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 20,
+  "kronos_index": 127,
+  "kronos_name": "Flugelhorn mf",
+  "nautilus_bank": 19,
+  "nautilus_index": 108,
+  "nautilus_name": "Flugelhorn mf",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 1,
+  "kronos_name": "Trombone 4 Velocity",
+  "nautilus_bank": 19,
+  "nautilus_index": 109,
+  "nautilus_name": "Trombone 4 Velocity",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 4,
+  "kronos_name": "Mute Trombone",
+  "nautilus_bank": 19,
+  "nautilus_index": 110,
+  "nautilus_name": "Mute Trombone",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 5,
+  "kronos_name": "Solo French Horn",
+  "nautilus_bank": 18,
+  "nautilus_index": 84,
+  "nautilus_name": "Stereo Strings",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 7,
+  "kronos_name": "Tuba Dynamic X-Fade",
+  "nautilus_bank": 19,
+  "nautilus_index": 112,
+  "nautilus_name": "Tuba Dynamic X-Fade",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 9,
+  "kronos_name": "Vibrato Flute",
+  "nautilus_bank": 19,
+  "nautilus_index": 122,
+  "nautilus_name": "Vibrato Flute",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 10,
+  "kronos_name": "Magical Flute",
+  "nautilus_bank": 19,
+  "nautilus_index": 124,
+  "nautilus_name": "Magical Flute",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 11,
+  "kronos_name": "Flute Dynamic",
+  "nautilus_bank": 19,
+  "nautilus_index": 125,
+  "nautilus_name": "Flute Dynamic",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 12,
+  "kronos_name": "Silver Flute",
+  "nautilus_bank": 19,
+  "nautilus_index": 126,
+  "nautilus_name": "Silver Flute",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 13,
+  "kronos_name": "Hard Attack Flute Vib",
+  "nautilus_bank": 19,
+  "nautilus_index": 123,
+  "nautilus_name": "Hard Attack Flute Vib",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 15,
+  "kronos_name": "Tape Flutes",
+  "nautilus_bank": 20,
+  "nautilus_index": 0,
+  "nautilus_name": "Tape Flutes",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 16,
+  "kronos_name": "Piccolo Flute",
+  "nautilus_bank": 19,
+  "nautilus_index": 127,
+  "nautilus_name": "Piccolo Flute",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 17,
+  "kronos_name": "Shakuhachi Velo X-Fade",
+  "nautilus_bank": 22,
+  "nautilus_index": 38,
+  "nautilus_name": "Shakuhachi Velo X-Fade",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 19,
+  "kronos_name": "Tin Whistle",
+  "nautilus_bank": 22,
+  "nautilus_index": 41,
+  "nautilus_name": "Tin Whistle",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 20,
+  "kronos_name": "Nay",
+  "nautilus_bank": 22,
+  "nautilus_index": 35,
+  "nautilus_name": "Ney",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 21,
+  "kronos_name": "Recorder Knob5 Insts",
+  "nautilus_bank": 20,
+  "nautilus_index": 48,
+  "nautilus_name": "Recorder Tonguing",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 22,
+  "kronos_name": "Ocarina Classic Tone",
+  "nautilus_bank": 20,
+  "nautilus_index": 49,
+  "nautilus_name": "Ocarina Classic Tone",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 23,
+  "kronos_name": "Ocarina Attack Knob5",
+  "nautilus_bank": 20,
+  "nautilus_index": 50,
+  "nautilus_name": "Ocarina Attack",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 24,
+  "kronos_name": "Woodwind Section",
+  "nautilus_bank": 20,
+  "nautilus_index": 43,
+  "nautilus_name": "Woodwind Section",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 25,
+  "kronos_name": "Vibrato Saxes JS-Y Growl",
+  "nautilus_bank": 5,
+  "nautilus_index": 7,
+  "nautilus_name": "2 Way Stereo Grand SW1",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 28,
+  "kronos_name": "Alto Sax Hard -Y Growl",
+  "nautilus_bank": 20,
+  "nautilus_index": 31,
+  "nautilus_name": "Alto Sax Hard -Y Growl",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 29,
+  "kronos_name": "Alto Sax Soft -Y Breath",
+  "nautilus_bank": 20,
+  "nautilus_index": 32,
+  "nautilus_name": "Alto Sax Soft -Y Breath",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 32,
+  "kronos_name": "Tenor Sax Vibrato",
+  "nautilus_bank": 20,
+  "nautilus_index": 35,
+  "nautilus_name": "Tenor Sax Vibrato",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 33,
+  "kronos_name": "Tenor Sax Hard -Y Growl",
+  "nautilus_bank": 20,
+  "nautilus_index": 36,
+  "nautilus_name": "Tenor Sax Hard -Y Growl",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 34,
+  "kronos_name": "Tenor Sax Soft SW1 Key",
+  "nautilus_bank": 20,
+  "nautilus_index": 37,
+  "nautilus_name": "Tenor Sax Soft SW1 Key",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 36,
+  "kronos_name": "Baritone Sax JS-Y Growl",
+  "nautilus_bank": 20,
+  "nautilus_index": 42,
+  "nautilus_name": "Baritone Sax JS-Y Growl",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 39,
+  "kronos_name": "Doublereed Family",
+  "nautilus_bank": 20,
+  "nautilus_index": 6,
+  "nautilus_name": "Double Reed Family",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 40,
+  "kronos_name": "Clarinet Vibrato",
+  "nautilus_bank": 20,
+  "nautilus_index": 2,
+  "nautilus_name": "Clarinet Vibrato",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 41,
+  "kronos_name": "Clarinet SW1 Breath",
+  "nautilus_bank": 20,
+  "nautilus_index": 1,
+  "nautilus_name": "Clarinet SW1 Breath",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 43,
+  "kronos_name": "Bass Clarinet SW1 Duo",
+  "nautilus_bank": 20,
+  "nautilus_index": 4,
+  "nautilus_name": "Bass Clarinet SW1 Duo",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 46,
+  "kronos_name": "Oboe SW1 Key Noise",
+  "nautilus_bank": 20,
+  "nautilus_index": 7,
+  "nautilus_name": "Oboe SW1 Key Noise",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 48,
+  "kronos_name": "E.Horn Vib. SW1 Key",
+  "nautilus_bank": 20,
+  "nautilus_index": 11,
+  "nautilus_name": "English Horn Vib SW1 Key",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 49,
+  "kronos_name": "English Horn SW1 Key",
+  "nautilus_bank": 20,
+  "nautilus_index": 10,
+  "nautilus_name": "English Horn SW1 Key",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 51,
+  "kronos_name": "Bassoon SW1 Key Noise",
+  "nautilus_bank": 20,
+  "nautilus_index": 12,
+  "nautilus_name": "Bassoon SW1 Key Noise",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 53,
+  "kronos_name": "ContraBassoon SW1",
+  "nautilus_bank": 20,
+  "nautilus_index": 13,
+  "nautilus_name": "Contrabassoon SW1",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 54,
+  "kronos_name": "Clarinets",
+  "nautilus_bank": 20,
+  "nautilus_index": 3,
+  "nautilus_name": "Clarinets",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 55,
+  "kronos_name": "Bassoon & Bass Clarinet",
+  "nautilus_bank": 20,
+  "nautilus_index": 14,
+  "nautilus_name": "Bassoon & Bass Clarinet",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 58,
+  "kronos_name": "Uillean Pipe VeloSwitch",
+  "nautilus_bank": 22,
+  "nautilus_index": 28,
+  "nautilus_name": "Uilleann Pipe V.Switch",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 59,
+  "kronos_name": "Accordion 8+8' Cassotto",
+  "nautilus_bank": 17,
+  "nautilus_index": 28,
+  "nautilus_name": "Accordion 8+8' Cassotto",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 60,
+  "kronos_name": "Astor's Bandoneon",
+  "nautilus_bank": 17,
+  "nautilus_index": 26,
+  "nautilus_name": "Astor's Bandoneon",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 62,
+  "kronos_name": "Musette + 4'",
+  "nautilus_bank": 17,
+  "nautilus_index": 33,
+  "nautilus_name": "Musette + 4'",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 64,
+  "kronos_name": "Harmonica Dyna-Wah",
+  "nautilus_bank": 20,
+  "nautilus_index": 51,
+  "nautilus_name": "Harmonica Dyna-Wah",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 65,
+  "kronos_name": "Harmonica SW1 Distortion",
+  "nautilus_bank": 18,
+  "nautilus_index": 120,
+  "nautilus_name": "Stereo Analog Strings",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 66,
+  "kronos_name": "Nylon Guitar 1 Knob5 Atk",
+  "nautilus_bank": 18,
+  "nautilus_index": 0,
+  "nautilus_name": "Soft Glockenspiel",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 68,
+  "kronos_name": "Dyn NylonGuitar Kn5",
+  "nautilus_bank": 20,
+  "nautilus_index": 58,
+  "nautilus_name": "Dynamic Nylon Guitar",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 69,
+  "kronos_name": "A.Guitar Dynamic Pick",
+  "nautilus_bank": 20,
+  "nautilus_index": 64,
+  "nautilus_name": "A.Guitar Dynamic Pick",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 71,
+  "kronos_name": "Steel Acoustic Guitar",
+  "nautilus_bank": 20,
+  "nautilus_index": 65,
+  "nautilus_name": "Steel Acoustic Guitar",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 73,
+  "kronos_name": "Planetary WaveSeq Guitar",
+  "nautilus_bank": 20,
+  "nautilus_index": 72,
+  "nautilus_name": "Planetary WaveSeq Guitar",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 74,
+  "kronos_name": "12 String Guitar",
+  "nautilus_bank": 20,
+  "nautilus_index": 66,
+  "nautilus_name": "12 String Guitar 1",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 76,
+  "kronos_name": "Fretless Guitar",
+  "nautilus_bank": 20,
+  "nautilus_index": 70,
+  "nautilus_name": "Fretless Guitar",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 77,
+  "kronos_name": "Elec Guitar + Twin",
+  "nautilus_bank": 20,
+  "nautilus_index": 116,
+  "nautilus_name": "Elec Guitar + Twin",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 78,
+  "kronos_name": "Tube Sat SemiDist Guitar",
+  "nautilus_bank": 20,
+  "nautilus_index": 124,
+  "nautilus_name": "Tube Sat SemiDist Guitar",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 79,
+  "kronos_name": "Vintage Tremolo Guitar",
+  "nautilus_bank": 20,
+  "nautilus_index": 115,
+  "nautilus_name": "Vintage Tremolo Guitar",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 80,
+  "kronos_name": "Rotary Guitar",
+  "nautilus_bank": 20,
+  "nautilus_index": 119,
+  "nautilus_name": "Rotary Guitar",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 82,
+  "kronos_name": "Glassy Strat",
+  "nautilus_bank": 20,
+  "nautilus_index": 118,
+  "nautilus_name": "Glassy Strat",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 83,
+  "kronos_name": "Dirty Guitar + AC30",
+  "nautilus_bank": 20,
+  "nautilus_index": 125,
+  "nautilus_name": "Dirty Guitar + AC30",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 84,
+  "kronos_name": "New Age Hybrid Guitar",
+  "nautilus_bank": 20,
+  "nautilus_index": 117,
+  "nautilus_name": "New Age Hybrid Guitar",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 85,
+  "kronos_name": "E.Guitar XF->OpenTone",
+  "nautilus_bank": 20,
+  "nautilus_index": 112,
+  "nautilus_name": "E.Guitar XF->OpenTone",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 89,
+  "kronos_name": "E.Guitar Dynamic Pick",
+  "nautilus_bank": 20,
+  "nautilus_index": 114,
+  "nautilus_name": "E.Guitar Dynamic Pick",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 91,
+  "kronos_name": "Whack-a-Wah SW1",
+  "nautilus_bank": 20,
+  "nautilus_index": 121,
+  "nautilus_name": "Whack-a-Wah SW1",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 92,
+  "kronos_name": "Muted Pick Guitar 2",
+  "nautilus_bank": 20,
+  "nautilus_index": 122,
+  "nautilus_name": "Muted Pick Guitar",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 93,
+  "kronos_name": "PedalSteel PreBend Gtr",
+  "nautilus_bank": 21,
+  "nautilus_index": 6,
+  "nautilus_name": "PedalSteel PreBend Gtr",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 94,
+  "kronos_name": "JazzGuitar & AmpCabinet",
+  "nautilus_bank": 21,
+  "nautilus_index": 5,
+  "nautilus_name": "Jazz Guitar & AmpCabinet",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 96,
+  "kronos_name": "Screaming Tube Guitar",
+  "nautilus_bank": 20,
+  "nautilus_index": 126,
+  "nautilus_name": "Screaming Tube Guitar",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 99,
+  "kronos_name": "Mega Mute Guitar",
+  "nautilus_bank": 20,
+  "nautilus_index": 123,
+  "nautilus_name": "Mega Mute Guitar",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 100,
+  "kronos_name": "Guitar Chords & FX",
+  "nautilus_bank": 21,
+  "nautilus_index": 1,
+  "nautilus_name": "Guitar Chords & FX",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 101,
+  "kronos_name": "Power Guitar FX",
+  "nautilus_bank": 21,
+  "nautilus_index": 2,
+  "nautilus_name": "Power Guitar FX",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 102,
+  "kronos_name": "Harp 'Nails'",
+  "nautilus_bank": 19,
+  "nautilus_index": 16,
+  "nautilus_name": "Harp 'Nails'",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 105,
+  "kronos_name": "Sitar & Tambura",
+  "nautilus_bank": 22,
+  "nautilus_index": 56,
+  "nautilus_name": "Sitar & Tambura",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 107,
+  "kronos_name": "Santur Dynamic X-Fade",
+  "nautilus_bank": 22,
+  "nautilus_index": 14,
+  "nautilus_name": "Santur Dynamic X-Fade",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 108,
+  "kronos_name": "Oud Dynamic X-Fade",
+  "nautilus_bank": 22,
+  "nautilus_index": 47,
+  "nautilus_name": "Oud Dynamic X-Fade",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 109,
+  "kronos_name": "Dyna Banjo",
+  "nautilus_bank": 21,
+  "nautilus_index": 59,
+  "nautilus_name": "JB Finger Bass 1",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 110,
+  "kronos_name": "Bouzuki Octave Strings",
+  "nautilus_bank": 6,
+  "nautilus_index": 116,
+  "nautilus_name": "",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 111,
+  "kronos_name": "Mandolin Pick",
+  "nautilus_bank": 22,
+  "nautilus_index": 44,
+  "nautilus_name": "Mandolin Pick",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 112,
+  "kronos_name": "Mandolin Trem & Str",
+  "nautilus_bank": 22,
+  "nautilus_index": 45,
+  "nautilus_name": "Mandolin Trem & Strings",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 114,
+  "kronos_name": "Dark Floor Bass",
+  "nautilus_bank": 21,
+  "nautilus_index": 115,
+  "nautilus_name": "Dark Floor Bass",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 115,
+  "kronos_name": "Mud Bass",
+  "nautilus_bank": 25,
+  "nautilus_index": 76,
+  "nautilus_name": "Hard House Kit",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 116,
+  "kronos_name": "RnB Bass/Lead",
+  "nautilus_bank": 19,
+  "nautilus_index": 99,
+  "nautilus_name": "Expressive Horns JS+Y",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 117,
+  "kronos_name": "Funkylicious Bass",
+  "nautilus_bank": 21,
+  "nautilus_index": 107,
+  "nautilus_name": "Funkylicious Bass",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 118,
+  "kronos_name": "Syn Reso Bass",
+  "nautilus_bank": 25,
+  "nautilus_index": 78,
+  "nautilus_name": "Trance Kit",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 126,
+  "kronos_name": "Take Me Home Bass",
+  "nautilus_bank": 21,
+  "nautilus_index": 111,
+  "nautilus_name": "Take Me Home Bass",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 21,
+  "kronos_index": 127,
+  "kronos_name": "Phone Home Bass",
+  "nautilus_bank": 21,
+  "nautilus_index": 124,
+  "nautilus_name": "Phone Home Bass",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 1,
+  "kronos_name": "Hard Sync Bass",
+  "nautilus_bank": 3,
+  "nautilus_index": 46,
+  "nautilus_name": "Mega Lead",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 2,
+  "kronos_name": "Strong/Baddd Bass",
+  "nautilus_bank": 3,
+  "nautilus_index": 70,
+  "nautilus_name": "PWM Stab Synth",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 3,
+  "kronos_name": "Ragin' Bass",
+  "nautilus_bank": 21,
+  "nautilus_index": 106,
+  "nautilus_name": "Ragin' Bass",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 5,
+  "kronos_name": "Ol' Doc Distratto-Bass",
+  "nautilus_bank": 22,
+  "nautilus_index": 4,
+  "nautilus_name": "Ol' Doc Distratto-Bass",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 6,
+  "kronos_name": "01 Dubbya Bass",
+  "nautilus_bank": 22,
+  "nautilus_index": 3,
+  "nautilus_name": "01 Dubbya Bass",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 8,
+  "kronos_name": "JungleHead",
+  "nautilus_bank": 21,
+  "nautilus_index": 123,
+  "nautilus_name": "Jungle Head",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 9,
+  "kronos_name": "Deep Energy Bass",
+  "nautilus_bank": 25,
+  "nautilus_index": 110,
+  "nautilus_name": "Conga Variation Kit",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 10,
+  "kronos_name": "Domination Bass",
+  "nautilus_bank": 21,
+  "nautilus_index": 116,
+  "nautilus_name": "Domination Bass",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 15,
+  "kronos_name": "Acoustic Bass 1 SW1",
+  "nautilus_bank": 21,
+  "nautilus_index": 43,
+  "nautilus_name": "Acoustic Bass 1 SW1",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 16,
+  "kronos_name": "Acoustic Bass 2 SW1",
+  "nautilus_bank": 21,
+  "nautilus_index": 44,
+  "nautilus_name": "Acoustic Bass 2 SW1",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 18,
+  "kronos_name": "Finger Bass 1",
+  "nautilus_bank": 25,
+  "nautilus_index": 74,
+  "nautilus_name": "House Kit",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 19,
+  "kronos_name": "Finger Bass 2",
+  "nautilus_bank": 21,
+  "nautilus_index": 75,
+  "nautilus_name": "YA Finger Bass",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 20,
+  "kronos_name": "Finger Bass 3 SW1",
+  "nautilus_bank": 25,
+  "nautilus_index": 28,
+  "nautilus_name": "Wild Rock Kit",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 21,
+  "kronos_name": "Finger Bass 4 SW1",
+  "nautilus_bank": 25,
+  "nautilus_index": 65,
+  "nautilus_name": "Gated/Distorted DnB Kit",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 24,
+  "kronos_name": "Finger Bass 7",
+  "nautilus_bank": 23,
+  "nautilus_index": 110,
+  "nautilus_name": "Weightless",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 30,
+  "kronos_name": "Picked Bass 3 SW1",
+  "nautilus_bank": 19,
+  "nautilus_index": 15,
+  "nautilus_name": "Nostalgic Harp",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 33,
+  "kronos_name": "Picked Precision Bass",
+  "nautilus_bank": 21,
+  "nautilus_index": 4,
+  "nautilus_name": "Jazz Guitar + Tweed/1x12",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 36,
+  "kronos_name": "Deeeep Pick Bass",
+  "nautilus_bank": 21,
+  "nautilus_index": 84,
+  "nautilus_name": "PB Muted Pick Bass 2",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 37,
+  "kronos_name": "Fretless SW1 NeckNoise",
+  "nautilus_bank": 21,
+  "nautilus_index": 98,
+  "nautilus_name": "Fretless SW1 NeckNoise",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 38,
+  "kronos_name": "Pro Fretless Bass SW1",
+  "nautilus_bank": 2,
+  "nautilus_index": 78,
+  "nautilus_name": "Klub Bass",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 39,
+  "kronos_name": "HB Fretless Bass",
+  "nautilus_bank": 21,
+  "nautilus_index": 97,
+  "nautilus_name": "HB Fretless Bass",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 40,
+  "kronos_name": "Thumb Bass 1 SW1",
+  "nautilus_bank": 21,
+  "nautilus_index": 86,
+  "nautilus_name": "Thumb Bass 1 SW1",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 41,
+  "kronos_name": "Thumb Bass 2 SW1",
+  "nautilus_bank": 21,
+  "nautilus_index": 87,
+  "nautilus_name": "Thumb Bass 2 SW1",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 42,
+  "kronos_name": "Thumb Bass 3 SW1",
+  "nautilus_bank": 21,
+  "nautilus_index": 88,
+  "nautilus_name": "Thumb Bass 3 SW1",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 47,
+  "kronos_name": "VelSw Slap Bass 2",
+  "nautilus_bank": 25,
+  "nautilus_index": 18,
+  "nautilus_name": "Studio Standard Kit",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 49,
+  "kronos_name": "Tranquil Pad",
+  "nautilus_bank": 19,
+  "nautilus_index": 23,
+  "nautilus_name": "Male/Female Humming",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 50,
+  "kronos_name": "Paddylicious",
+  "nautilus_bank": 23,
+  "nautilus_index": 92,
+  "nautilus_name": "Paddylicious",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 51,
+  "kronos_name": "Breeze Pad",
+  "nautilus_bank": 23,
+  "nautilus_index": 88,
+  "nautilus_name": "Breeze Pad",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 52,
+  "kronos_name": "Virtual Orchestra",
+  "nautilus_bank": 23,
+  "nautilus_index": 94,
+  "nautilus_name": "Virtual Orchestra",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 53,
+  "kronos_name": "Pad Hissing Pad",
+  "nautilus_bank": 23,
+  "nautilus_index": 105,
+  "nautilus_name": "Pad Hissing Pad",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 54,
+  "kronos_name": "Soft Talk Pad",
+  "nautilus_bank": 19,
+  "nautilus_index": 44,
+  "nautilus_name": "Soft Talk Pad",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 55,
+  "kronos_name": "Angel World",
+  "nautilus_bank": 24,
+  "nautilus_index": 54,
+  "nautilus_name": "Meditation Tree",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 56,
+  "kronos_name": "Arithmancy 1",
+  "nautilus_bank": 23,
+  "nautilus_index": 106,
+  "nautilus_name": "Arithmancy 1",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 57,
+  "kronos_name": "Whale's World SW1",
+  "nautilus_bank": 23,
+  "nautilus_index": 120,
+  "nautilus_name": "Whale's World SW1",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 58,
+  "kronos_name": "Airy Tails",
+  "nautilus_bank": 23,
+  "nautilus_index": 84,
+  "nautilus_name": "Airy Tails",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 59,
+  "kronos_name": "Givin' Out Vibes",
+  "nautilus_bank": 23,
+  "nautilus_index": 82,
+  "nautilus_name": "Givin' Out Vibes",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 61,
+  "kronos_name": "Reed Pad",
+  "nautilus_bank": 23,
+  "nautilus_index": 101,
+  "nautilus_name": "Reed Pad",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 62,
+  "kronos_name": "Slow Metal Pad",
+  "nautilus_bank": 23,
+  "nautilus_index": 85,
+  "nautilus_name": "Slow Metal Pad",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 64,
+  "kronos_name": "Synth Brass Pad",
+  "nautilus_bank": 23,
+  "nautilus_index": 98,
+  "nautilus_name": "Synth Brass Pad",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 65,
+  "kronos_name": "The 5th Vector",
+  "nautilus_bank": 23,
+  "nautilus_index": 99,
+  "nautilus_name": "The 5th Vector",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 66,
+  "kronos_name": "Slow Sine Pad",
+  "nautilus_bank": 23,
+  "nautilus_index": 78,
+  "nautilus_name": "Slow Sine Pad",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 67,
+  "kronos_name": "Whispering Flutes",
+  "nautilus_bank": 23,
+  "nautilus_index": 87,
+  "nautilus_name": "Whispering Flutes",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 68,
+  "kronos_name": "Arithmancy 2",
+  "nautilus_bank": 23,
+  "nautilus_index": 107,
+  "nautilus_name": "Arithmancy 2",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 69,
+  "kronos_name": "Lost Puppies",
+  "nautilus_bank": 23,
+  "nautilus_index": 91,
+  "nautilus_name": "Lost Puppies",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 70,
+  "kronos_name": "Deepest Vox Pad",
+  "nautilus_bank": 23,
+  "nautilus_index": 89,
+  "nautilus_name": "Deep Vox Pad",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 72,
+  "kronos_name": "Sad Wood Pad",
+  "nautilus_bank": 23,
+  "nautilus_index": 104,
+  "nautilus_name": "Sad Wood Pad",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 73,
+  "kronos_name": "Debussian Pad",
+  "nautilus_bank": 23,
+  "nautilus_index": 108,
+  "nautilus_name": "Debussian Pad",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 75,
+  "kronos_name": "Film Score Pad",
+  "nautilus_bank": 23,
+  "nautilus_index": 109,
+  "nautilus_name": "Film Score Pad",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 76,
+  "kronos_name": "Dream Pad Sweep",
+  "nautilus_bank": 23,
+  "nautilus_index": 112,
+  "nautilus_name": "Dream Pad Sweep",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 77,
+  "kronos_name": "Splash From The Past",
+  "nautilus_bank": 23,
+  "nautilus_index": 113,
+  "nautilus_name": "Splash from the Past",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 78,
+  "kronos_name": "{(Meditate})",
+  "nautilus_bank": 23,
+  "nautilus_index": 127,
+  "nautilus_name": "{(Meditate})",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 79,
+  "kronos_name": "Cross Sweeper",
+  "nautilus_bank": 23,
+  "nautilus_index": 115,
+  "nautilus_name": "Cross Sweeper",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 80,
+  "kronos_name": "Freedom Pad",
+  "nautilus_bank": 23,
+  "nautilus_index": 96,
+  "nautilus_name": "Freedom Pad",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 81,
+  "kronos_name": "High Octane HPF Sweep",
+  "nautilus_bank": 23,
+  "nautilus_index": 117,
+  "nautilus_name": "High Octane HPF Sweep",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 83,
+  "kronos_name": "FM Fever",
+  "nautilus_bank": 23,
+  "nautilus_index": 65,
+  "nautilus_name": "FM Fever",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 84,
+  "kronos_name": "Leader of Trance",
+  "nautilus_bank": 23,
+  "nautilus_index": 56,
+  "nautilus_name": "Leader of Trance",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 87,
+  "kronos_name": "Flute Pad",
+  "nautilus_bank": 23,
+  "nautilus_index": 74,
+  "nautilus_name": "Flute Pad",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 88,
+  "kronos_name": "Padme & Leadme",
+  "nautilus_bank": 23,
+  "nautilus_index": 75,
+  "nautilus_name": "Padme & Leadme",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 93,
+  "kronos_name": "Storm Chaser",
+  "nautilus_bank": 23,
+  "nautilus_index": 63,
+  "nautilus_name": "Storm Chaser",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 94,
+  "kronos_name": "Fun Comp Synth",
+  "nautilus_bank": 23,
+  "nautilus_index": 66,
+  "nautilus_name": "Fun Comp Synth",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 95,
+  "kronos_name": "Synth Mallet",
+  "nautilus_bank": 23,
+  "nautilus_index": 24,
+  "nautilus_name": "Synth Mallet",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 96,
+  "kronos_name": "Syn. Mallet 5ths",
+  "nautilus_bank": 23,
+  "nautilus_index": 25,
+  "nautilus_name": "Synth Mallet 5th",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 97,
+  "kronos_name": "Sine Synth",
+  "nautilus_bank": 23,
+  "nautilus_index": 17,
+  "nautilus_name": "Sine Synth",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 98,
+  "kronos_name": "Dist Satellite",
+  "nautilus_bank": 23,
+  "nautilus_index": 67,
+  "nautilus_name": "Dist Satellite",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 100,
+  "kronos_name": "Attacking Synth",
+  "nautilus_bank": 23,
+  "nautilus_index": 58,
+  "nautilus_name": "Attacking Synth",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 103,
+  "kronos_name": "Pop Synth Pad",
+  "nautilus_bank": 2,
+  "nautilus_index": 84,
+  "nautilus_name": "Nuklear DOG Bass",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 104,
+  "kronos_name": "Happy Air Synth",
+  "nautilus_bank": 23,
+  "nautilus_index": 71,
+  "nautilus_name": "Happy Air Synth",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 105,
+  "kronos_name": "Fresh Air",
+  "nautilus_bank": 23,
+  "nautilus_index": 62,
+  "nautilus_name": "Fresh Air",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 108,
+  "kronos_name": "Cosmic Furnace",
+  "nautilus_bank": 23,
+  "nautilus_index": 116,
+  "nautilus_name": "Cosmic Furnace",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 110,
+  "kronos_name": "Soft Rezz Synth",
+  "nautilus_bank": 23,
+  "nautilus_index": 72,
+  "nautilus_name": "Soft Rezz Synth",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 112,
+  "kronos_name": "WS Classic Lead",
+  "nautilus_bank": 22,
+  "nautilus_index": 125,
+  "nautilus_name": "WS Classic Lead",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 113,
+  "kronos_name": "Wikid Lead",
+  "nautilus_bank": 22,
+  "nautilus_index": 124,
+  "nautilus_name": "Wikid Lead",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 117,
+  "kronos_name": "Stealth Sync Lead",
+  "nautilus_bank": 23,
+  "nautilus_index": 10,
+  "nautilus_name": "Stealth Sync Lead",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 118,
+  "kronos_name": "Mega Sync Lead",
+  "nautilus_bank": 23,
+  "nautilus_index": 11,
+  "nautilus_name": "Mega Sync Lead",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 120,
+  "kronos_name": "Espress Lead",
+  "nautilus_bank": 22,
+  "nautilus_index": 120,
+  "nautilus_name": "Espress Lead",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 121,
+  "kronos_name": "Singing Lead",
+  "nautilus_bank": 22,
+  "nautilus_index": 121,
+  "nautilus_name": "Singing Lead",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 122,
+  "kronos_name": "Leading Sines",
+  "nautilus_bank": 22,
+  "nautilus_index": 114,
+  "nautilus_name": "Leading Sines",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 123,
+  "kronos_name": "Lead Ting",
+  "nautilus_bank": 22,
+  "nautilus_index": 119,
+  "nautilus_name": "Lead Ting",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 124,
+  "kronos_name": "Pro 5 Synth Lead",
+  "nautilus_bank": 22,
+  "nautilus_index": 117,
+  "nautilus_name": "Pro 5 Synth Lead",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 22,
+  "kronos_index": 127,
+  "kronos_name": "Round Poppy Lead",
+  "nautilus_bank": 25,
+  "nautilus_index": 112,
+  "nautilus_name": "Djembe w/ Drum Kit",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 0,
+  "kronos_name": "The Temple SW1",
+  "nautilus_bank": 24,
+  "nautilus_index": 12,
+  "nautilus_name": "The Temple SW1",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 1,
+  "kronos_name": "Smoothie Motion",
+  "nautilus_bank": 23,
+  "nautilus_index": 123,
+  "nautilus_name": "Smoothie Motion",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 2,
+  "kronos_name": "Windy Atomosphere",
+  "nautilus_bank": 23,
+  "nautilus_index": 124,
+  "nautilus_name": "Windy Atomosphere",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 3,
+  "kronos_name": "The Changeling",
+  "nautilus_bank": 23,
+  "nautilus_index": 121,
+  "nautilus_name": "The Changeling",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 4,
+  "kronos_name": "Liquid Evolution VJS",
+  "nautilus_bank": 23,
+  "nautilus_index": 122,
+  "nautilus_name": "Liquid Evolution X-Y",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 5,
+  "kronos_name": "Sea Glass",
+  "nautilus_bank": 23,
+  "nautilus_index": 118,
+  "nautilus_name": "Sea Glass",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 6,
+  "kronos_name": "Aqua Phonics",
+  "nautilus_bank": 24,
+  "nautilus_index": 19,
+  "nautilus_name": "Aqua Phonics",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 7,
+  "kronos_name": "Time Machines",
+  "nautilus_bank": 24,
+  "nautilus_index": 20,
+  "nautilus_name": "Time Machines",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 8,
+  "kronos_name": "Evolving",
+  "nautilus_bank": 24,
+  "nautilus_index": 14,
+  "nautilus_name": "Evolving",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 9,
+  "kronos_name": "The Good Fairy's Pad",
+  "nautilus_bank": 23,
+  "nautilus_index": 126,
+  "nautilus_name": "The Good Fairy's Pad",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 11,
+  "kronos_name": "Pods In The Pad",
+  "nautilus_bank": 23,
+  "nautilus_index": 119,
+  "nautilus_name": "Pods in the Pad",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 13,
+  "kronos_name": "Lost & FallinG",
+  "nautilus_bank": 24,
+  "nautilus_index": 18,
+  "nautilus_name": "Lost & FallinG",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 14,
+  "kronos_name": "Whirl Pad",
+  "nautilus_bank": 24,
+  "nautilus_index": 21,
+  "nautilus_name": "Whirl Pad",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 15,
+  "kronos_name": "Feature Shock",
+  "nautilus_bank": 24,
+  "nautilus_index": 22,
+  "nautilus_name": "Feature Shock",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 19,
+  "kronos_name": "Mirror*rorriM Waves",
+  "nautilus_bank": 24,
+  "nautilus_index": 10,
+  "nautilus_name": "Mirror*rorriM Waves",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 21,
+  "kronos_name": "Flying Machines",
+  "nautilus_bank": 24,
+  "nautilus_index": 17,
+  "nautilus_name": "Flying Machines",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 22,
+  "kronos_name": "Eternity",
+  "nautilus_bank": 2,
+  "nautilus_index": 74,
+  "nautilus_name": "Deep Decay Bass",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 23,
+  "kronos_name": "Dust & Dawn",
+  "nautilus_bank": 23,
+  "nautilus_index": 125,
+  "nautilus_name": "Dust & Dawn",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 24,
+  "kronos_name": "Butterflies",
+  "nautilus_bank": 24,
+  "nautilus_index": 15,
+  "nautilus_name": "Butterflies",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 25,
+  "kronos_name": "Weightless",
+  "nautilus_bank": 23,
+  "nautilus_index": 110,
+  "nautilus_name": "Weightless",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 26,
+  "kronos_name": "Flutter Pad",
+  "nautilus_bank": 24,
+  "nautilus_index": 16,
+  "nautilus_name": "Flutter Pad",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 28,
+  "kronos_name": "La Mer",
+  "nautilus_bank": 24,
+  "nautilus_index": 13,
+  "nautilus_name": "La Mer",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 33,
+  "kronos_name": "Funky Droid Pad (WS)",
+  "nautilus_bank": 24,
+  "nautilus_index": 50,
+  "nautilus_name": "Funky Droid Pad (WS)",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 35,
+  "kronos_name": "Offbeat Blastin (WS)",
+  "nautilus_bank": 24,
+  "nautilus_index": 53,
+  "nautilus_name": "Offbeat Blastin (WS)",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 36,
+  "kronos_name": "Limelight Cafe (WS)",
+  "nautilus_bank": 24,
+  "nautilus_index": 52,
+  "nautilus_name": "Limelight Cafe (WS)",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 37,
+  "kronos_name": "Bass Dancer (WS)",
+  "nautilus_bank": 24,
+  "nautilus_index": 51,
+  "nautilus_name": "Bass Dancer (WS)",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 40,
+  "kronos_name": "Wave Song",
+  "nautilus_bank": 24,
+  "nautilus_index": 28,
+  "nautilus_name": "Wave Song",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 41,
+  "kronos_name": "Running Out of Time",
+  "nautilus_bank": 24,
+  "nautilus_index": 26,
+  "nautilus_name": "Running Out of Time",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 42,
+  "kronos_name": "Benny's Bounce",
+  "nautilus_bank": 24,
+  "nautilus_index": 31,
+  "nautilus_name": "Benny's Bounce",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 44,
+  "kronos_name": "eXposure",
+  "nautilus_bank": 24,
+  "nautilus_index": 29,
+  "nautilus_name": "eXposure",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 45,
+  "kronos_name": "Hot Bod Boogie",
+  "nautilus_bank": 24,
+  "nautilus_index": 38,
+  "nautilus_name": "Hot Bod Boogie",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 46,
+  "kronos_name": "Wavetrance",
+  "nautilus_bank": 24,
+  "nautilus_index": 44,
+  "nautilus_name": "Wavetrance",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 48,
+  "kronos_name": "Wave Girlz",
+  "nautilus_bank": 24,
+  "nautilus_index": 39,
+  "nautilus_name": "Wave Girlz",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 49,
+  "kronos_name": "Passed Out",
+  "nautilus_bank": 24,
+  "nautilus_index": 42,
+  "nautilus_name": "Passed Out",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 51,
+  "kronos_name": "Out to Lunch",
+  "nautilus_bank": 24,
+  "nautilus_index": 40,
+  "nautilus_name": "Out to Lunch",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 60,
+  "kronos_name": "Rhythmscape Wah",
+  "nautilus_bank": 24,
+  "nautilus_index": 32,
+  "nautilus_name": "Rhythmscape Wah",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 64,
+  "kronos_name": "Gating Voice Pad",
+  "nautilus_bank": 24,
+  "nautilus_index": 35,
+  "nautilus_name": "Gating Voice Pad",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 65,
+  "kronos_name": "Flashlight Wave Pad",
+  "nautilus_bank": 2,
+  "nautilus_index": 117,
+  "nautilus_name": "Mushroom Bassman",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 68,
+  "kronos_name": "Here it Comes",
+  "nautilus_bank": 24,
+  "nautilus_index": 34,
+  "nautilus_name": "Here it Comes",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 70,
+  "kronos_name": "Symphonic L.F.O",
+  "nautilus_bank": 24,
+  "nautilus_index": 27,
+  "nautilus_name": "Symphonic L.F.O",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 72,
+  "kronos_name": "Dreaming Sweeper",
+  "nautilus_bank": 24,
+  "nautilus_index": 37,
+  "nautilus_name": "Dreaming Sweeper",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 74,
+  "kronos_name": "Random Arp Advancer",
+  "nautilus_bank": 24,
+  "nautilus_index": 46,
+  "nautilus_name": "Random Arp Advancer",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 78,
+  "kronos_name": "BPM Pulse",
+  "nautilus_bank": 24,
+  "nautilus_index": 41,
+  "nautilus_name": "BPM Pulse",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 79,
+  "kronos_name": "Orbit Blip",
+  "nautilus_bank": 24,
+  "nautilus_index": 25,
+  "nautilus_name": "Orbit Blip",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 82,
+  "kronos_name": "Whispering",
+  "nautilus_bank": 24,
+  "nautilus_index": 36,
+  "nautilus_name": "Whispering",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 84,
+  "kronos_name": "Sea Creature",
+  "nautilus_bank": 24,
+  "nautilus_index": 30,
+  "nautilus_name": "Sea Creature",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 90,
+  "kronos_name": "Lo<->Hi Hit",
+  "nautilus_bank": 24,
+  "nautilus_index": 101,
+  "nautilus_name": "Lo<->Hi Hit",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 91,
+  "kronos_name": "Multi Orch Hits",
+  "nautilus_bank": 24,
+  "nautilus_index": 97,
+  "nautilus_name": "Multi Orch Hits",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 92,
+  "kronos_name": "Maj - HipHop Brass Hit",
+  "nautilus_bank": 24,
+  "nautilus_index": 98,
+  "nautilus_name": "HipHop Major Brass Hit",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 95,
+  "kronos_name": "Sky Boy",
+  "nautilus_bank": 24,
+  "nautilus_index": 102,
+  "nautilus_name": "Sky Boy",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 98,
+  "kronos_name": "Band Hits",
+  "nautilus_bank": 24,
+  "nautilus_index": 103,
+  "nautilus_name": "Band Hits",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 99,
+  "kronos_name": "Dance & House Hits",
+  "nautilus_bank": 24,
+  "nautilus_index": 104,
+  "nautilus_name": "Dance & House Hits",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 102,
+  "kronos_name": "Synth Hitter",
+  "nautilus_bank": 24,
+  "nautilus_index": 99,
+  "nautilus_name": "Synth Hitter",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 104,
+  "kronos_name": "Tinkle Hit",
+  "nautilus_bank": 24,
+  "nautilus_index": 105,
+  "nautilus_name": "Tinkle Hit",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 106,
+  "kronos_name": "Studio Standard Kit",
+  "nautilus_bank": 25,
+  "nautilus_index": 18,
+  "nautilus_name": "Studio Standard Kit",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 107,
+  "kronos_name": "Funk Kit",
+  "nautilus_bank": 20,
+  "nautilus_index": 121,
+  "nautilus_name": "Whack-a-Wah SW1",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 108,
+  "kronos_name": "Jazz/Brush Kit",
+  "nautilus_bank": 25,
+  "nautilus_index": 37,
+  "nautilus_name": "Jazz/Brush Kit",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 109,
+  "kronos_name": "Acoustic Pop Kit",
+  "nautilus_bank": 25,
+  "nautilus_index": 19,
+  "nautilus_name": "Acoustic Pop Kit",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 110,
+  "kronos_name": "Wild Rock Kit",
+  "nautilus_bank": 19,
+  "nautilus_index": 37,
+  "nautilus_name": "Scat Voices",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 112,
+  "kronos_name": "Rock Dry/Amb1 Kit   SnOn",
+  "nautilus_bank": 25,
+  "nautilus_index": 20,
+  "nautilus_name": "Rock Dry/Amb Kit SnOn",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 24,
+  "kronos_index": 120,
+  "kronos_name": "Rock Kit Ambi2 Mic  SnOn",
+  "nautilus_bank": 20,
+  "nautilus_index": 125,
+  "nautilus_name": "Dirty Guitar + AC30",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 1,
+  "kronos_name": "Jazz Kit Dry Mic",
+  "nautilus_bank": 25,
+  "nautilus_index": 35,
+  "nautilus_name": "Jazz Kit Dry Mic",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 5,
+  "kronos_name": "Jazz Velo Pitch Kit",
+  "nautilus_bank": 25,
+  "nautilus_index": 38,
+  "nautilus_name": "Jazz Velo Pitch Kit",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 6,
+  "kronos_name": "Jazz Low Bit Kit",
+  "nautilus_bank": 25,
+  "nautilus_index": 39,
+  "nautilus_name": "Jazz Low Bit Kit",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 7,
+  "kronos_name": "Evil Dark Kit",
+  "nautilus_bank": 3,
+  "nautilus_index": 59,
+  "nautilus_name": "Stradivarious Sync",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 9,
+  "kronos_name": "NuHop Kit",
+  "nautilus_bank": 2,
+  "nautilus_index": 50,
+  "nautilus_name": "Nylon STR-1 Acoustic",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 10,
+  "kronos_name": "Acoustik Freak Kit",
+  "nautilus_bank": 25,
+  "nautilus_index": 40,
+  "nautilus_name": "Acoustik Freak Kit",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 11,
+  "kronos_name": "Urban Hip Hop Kit",
+  "nautilus_bank": 25,
+  "nautilus_index": 49,
+  "nautilus_name": "Native Hop Kit",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 12,
+  "kronos_name": "R&B Kit",
+  "nautilus_bank": 25,
+  "nautilus_index": 46,
+  "nautilus_name": "R&B Kit",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 13,
+  "kronos_name": "Granular Acid Kit",
+  "nautilus_bank": 25,
+  "nautilus_index": 82,
+  "nautilus_name": "Granular Acid Kit",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 14,
+  "kronos_name": "80008 Kit",
+  "nautilus_bank": 25,
+  "nautilus_index": 41,
+  "nautilus_name": "80008 Kit",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 15,
+  "kronos_name": "90009 Kit",
+  "nautilus_bank": 25,
+  "nautilus_index": 42,
+  "nautilus_name": "90009 Kit",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 16,
+  "kronos_name": "Tekno Klub Kit",
+  "nautilus_bank": 25,
+  "nautilus_index": 81,
+  "nautilus_name": "Tekno Klub Kit",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 18,
+  "kronos_name": "Tricki kit",
+  "nautilus_bank": 25,
+  "nautilus_index": 60,
+  "nautilus_name": "Tricki kit",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 19,
+  "kronos_name": "Crazy Triki Kit",
+  "nautilus_bank": 24,
+  "nautilus_index": 36,
+  "nautilus_name": "Whispering",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 20,
+  "kronos_name": "Mashed Kit",
+  "nautilus_bank": 25,
+  "nautilus_index": 98,
+  "nautilus_name": "Mashed Kit",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 21,
+  "kronos_name": "Electro Rock Kit",
+  "nautilus_bank": 25,
+  "nautilus_index": 68,
+  "nautilus_name": "Electro Rock Kit",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 22,
+  "kronos_name": "Insane FX Kit",
+  "nautilus_bank": 25,
+  "nautilus_index": 100,
+  "nautilus_name": "Insane FX Kit",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 23,
+  "kronos_name": "Nu Style Kit",
+  "nautilus_bank": 25,
+  "nautilus_index": 99,
+  "nautilus_name": "Nu Style Kit",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 24,
+  "kronos_name": "House Kit",
+  "nautilus_bank": 25,
+  "nautilus_index": 74,
+  "nautilus_name": "House Kit",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 25,
+  "kronos_name": "Sweep the House Kit",
+  "nautilus_bank": 25,
+  "nautilus_index": 20,
+  "nautilus_name": "Rock Dry/Amb Kit SnOn",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 26,
+  "kronos_name": "Trance Kit",
+  "nautilus_bank": 25,
+  "nautilus_index": 78,
+  "nautilus_name": "Trance Kit",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 27,
+  "kronos_name": "Filtered Trance Kit",
+  "nautilus_bank": 2,
+  "nautilus_index": 92,
+  "nautilus_name": "80's Stereo Bass SW1",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 28,
+  "kronos_name": "Hard House Kit",
+  "nautilus_bank": 25,
+  "nautilus_index": 76,
+  "nautilus_name": "Hard House Kit",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 29,
+  "kronos_name": "Hip Hop Kit",
+  "nautilus_bank": 25,
+  "nautilus_index": 51,
+  "nautilus_name": "Hip Hop Kit",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 30,
+  "kronos_name": "Velo-Pitch Hip Hop Kit",
+  "nautilus_bank": 25,
+  "nautilus_index": 40,
+  "nautilus_name": "Acoustik Freak Kit",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 31,
+  "kronos_name": "Drum'n'Bass Kit",
+  "nautilus_bank": 25,
+  "nautilus_index": 64,
+  "nautilus_name": "Drum'n'Bass Kit 1",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 32,
+  "kronos_name": "Gated/Distorted DnB Kit",
+  "nautilus_bank": 25,
+  "nautilus_index": 65,
+  "nautilus_name": "Gated/Distorted DnB Kit",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 33,
+  "kronos_name": "Deep AmbiChill Kit",
+  "nautilus_bank": 25,
+  "nautilus_index": 86,
+  "nautilus_name": "Deep AmbiChill Kit",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 34,
+  "kronos_name": "Psycho/Chill Kit",
+  "nautilus_bank": 25,
+  "nautilus_index": 87,
+  "nautilus_name": "Psycho/Chill Kit",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 35,
+  "kronos_name": "Psycho Pitch Kit",
+  "nautilus_bank": 25,
+  "nautilus_index": 88,
+  "nautilus_name": "Psycho Pitch Kit",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 38,
+  "kronos_name": "DJ Set",
+  "nautilus_bank": 25,
+  "nautilus_index": 103,
+  "nautilus_name": "DJ Set",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 39,
+  "kronos_name": "Human Beat Box Kit",
+  "nautilus_bank": 25,
+  "nautilus_index": 101,
+  "nautilus_name": "Human Beat Box Kit",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 40,
+  "kronos_name": "Industry/VocoderSet",
+  "nautilus_bank": 25,
+  "nautilus_index": 104,
+  "nautilus_name": "Industry/Vocoder Set",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 41,
+  "kronos_name": "Cajon Kit",
+  "nautilus_bank": 21,
+  "nautilus_index": 43,
+  "nautilus_name": "Acoustic Bass 1 SW1",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 60,
+  "kronos_name": "Original Perc. Kit",
+  "nautilus_bank": 25,
+  "nautilus_index": 107,
+  "nautilus_name": "Original Perc. Kit",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 61,
+  "kronos_name": "Cuban Perc. Kit",
+  "nautilus_bank": 25,
+  "nautilus_index": 108,
+  "nautilus_name": "Cuban Perc. Kit",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 62,
+  "kronos_name": "Brazilian Perc. Kit",
+  "nautilus_bank": 25,
+  "nautilus_index": 109,
+  "nautilus_name": "Brazilian Perc. Kit",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 63,
+  "kronos_name": "Conga Variation Kit",
+  "nautilus_bank": 25,
+  "nautilus_index": 110,
+  "nautilus_name": "Conga Variation Kit",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 64,
+  "kronos_name": "Misc. Perc. Kit",
+  "nautilus_bank": 25,
+  "nautilus_index": 113,
+  "nautilus_name": "Misc. Perc. Kit",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 65,
+  "kronos_name": "Orch./Ethnic Kit",
+  "nautilus_bank": 25,
+  "nautilus_index": 115,
+  "nautilus_name": "Orch./Ethnic Kit",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 68,
+  "kronos_name": "China Gong (Tam Tam)",
+  "nautilus_bank": 25,
+  "nautilus_index": 124,
+  "nautilus_name": "China Gong (Tam Tam)",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 69,
+  "kronos_name": "Marktree",
+  "nautilus_bank": 25,
+  "nautilus_index": 125,
+  "nautilus_name": "Mark Tree",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 70,
+  "kronos_name": "Timpani Splits SW2 Roll1",
+  "nautilus_bank": 25,
+  "nautilus_index": 123,
+  "nautilus_name": "Timpani Splits SW2 Roll",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 71,
+  "kronos_name": "New Mega Drum Hit",
+  "nautilus_bank": 25,
+  "nautilus_index": 122,
+  "nautilus_name": "New Mega Drum Hit",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 73,
+  "kronos_name": "Funk Kit (Mono)",
+  "nautilus_bank": 25,
+  "nautilus_index": 32,
+  "nautilus_name": "Funk Kit",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 74,
+  "kronos_name": "Jazz/Brush Kit (Mono)",
+  "nautilus_bank": 25,
+  "nautilus_index": 37,
+  "nautilus_name": "Jazz/Brush Kit",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 75,
+  "kronos_name": "Acoustic Pop Kit (Mono)",
+  "nautilus_bank": 25,
+  "nautilus_index": 19,
+  "nautilus_name": "Acoustic Pop Kit",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 81,
+  "kronos_name": "Orch./Ethnic Kit (Mono)",
+  "nautilus_bank": 25,
+  "nautilus_index": 115,
+  "nautilus_name": "Orch./Ethnic Kit",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 82,
+  "kronos_name": "SFX Catalog 1",
+  "nautilus_bank": 24,
+  "nautilus_index": 115,
+  "nautilus_name": "SFX Catalog 1",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 83,
+  "kronos_name": "SFX Catalog 2",
+  "nautilus_bank": 24,
+  "nautilus_index": 116,
+  "nautilus_name": "SFX Catalog 2",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 84,
+  "kronos_name": "SFX Catalog 3",
+  "nautilus_bank": 24,
+  "nautilus_index": 117,
+  "nautilus_name": "SFX Catalog 3",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 85,
+  "kronos_name": "SFX Catalog 4",
+  "nautilus_bank": 24,
+  "nautilus_index": 118,
+  "nautilus_name": "SFX Catalog 4",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 86,
+  "kronos_name": "SFX Catalog 5",
+  "nautilus_bank": 24,
+  "nautilus_index": 119,
+  "nautilus_name": "SFX Catalog 5",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 87,
+  "kronos_name": "Piano SFX 1",
+  "nautilus_bank": 24,
+  "nautilus_index": 120,
+  "nautilus_name": "Piano SFX 1",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 88,
+  "kronos_name": "Piano SFX 2",
+  "nautilus_bank": 24,
+  "nautilus_index": 121,
+  "nautilus_name": "Piano SFX 2",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 89,
+  "kronos_name": "Piano SFX 3",
+  "nautilus_bank": 24,
+  "nautilus_index": 122,
+  "nautilus_name": "Piano SFX 3",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 90,
+  "kronos_name": "Piano SFX 4",
+  "nautilus_bank": 24,
+  "nautilus_index": 123,
+  "nautilus_name": "Piano SFX 4",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 91,
+  "kronos_name": "Piano SFX 1 & 2",
+  "nautilus_bank": 24,
+  "nautilus_index": 124,
+  "nautilus_name": "Piano SFX 1 & 2",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 92,
+  "kronos_name": "Piano SFX 3 & 4",
+  "nautilus_bank": 24,
+  "nautilus_index": 125,
+  "nautilus_name": "Piano SFX 3 & 4",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 98,
+  "kronos_name": "Perfect Storm",
+  "nautilus_bank": 24,
+  "nautilus_index": 62,
+  "nautilus_name": "Perfect Storm",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 99,
+  "kronos_name": "Meditation Tree",
+  "nautilus_bank": 24,
+  "nautilus_index": 54,
+  "nautilus_name": "Meditation Tree",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 100,
+  "kronos_name": "SubSonik War Drums",
+  "nautilus_bank": 24,
+  "nautilus_index": 64,
+  "nautilus_name": "SubSonik War Drums",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 101,
+  "kronos_name": "Outside Elements",
+  "nautilus_bank": 24,
+  "nautilus_index": 61,
+  "nautilus_name": "Outside Elements",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 102,
+  "kronos_name": "Granular Laughing",
+  "nautilus_bank": 24,
+  "nautilus_index": 88,
+  "nautilus_name": "Granular Laughing",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 104,
+  "kronos_name": "Sonic Blast",
+  "nautilus_bank": 24,
+  "nautilus_index": 65,
+  "nautilus_name": "Sonic Blast",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 105,
+  "kronos_name": "Coin Thwack",
+  "nautilus_bank": 24,
+  "nautilus_index": 55,
+  "nautilus_name": "Coin Thwack",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 107,
+  "kronos_name": "Hemispheres",
+  "nautilus_bank": 24,
+  "nautilus_index": 80,
+  "nautilus_name": "Hemispheres",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 108,
+  "kronos_name": "Orbiting Probes",
+  "nautilus_bank": 24,
+  "nautilus_index": 73,
+  "nautilus_name": "Orbiting Probes",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 109,
+  "kronos_name": "New Voyage",
+  "nautilus_bank": 24,
+  "nautilus_index": 72,
+  "nautilus_name": "New Voyage",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 111,
+  "kronos_name": "Space Gliders",
+  "nautilus_bank": 24,
+  "nautilus_index": 74,
+  "nautilus_name": "Space Gliders",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 112,
+  "kronos_name": "Dying in Space",
+  "nautilus_bank": 24,
+  "nautilus_index": 85,
+  "nautilus_name": "Dying in Space",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 114,
+  "kronos_name": "Ask For Directions",
+  "nautilus_bank": 24,
+  "nautilus_index": 76,
+  "nautilus_name": "Ask for Directions",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 115,
+  "kronos_name": "Steam Sweeps",
+  "nautilus_bank": 24,
+  "nautilus_index": 70,
+  "nautilus_name": "Steam Sweeps",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 117,
+  "kronos_name": "Distant Ice",
+  "nautilus_bank": 24,
+  "nautilus_index": 78,
+  "nautilus_name": "Distant Ice",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 118,
+  "kronos_name": "The Great Wall",
+  "nautilus_bank": 24,
+  "nautilus_index": 79,
+  "nautilus_name": "The Great Wall",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 119,
+  "kronos_name": "New North Wind",
+  "nautilus_bank": 24,
+  "nautilus_index": 63,
+  "nautilus_name": "New North Wind",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 120,
+  "kronos_name": "Crypt-on",
+  "nautilus_bank": 1,
+  "nautilus_index": 47,
+  "nautilus_name": "Carpet Magic",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 122,
+  "kronos_name": "Cosmic Frisbee",
+  "nautilus_bank": 24,
+  "nautilus_index": 87,
+  "nautilus_name": "Cosmic Frisbee",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 123,
+  "kronos_name": "Compu Beacon",
+  "nautilus_bank": 24,
+  "nautilus_index": 83,
+  "nautilus_name": "Compu Beacon",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 125,
+  "kronos_name": "Noize Sweep",
+  "nautilus_bank": 24,
+  "nautilus_index": 86,
+  "nautilus_name": "Noize Sweep",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 126,
+  "kronos_name": "Into The Nebula SW1",
+  "nautilus_bank": 24,
+  "nautilus_index": 84,
+  "nautilus_name": "Into the Nebula SW1",
+  "source": "korg"
+ },
+ {
+  "kronos_bank": 25,
+  "kronos_index": 127,
+  "kronos_name": "Vocoder (Mic Input 1)",
+  "nautilus_bank": 25,
+  "nautilus_index": 126,
+  "nautilus_name": "Vocoder (Mic Input 1)",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 26,
+  "kronos_index": 2,
+  "kronos_name": "Italian Studio Grand",
+  "nautilus_bank": 0,
+  "nautilus_index": 7,
+  "nautilus_name": "Italian Studio Grand",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 26,
+  "kronos_index": 4,
+  "kronos_name": "Bright Italian Grand",
+  "nautilus_bank": 0,
+  "nautilus_index": 16,
+  "nautilus_name": "Bright Italian Grand",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 26,
+  "kronos_index": 6,
+  "kronos_name": "Dark Italian Grand",
+  "nautilus_bank": 0,
+  "nautilus_index": 11,
+  "nautilus_name": "Dark Italian Grand",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 26,
+  "kronos_index": 8,
+  "kronos_name": "Ambient Italian Grand",
+  "nautilus_bank": 0,
+  "nautilus_index": 24,
+  "nautilus_name": "Ambient Italian Grand",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 26,
+  "kronos_index": 13,
+  "kronos_name": "Bright Chorus Grand",
+  "nautilus_bank": 0,
+  "nautilus_index": 29,
+  "nautilus_name": "Bright Chorus Grand",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 26,
+  "kronos_index": 18,
+  "kronos_name": "Grand Piano & Choir SW1",
+  "nautilus_bank": 0,
+  "nautilus_index": 43,
+  "nautilus_name": "Grand Piano & Choir SW1",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 26,
+  "kronos_index": 19,
+  "kronos_name": "Grand Piano Pad SW1/2",
+  "nautilus_bank": 0,
+  "nautilus_index": 37,
+  "nautilus_name": "Grand Piano Pad SW1/2",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 26,
+  "kronos_index": 20,
+  "kronos_name": "Multitap Grand Pianos",
+  "nautilus_bank": 0,
+  "nautilus_index": 50,
+  "nautilus_name": "Multitap Grand Pianos",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 26,
+  "kronos_index": 21,
+  "kronos_name": "Cinematic Vector Grand",
+  "nautilus_bank": 0,
+  "nautilus_index": 49,
+  "nautilus_name": "Cinematic Vector Grand",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 26,
+  "kronos_index": 22,
+  "kronos_name": "Aquarian Grand Piano",
+  "nautilus_bank": 0,
+  "nautilus_index": 45,
+  "nautilus_name": "Aquarian Grand Piano",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 26,
+  "kronos_index": 25,
+  "kronos_name": "EP Mark I Early Amp",
+  "nautilus_bank": 0,
+  "nautilus_index": 63,
+  "nautilus_name": "EP Mark I Early Amp",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 26,
+  "kronos_index": 26,
+  "kronos_name": "EP Mark I Early Tremolo",
+  "nautilus_bank": 0,
+  "nautilus_index": 64,
+  "nautilus_name": "EP Mark I Early Tremolo",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 26,
+  "kronos_index": 27,
+  "kronos_name": "EP Mark I Early Line",
+  "nautilus_bank": 0,
+  "nautilus_index": 65,
+  "nautilus_name": "EP Mark I Early Line",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 26,
+  "kronos_index": 28,
+  "kronos_name": "EP MKI Early Line Earthy",
+  "nautilus_bank": 0,
+  "nautilus_index": 66,
+  "nautilus_name": "EP MKI Early Line Earthy",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 26,
+  "kronos_index": 29,
+  "kronos_name": "EP Mark I Early Phaser",
+  "nautilus_bank": 0,
+  "nautilus_index": 67,
+  "nautilus_name": "EP Mark I Early Phaser",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 26,
+  "kronos_index": 30,
+  "kronos_name": "EP Mark I Early Chorus",
+  "nautilus_bank": 0,
+  "nautilus_index": 68,
+  "nautilus_name": "EP Mark I Early Chorus",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 26,
+  "kronos_index": 31,
+  "kronos_name": "EP Mark I Early Dist SW2",
+  "nautilus_bank": 0,
+  "nautilus_index": 69,
+  "nautilus_name": "EP Mark I Early Dist SW2",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 26,
+  "kronos_index": 32,
+  "kronos_name": "EP Mark I Early Wah",
+  "nautilus_bank": 0,
+  "nautilus_index": 70,
+  "nautilus_name": "EP Mark I Early Wah",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 26,
+  "kronos_index": 33,
+  "kronos_name": "EP MK I Late Bright Comp",
+  "nautilus_bank": 0,
+  "nautilus_index": 79,
+  "nautilus_name": "EP MK I Late Bright Comp",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 26,
+  "kronos_index": 37,
+  "kronos_name": "Reed EP 200 Phaser SW2",
+  "nautilus_bank": 0,
+  "nautilus_index": 107,
+  "nautilus_name": "Reed EP 200 Phaser SW2",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 26,
+  "kronos_index": 38,
+  "kronos_name": "Reed EP 200A Amp Wah SW2",
+  "nautilus_bank": 0,
+  "nautilus_index": 110,
+  "nautilus_name": "Reed EP 200A Amp Wah SW2",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 26,
+  "kronos_index": 39,
+  "kronos_name": "Bright MOD-7 Dyno EP",
+  "nautilus_bank": 0,
+  "nautilus_index": 98,
+  "nautilus_name": "Bright MOD-7 Dyno EP",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 26,
+  "kronos_index": 40,
+  "kronos_name": "Classic Tine E.Piano",
+  "nautilus_bank": 0,
+  "nautilus_index": 95,
+  "nautilus_name": "Classic Tine E.Piano",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 26,
+  "kronos_index": 41,
+  "kronos_name": "MOD-7 Crystal E.Piano",
+  "nautilus_bank": 0,
+  "nautilus_index": 121,
+  "nautilus_name": "MOD-7 Crystal E.Piano",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 26,
+  "kronos_index": 45,
+  "kronos_name": "MOD-7 E.Piano Chorus",
+  "nautilus_bank": 0,
+  "nautilus_index": 127,
+  "nautilus_name": "MOD-7 E.Piano Chorus",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 26,
+  "kronos_index": 46,
+  "kronos_name": "Feather Roadz",
+  "nautilus_bank": 0,
+  "nautilus_index": 97,
+  "nautilus_name": "Feather Roadz",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 26,
+  "kronos_index": 47,
+  "kronos_name": "Layered MOD-7 E.Piano",
+  "nautilus_bank": 1,
+  "nautilus_index": 3,
+  "nautilus_name": "Layered MOD-7 E.Piano",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 26,
+  "kronos_index": 49,
+  "kronos_name": "MOD-7/AL1 Hybrid EP SW1",
+  "nautilus_bank": 1,
+  "nautilus_index": 5,
+  "nautilus_name": "MOD-7/AL1 Hybrid EP SW1",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 26,
+  "kronos_index": 50,
+  "kronos_name": "Synth EP & Pad",
+  "nautilus_bank": 1,
+  "nautilus_index": 7,
+  "nautilus_name": "Synth EP & Pad",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 26,
+  "kronos_index": 51,
+  "kronos_name": "Warm Pad EP SW1",
+  "nautilus_bank": 1,
+  "nautilus_index": 8,
+  "nautilus_name": "Warm Pad EP SW1",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 26,
+  "kronos_index": 52,
+  "kronos_name": "Tank Clav",
+  "nautilus_bank": 1,
+  "nautilus_index": 18,
+  "nautilus_name": "Tank Clav",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 26,
+  "kronos_index": 55,
+  "kronos_name": "KE#9 Lower Manual",
+  "nautilus_bank": 1,
+  "nautilus_index": 56,
+  "nautilus_name": "KE#9 Lower Manual",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 26,
+  "kronos_index": 85,
+  "kronos_name": "Quiet Earth Lead",
+  "nautilus_bank": 3,
+  "nautilus_index": 41,
+  "nautilus_name": "Quiet Earth Lead",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 26,
+  "kronos_index": 87,
+  "kronos_name": "Star Cycle Lead",
+  "nautilus_bank": 3,
+  "nautilus_index": 57,
+  "nautilus_name": "Star Cycle Lead",
+  "source": "name"
+ },
+ {
+  "kronos_bank": 27,
+  "kronos_index": 2,
+  "kronos_name": "M1 Piano",
+  "nautilus_bank": 5,
+  "nautilus_index": 24,
+  "nautilus_name": "M1 Piano",
+  "source": "name"
+ }
+]
