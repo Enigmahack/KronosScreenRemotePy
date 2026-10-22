@@ -81,6 +81,14 @@ class ProgramRefMap:
     def get(self, bank: int, index: int) -> Optional[ProgramRefEntry]:
         return self._by_kronos.get((bank, index))
 
+    def get_by_nautilus(self, bank: int, index: int) -> Optional[ProgramRefEntry]:
+        """The Kronos factory Program a Nautilus factory Program replaced (first listed, when several share it)."""
+        if not hasattr(self, "_by_nautilus"):
+            self._by_nautilus: Dict[Tuple[int, int], ProgramRefEntry] = {}
+            for r in self._by_kronos.values():
+                self._by_nautilus.setdefault((r.nautilus_bank, r.nautilus_index), r)
+        return self._by_nautilus.get((bank, index))
+
     @classmethod
     def from_entries(cls, entries: Optional[list]) -> "ProgramRefMap":
         m = cls()

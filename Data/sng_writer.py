@@ -37,7 +37,8 @@ def parts_of(song: SongData) -> SongParts:
     """The pieces to write for a song that carries its events."""
     if song.events is None:
         raise SngBuildError(f"Song {song.name!r} has no events (it came over SysEx): it cannot be written to a .SNG.")
-    return parts_from_sng(song.events)
+    p = parts_from_sng(song.events)
+    return SongParts(song.control, song.timbre_set, p.bmt2, p.trk1)     # the song's own (possibly converted) bodies
 
 
 def parts_from_sng(s: SngSong) -> SongParts:
