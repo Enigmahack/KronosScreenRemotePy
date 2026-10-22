@@ -177,6 +177,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from pathlib import Path
 import threading
 import time
 import uuid
@@ -232,6 +233,10 @@ from Conversion.push import (ARP_BANK_B_SLOTS, CONVERTIBLE_TYPES, EXI_DEST, Conv
                              bank_label as nautilus_bank_label, dest_key, dest_label, plan_arp_slots, push_converted,
                              slot_count as conv_slot_count, type_name as conv_type_name)
 from Conversion.song_source import read_song_timbre_sets
+from Conversion.song_convert import MODEL_NAMES, convert_sng
+from Data.sng_file import MODEL_KRONOS, MODEL_NAUTILUS, SngError, read_sng
+from Data.song_library import SongLibrary
+from Views.song_library_window import SongLibraryWindow
 from Core.sysex_service import SysExService
 import Utils.theme as T
 
@@ -1438,6 +1443,9 @@ class LibrarianShellWindow(QDialog):
         self._btn_songs.setToolTip("Song Timbre Sets: back them up from an instrument, or convert a backup to the Nautilus")
         self._btn_songs.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         songs_menu = QMenu(self._btn_songs)
+        songs_menu.addAction("Song Library...", self._open_song_library)
+        songs_menu.addAction("Convert a .SNG file to the other instrument...", self._convert_sng_file)
+        songs_menu.addSeparator()
         songs_menu.addAction("Back up Song Timbre Sets to .syx...", self._backup_song_timbre_sets)
         songs_menu.addAction("Convert Song Timbre Sets from .SNG or .syx to Nautilus...", self._convert_song_timbre_sets)
         self._btn_songs.setMenu(songs_menu)
@@ -4108,12 +4116,77 @@ class LibrarianShellWindow(QDialog):
         self._log(text)
         self._set_status(text)
 
-    def _convert_song_timbre_sets(self) -> None:
-        reason = None
+    def _song_convert_block_reason(self) -> Optional[str]:
         if self._busy or getattr(self, "_auto_fill_active", False) or getattr(self, "_converting", False):
-            reason = "Another Librarian operation is running."
-        elif self._service is None or not self._service.can_dump or not getattr(self._service, "is_nautilus", False):
-            reason = "Connect to a Nautilus first. Just connected? Wait a moment: the instrument type is still being detected."
+            return "Another Librarian operation is running."
+        if self._service is None or not self._service.can_dump or not getattr(self._service, "is_nautilus", False):
+            return "Connect to a Nautilus first. Just connected? Wait a moment: the instrument type is still being detected."
+        return None
+
+    def _open_song_library(self) -> None:
+        win = getattr(self, "_song_library_win", None)
+        if win is None:
+            win = SongLibraryWindow(SongLibrary(Models.storage.data_dir() / "song_library"),
+                                    lambda: self._service, self._send_song_items, self)
+            self._song_library_win = win
+        win.refresh()
+        win.show()
+        win.raise_()
+
+    def _convert_sng_file(self) -> None:
+        """A whole .SNG (every song, all MIDI data) -> a new .SNG for the other instrument; the source is not changed."""
+        path, _ = QFileDialog.getOpenFileName(self, "Convert a .SNG file", "", "Song files (*.SNG *.sng)")
+        if not path:
+            return
+        try:
+            with open(path, "rb") as f:
+                data = f.read()
+            model = read_sng(data).model
+        except (OSError, SngError) as ex:
+            self._log(f"Convert .SNG: cannot read {path}: {ex}")
+            self._set_status(f"Cannot read that file: {ex}")
+            return
+        target = MODEL_NAUTILUS if model == MODEL_KRONOS else MODEL_KRONOS
+        out, warnings, refusals = convert_sng(data, target, ConvertTables.load())
+        if out is None:
+            self._log("Convert .SNG: " + " ".join(refusals))
+            QMessageBox.warning(self, "Convert .SNG", "Nothing was written.\n\n" + "\n".join(refusals))
+            return
+        stem = Path(path).stem
+        dest, _ = QFileDialog.getSaveFileName(self, "Save the converted .SNG",
+                                              f"{stem}_{MODEL_NAMES[target]}.SNG", "Song files (*.SNG)")
+        if not dest:
+            return
+        try:
+            with open(dest, "wb") as f:
+                f.write(out)
+        except OSError as ex:
+            self._log(f"Convert .SNG: cannot write {dest}: {ex}")
+            self._set_status(f"Cannot write that file: {ex}")
+            return
+        for m in warnings:
+            self._log(f"Convert .SNG: {m}")
+        self._log(f"Converted {path} for the {MODEL_NAMES[target]}: {dest}")
+        self._set_status(f"Wrote {dest} for the {MODEL_NAMES[target]}.")
+        box = QMessageBox(self)
+        box.setWindowTitle("Convert .SNG")
+        box.setText(f"Wrote the {MODEL_NAMES[target]} version:\n{dest}")
+        box.setInformativeText("The original file was not changed. Not yet checked on a real instrument.")
+        if warnings:
+            box.setDetailedText("\n".join(warnings))
+        box.exec()
+
+    def _send_song_items(self, items) -> None:
+        reason = self._song_convert_block_reason()
+        if reason:
+            self._log(f"Convert to Nautilus: {reason}")
+            self._set_status(reason)
+            return
+        if items:
+            self._run_convert(items)
+
+    def _convert_song_timbre_sets(self) -> None:
+        reason = self._song_convert_block_reason()
         if reason:
             self._log(f"Convert to Nautilus: {reason}")
             self._set_status(reason)
