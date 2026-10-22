@@ -82,7 +82,7 @@ files as non-interchangeable.
 | Piece | C# | Python | State |
 |---|---|---|---|
 | Program (EXi, HD-1) | `ProgramConverter.cs` | `Conversion/program.py` | Ported; explicit `ProgramKind` instead of inferring HD-1 from length (a 4960-byte PCG slot is ambiguous). |
-| Combination | `CombiConverter.cs` | `Conversion/combi.py` | Ported; Song Timbre Sets share the layout but have no entry point yet. |
+| Combination | `CombiConverter.cs` | `Conversion/combi.py` | Ported; Song Timbre Sets go through the same function (Librarian toolbar Songs menu, from a Kronos .syx). |
 | Drum Kit, Wave Sequence | `SampleZoneRomRemapper.cs` | `Conversion/media.py`, `zones.py` | Ported (remap only; layouts identical on both). |
 | ROM / program-ref / GE maps | `RomWaveformMap.cs`, `ProgramRefMap.cs`, `KarmaGe*.cs` | `Conversion/data.py` | Ported; data assets copied to `Resources/Conversion/`. |
 | KARMA strip, ARP assignment | `KarmaFieldStripper.cs`, `ArpConversion.cs` | `Conversion/karma.py` | Ported. |

@@ -208,7 +208,7 @@ from Data.librarian_model import (
     _READONLY_PROGRAM_BANKS, apply_ref_patch, encode_ref, plan_batch_move, plan_move, resolve_sequential_fill,
 )
 from Data.librarian_sysex import (
-    OBJ_COMBI, OBJ_DRUM_KIT, OBJ_PROGRAM, OBJ_SET_LIST, OBJ_VERSION, OBJ_WAVE_SEQ, ObjectDump,
+    OBJ_COMBI, OBJ_DRUM_KIT, OBJ_PROGRAM, OBJ_SET_LIST, OBJ_SONG_TIMBRE, OBJ_VERSION, OBJ_WAVE_SEQ, ObjectDump,
     obj_bank_to_func33, set_combi_timbre_ref, set_setlist_slot_ref,
 )
 import Data.library_pull_pipeline as pull_pipeline
@@ -229,7 +229,9 @@ from Utils.setlist_colors import ALL_COLORS as SETLIST_COLORS, get_by_index_or_d
 from Tools.setlist_data import MAX_COUNT
 import Models.storage
 from Conversion.push import (ARP_BANK_B_SLOTS, CONVERTIBLE_TYPES, EXI_DEST, ConvertItem, ConvertTables, ItemReport,
-                             bank_label as nautilus_bank_label, dest_key, dest_label, plan_arp_slots, push_converted)
+                             bank_label as nautilus_bank_label, dest_key, dest_label, plan_arp_slots, push_converted,
+                             slot_count as conv_slot_count, type_name as conv_type_name)
+from Conversion.song_source import read_song_timbre_sets
 from Core.sysex_service import SysExService
 import Utils.theme as T
 
@@ -629,7 +631,10 @@ class _DestinationDialog(QDialog):
         row = QHBoxLayout()
         self._bank_combo = QComboBox()
         self._obj_type = obj_type
-        if obj_type != OBJ_SET_LIST:
+        if obj_type == OBJ_SONG_TIMBRE:
+            self._bank_combo.addItem("Songs", 0)
+            self._bank_combo.setEnabled(False)
+        elif obj_type != OBJ_SET_LIST:
             for b in EDITABLE_BANKS[obj_type]:
                 self._bank_combo.addItem(label_of(b), b)
         else:
@@ -655,7 +660,7 @@ class _DestinationDialog(QDialog):
 
     def _sync_number_range(self) -> None:
         bank = self._bank_combo.currentData()
-        count = object_types.slot_count(self._obj_type, int(bank) if bank is not None else 0)
+        count = conv_slot_count(self._obj_type, int(bank) if bank is not None else 0)
         self._number_spin.setRange(0, count - 1)
 
     def selected(self) -> Tuple[int, int]:
@@ -664,7 +669,7 @@ class _DestinationDialog(QDialog):
 
 def _slot_range(obj_type: int, bank: int, first: int, n: int) -> str:
     """'S000-S007', with a note when the batch runs past the end of the bank."""
-    fit = max(0, min(n, object_types.slot_count(obj_type, bank) - first))
+    fit = max(0, min(n, conv_slot_count(obj_type, bank) - first))
     if fit == 0:
         return f"{dest_label(obj_type, bank, first)} (past the end of the bank: none can be written)"
     text = dest_label(obj_type, bank, first)
@@ -690,7 +695,7 @@ class _ConvertConfirmDialog(QDialog):
         self._arp_chk: Optional[QCheckBox] = None
         self._arp_spin: Optional[QSpinBox] = None
         self._arp_line = QLabel()
-        if any(i.obj_type in (OBJ_PROGRAM, OBJ_COMBI) for i in items):
+        if any(i.obj_type in (OBJ_PROGRAM, OBJ_COMBI, OBJ_SONG_TIMBRE) for i in items):
             row = QHBoxLayout()
             self._arp_chk = QCheckBox("Also write arp patterns (bank B)")
             self._arp_chk.setToolTip("A transcribed KARMA pattern for patches whose GE has no Nautilus preset. "
@@ -725,7 +730,7 @@ class _ConvertConfirmDialog(QDialog):
 
     def _refresh(self, *_args) -> None:
         self._summary.setText("\n".join(
-            f"{n} x {'EXi Program' if k == EXI_DEST else object_types.REGISTRY[k].display_name}  ->  "
+            f"{n} x {'EXi Program' if k == EXI_DEST else conv_type_name(k)}  ->  "
             f"{_slot_range(OBJ_PROGRAM if k == EXI_DEST else k, bank, first, n)}"
             for k, (bank, first) in self._dest.items()
             for n in [sum(1 for i in self._items if dest_key(i, self._dest) == k)]))
@@ -1202,6 +1207,7 @@ class LibrarianShellWindow(QDialog):
     _merge_pull_done = Signal(int, int, str)              # added, gaps, status
     _progress = Signal(str)
     _convert_done = Signal(object, str)                   # [ItemReport], backup path
+    _songs_backup_done = Signal(str, int)                 # path, objects saved (-1 = failed)
     _sysex_probe_done = Signal(bool)                      # True = the Kronos answered a digest
     # PCG-from-Kronos pull, emitted from the FTP worker thread — Qt marshals both
     # to the GUI thread, which is the only thread allowed to touch the dialogs.
@@ -1335,6 +1341,7 @@ class LibrarianShellWindow(QDialog):
         self._build_ui()
         self._sync_done.connect(self._on_sync_done)
         self._convert_done.connect(self._on_convert_done)
+        self._songs_backup_done.connect(self._on_songs_backup_done)
         self._merge_pull_done.connect(self._on_merge_pull_done)
         self._progress.connect(self._log)
         self._progress.connect(self._status_label.setText)
@@ -1426,6 +1433,16 @@ class LibrarianShellWindow(QDialog):
         self._btn_undo.setEnabled(False)
         self._btn_undo.clicked.connect(self._do_undo)
         sync_row.addWidget(self._btn_undo)
+        self._btn_songs = QToolButton()
+        self._btn_songs.setText("Songs ▾")
+        self._btn_songs.setToolTip("Song Timbre Sets: back them up from an instrument, or convert a backup to the Nautilus")
+        self._btn_songs.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        songs_menu = QMenu(self._btn_songs)
+        songs_menu.addAction("Back up Song Timbre Sets to .syx...", self._backup_song_timbre_sets)
+        songs_menu.addAction("Convert Song Timbre Sets from .syx to Nautilus...", self._convert_song_timbre_sets)
+        self._btn_songs.setMenu(songs_menu)
+        sync_row.addSpacing(8)
+        sync_row.addWidget(self._btn_songs)
         sync_row.addStretch(1)
         root.addLayout(sync_row)
 
@@ -3941,7 +3958,7 @@ class LibrarianShellWindow(QDialog):
 
     # ── Convert to Nautilus ──────────────────────────────────────────────────
 
-    _CONVERT_DEFAULT_DEST = {OBJ_PROGRAM: (0x4C, 0)}   # Nautilus Program bank "S", slot 000
+    _CONVERT_DEFAULT_DEST = {OBJ_PROGRAM: (0x4C, 0), OBJ_SONG_TIMBRE: (0, 20)}   # bank S slot 000; songs 0-18 can hold real songs
     _CONVERT_DEFAULT_EXI_DEST = (0x4A, 0)              # first all-Init EXi user bank on the instrument tested
     _CONVERT_TIP = "Write the selected objects to the connected Nautilus. Target slots are backed up first."
 
@@ -3994,13 +4011,17 @@ class LibrarianShellWindow(QDialog):
         if not items:
             self._log("Convert to Nautilus: select Programs, Combinations, Drum Kits or Wave Sequences.")
             return
+        self._run_convert(items)
+
+    def _run_convert(self, items: List[ConvertItem]) -> None:
+        service = self._service
         dest: Dict[int, Tuple[int, int]] = {}
         for obj_type in CONVERTIBLE_TYPES:
             if obj_type == OBJ_PROGRAM and any(i.is_exi for i in items if i.obj_type == OBJ_PROGRAM):
                 steps = [(OBJ_PROGRAM, "HD-1 Program", lambda i: not i.is_exi, self._CONVERT_DEFAULT_DEST[OBJ_PROGRAM]),
                          (EXI_DEST, "EXi Program", lambda i: i.is_exi, self._CONVERT_DEFAULT_EXI_DEST)]
             else:
-                steps = [(obj_type, object_types.REGISTRY[obj_type].display_name, lambda i, t=obj_type: i.obj_type == t,
+                steps = [(obj_type, conv_type_name(obj_type), lambda i, t=obj_type: i.obj_type == t,
                           self._CONVERT_DEFAULT_DEST.get(obj_type))]
             for dkey, label, pick, default in steps:
                 n = sum(1 for i in items if i.obj_type == obj_type and pick(i))
@@ -4049,6 +4070,68 @@ class LibrarianShellWindow(QDialog):
             self._converting = False
             self._set_busy(False)
             raise
+
+    def _backup_song_timbre_sets(self) -> None:
+        """Every Song Timbre Set on the connected instrument -> a .syx (one record per song)."""
+        service = self._service
+        if self._busy or getattr(self, "_converting", False):
+            self._set_status("Another Librarian operation is running.")
+            return
+        if service is None or not service.can_dump:
+            self._set_status("Connect to an instrument first.")
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "Back up Song Timbre Sets",
+                                              f"song_timbre_sets_{time.strftime('%Y%m%d_%H%M%S')}.syx",
+                                              "SysEx (*.syx)")
+        if not path:
+            return
+        self._set_busy(True)
+        self._log("Backing up Song Timbre Sets...")
+
+        def worker() -> None:
+            try:
+                saved = service.backup_bank_to_syx(OBJ_SONG_TIMBRE, 0, path, slot_count=conv_slot_count(OBJ_SONG_TIMBRE, 0),
+                                                   progress=lambda i, n, s: self._safe_emit(
+                                                       self._progress, f"Song Timbre Sets {i}/{n}"))
+            except Exception:
+                log.exception("Song Timbre Set backup failed")
+                saved = -1
+            self._safe_emit(self._songs_backup_done, path, saved)
+
+        threading.Thread(target=worker, daemon=True, name="LibShellSongBackup").start()
+
+    def _on_songs_backup_done(self, path: str, saved: int) -> None:
+        self._set_busy(False)
+        text = (f"Song Timbre Set backup failed: {path}" if saved < 0 else
+                f"Saved {saved} Song Timbre Set(s) to {path}" if saved else
+                "The instrument returned no Song Timbre Sets; nothing was saved.")
+        self._log(text)
+        self._set_status(text)
+
+    def _convert_song_timbre_sets(self) -> None:
+        reason = None
+        if self._busy or getattr(self, "_auto_fill_active", False) or getattr(self, "_converting", False):
+            reason = "Another Librarian operation is running."
+        elif self._service is None or not self._service.can_dump or not getattr(self._service, "is_nautilus", False):
+            reason = "Connect to a Nautilus first. Just connected? Wait a moment: the instrument type is still being detected."
+        if reason:
+            self._log(f"Convert to Nautilus: {reason}")
+            self._set_status(reason)
+            return
+        path, _ = QFileDialog.getOpenFileName(self, "Song Timbre Sets from a Kronos", "", "SysEx (*.syx)")
+        if not path:
+            return
+        try:
+            items, notes = read_song_timbre_sets(path)
+        except OSError as ex:
+            self._log(f"Convert to Nautilus: cannot read {path}: {ex}")
+            return
+        for n in notes:
+            self._log(f"Convert to Nautilus: {n}")
+        if not items:
+            self._set_status("No Song Timbre Sets in that file.")
+            return
+        self._run_convert(items)
 
     def _on_convert_done(self, reports, backup_path: str) -> None:
         self._converting = False

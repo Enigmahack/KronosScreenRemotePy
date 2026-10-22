@@ -7,6 +7,7 @@ the bank) is skipped with a reason; it never aborts the others."""
 from __future__ import annotations
 
 import contextlib
+import re
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Callable, Dict, List, Optional, Set, Tuple
@@ -17,12 +18,13 @@ from Conversion import karma
 from Conversion.combi import convert_combi
 from Conversion.data import KarmaGeCatalog, KarmaGePatternLibrary, ProgramRefMap, RomWaveformMap
 from Conversion.media import convert_drum_kit, convert_wave_seq
-from Conversion.profiles import NAUTILUS, ProgramKind
+from Conversion.profiles import NAUTILUS, ProgramKind, COMBI_NAUTILUS_SIZE
 from Conversion.program import convert_program
-from Data.librarian_sysex import OBJ_COMBI, OBJ_DRUM_KIT, OBJ_PROGRAM, OBJ_WAVE_SEQ
+from Data.librarian_sysex import OBJ_COMBI, OBJ_DRUM_KIT, OBJ_PROGRAM, OBJ_SONG_TIMBRE, OBJ_WAVE_SEQ
 from Tools.exs_option_index import ExsOptionIndex
 
-CONVERTIBLE_TYPES = (OBJ_PROGRAM, OBJ_COMBI, OBJ_DRUM_KIT, OBJ_WAVE_SEQ)
+CONVERTIBLE_TYPES = (OBJ_PROGRAM, OBJ_COMBI, OBJ_DRUM_KIT, OBJ_WAVE_SEQ, OBJ_SONG_TIMBRE)
+SONG_SLOTS = 200   # Nautilus Song Timbre Sets: one bank (0), 200 songs (probed 2026-10-22; slot 200 does not answer)
 
 # Undocumented Nautilus Arp Pattern object (556 bytes); bank 0x40 = user bank B (B000-B127).
 OBJ_ARP_PATTERN, ARP_BANK_B, ARP_BANK_B_SLOTS = 0x19, 0x40, 128
@@ -65,6 +67,8 @@ class ItemReport:
 
 def bank_label(obj_type: int, bank: int) -> str:
     """Nautilus user banks continue past its factory A-F as G.. (wire 0x40 = G, 0x4C = S), where Kronos says U-A.."""
+    if obj_type == OBJ_SONG_TIMBRE:
+        return "Songs"
     if obj_type in (OBJ_PROGRAM, OBJ_COMBI) and 0x40 <= bank <= 0x4D:
         return chr(71 + bank - 0x40)
     if obj_type == OBJ_ARP_PATTERN:
@@ -72,7 +76,17 @@ def bank_label(obj_type: int, bank: int) -> str:
     return object_types.label_for(obj_type, bank)
 
 
+def type_name(obj_type: int) -> str:
+    return "Song Timbre Set" if obj_type == OBJ_SONG_TIMBRE else object_types.REGISTRY[obj_type].display_name
+
+
+def slot_count(obj_type: int, bank: int) -> int:
+    return SONG_SLOTS if obj_type == OBJ_SONG_TIMBRE else object_types.slot_count(obj_type, bank)
+
+
 def dest_label(obj_type: int, bank: int, slot: int) -> str:
+    if obj_type == OBJ_SONG_TIMBRE:
+        return f"Song {slot:03d}"
     return f"{bank_label(obj_type, bank)}{slot:03d}" if obj_type in (OBJ_PROGRAM, OBJ_COMBI) \
         else f"{bank_label(obj_type, bank)}:{slot:03d}"
 
@@ -114,7 +128,7 @@ class _ArpSlots:
     def options_for(self, item: ConvertItem) -> karma.ArpOptions:
         if item.obj_type == OBJ_PROGRAM:
             return karma.ArpOptions(transcribed_pattern_slot=self.slot_for(karma.read_ge_number(item.body) or 0))
-        if item.obj_type == OBJ_COMBI and len(item.body) == 7810:
+        if item.obj_type in (OBJ_COMBI, OBJ_SONG_TIMBRE) and len(item.body) == 7810:
             base = karma.ArpOptions()
             slots = []
             for source in (base.combi_arp_a_source, base.combi_arp_b_source):
@@ -191,8 +205,8 @@ def _push(service, items: List[ConvertItem], dest: Dict[int, Tuple[int, int]], t
         where = dest_label(item.obj_type, bank, slot)
         rep = ItemReport(item.name, where, "refused")
         reports.append(rep)
-        if slot >= object_types.slot_count(item.obj_type, bank):
-            rep.messages.append(f"Past the last slot of bank {object_types.label_for(item.obj_type, bank)}.")
+        if slot >= slot_count(item.obj_type, bank):
+            rep.messages.append(f"Past the last slot of bank {bank_label(item.obj_type, bank)}.")
             continue
         problem = guard()
         if problem:
@@ -212,6 +226,14 @@ def _push(service, items: List[ConvertItem], dest: Dict[int, Tuple[int, int]], t
                 rep.messages.append(f"{bank_label(OBJ_PROGRAM, bank)} is a {kind} bank; this is a "
                                     f"{program_kind_of(item).value.upper()} Program - pick a matching bank.")
                 continue
+        if item.obj_type == OBJ_SONG_TIMBRE and len(target.body) != COMBI_NAUTILUS_SIZE:
+            rep.messages.append(f"Song {slot:03d} is {len(target.body)} bytes on the instrument, not a "
+                                f"{COMBI_NAUTILUS_SIZE}-byte Song Timbre Set.")
+            continue
+        if item.obj_type == OBJ_SONG_TIMBRE:
+            old = target.body[:24].split(b"\x00")[0].decode("ascii", "replace").rstrip()
+            if not re.fullmatch(r"NEW SONG \d{3}", old):
+                rep.messages.append(f'Replaces the song "{old}"; its previous content is in the backup.')
         result = _convert(item, target.body, tables, arp.options_for(item))
         rep.messages += result.warnings
         if result.body is None:
@@ -490,7 +512,7 @@ def _convert(item: ConvertItem, template: bytes, tables: ConvertTables, options:
     if item.obj_type == OBJ_PROGRAM:
         return convert_program(item.body, program_kind_of(item), t.rom_map, t.exs, t.ge_catalog, template,
                                options, t.ge_patterns)
-    if item.obj_type == OBJ_COMBI:
+    if item.obj_type in (OBJ_COMBI, OBJ_SONG_TIMBRE):
         return convert_combi(item.body, t.ge_catalog, template, options, t.ge_patterns, ref_map=t.ref_map)
     if item.obj_type == OBJ_DRUM_KIT:
         return convert_drum_kit(item.body, t.rom_map, t.exs)
