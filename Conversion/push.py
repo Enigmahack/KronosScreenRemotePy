@@ -20,6 +20,7 @@ from Conversion.data import KarmaGeCatalog, KarmaGePatternLibrary, ProgramRefMap
 from Conversion.media import convert_drum_kit, convert_wave_seq
 from Conversion.profiles import NAUTILUS, ProgramKind, COMBI_NAUTILUS_SIZE
 from Conversion.program import convert_program
+from Conversion.result import ConversionResult
 from Data.librarian_sysex import OBJ_COMBI, OBJ_DRUM_KIT, OBJ_PROGRAM, OBJ_SONG_TIMBRE, OBJ_WAVE_SEQ
 from Tools.exs_option_index import ExsOptionIndex
 
@@ -36,6 +37,7 @@ class ConvertItem:
     name: str
     body: bytes                 # Kronos wire body (Program: 3706 HD-1 / 4960 EXi)
     is_exi: bool = False
+    native: bool = False        # body is already a Nautilus body (a Nautilus .SNG / dump): copied, not converted
 
 
 @dataclass
@@ -512,6 +514,9 @@ def _convert(item: ConvertItem, template: bytes, tables: ConvertTables, options:
     if item.obj_type == OBJ_PROGRAM:
         return convert_program(item.body, program_kind_of(item), t.rom_map, t.exs, t.ge_catalog, template,
                                options, t.ge_patterns)
+    if item.native:
+        return ConversionResult(item.body) if len(item.body) == COMBI_NAUTILUS_SIZE else ConversionResult(
+            None, [], [f"A Nautilus Song Timbre Set is {COMBI_NAUTILUS_SIZE} bytes, not {len(item.body)}."])
     if item.obj_type in (OBJ_COMBI, OBJ_SONG_TIMBRE):
         return convert_combi(item.body, t.ge_catalog, template, options, t.ge_patterns, ref_map=t.ref_map)
     if item.obj_type == OBJ_DRUM_KIT:

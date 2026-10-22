@@ -1439,7 +1439,7 @@ class LibrarianShellWindow(QDialog):
         self._btn_songs.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         songs_menu = QMenu(self._btn_songs)
         songs_menu.addAction("Back up Song Timbre Sets to .syx...", self._backup_song_timbre_sets)
-        songs_menu.addAction("Convert Song Timbre Sets from .syx to Nautilus...", self._convert_song_timbre_sets)
+        songs_menu.addAction("Convert Song Timbre Sets from .SNG or .syx to Nautilus...", self._convert_song_timbre_sets)
         self._btn_songs.setMenu(songs_menu)
         sync_row.addSpacing(8)
         sync_row.addWidget(self._btn_songs)
@@ -4118,7 +4118,7 @@ class LibrarianShellWindow(QDialog):
             self._log(f"Convert to Nautilus: {reason}")
             self._set_status(reason)
             return
-        path, _ = QFileDialog.getOpenFileName(self, "Song Timbre Sets from a Kronos", "", "SysEx (*.syx)")
+        path, _ = QFileDialog.getOpenFileName(self, "Songs", "", "Songs (*.SNG *.sng *.syx);;Song files (*.SNG *.sng);;SysEx (*.syx)")
         if not path:
             return
         try:

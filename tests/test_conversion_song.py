@@ -9,7 +9,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from Conversion.data import KarmaGeCatalog, ProgramRefMap, RomWaveformMap
 from Conversion.push import SONG_SLOTS, ConvertItem, ConvertTables, dest_label, push_converted
-from Conversion.song_source import read_song_timbre_sets
+from Conversion.song_source import convert_items, read_song_timbre_sets, read_songs
+from Data.sng_file import MODEL_KRONOS, MODEL_NAUTILUS
+from Data.song_model import SongData, from_whole_body
 import Data.librarian_sysex as kx
 import Data.nautilus_sysex as nsx
 from Data.librarian_sysex import OBJ_COMBI, OBJ_SONG_TIMBRE
@@ -39,9 +41,11 @@ with open(syx, "wb") as f:
     f.write(kx.object_dump_write(OBJ_SONG_TIMBRE, 0, 6, 3, bytes(100)))                              # too short
     f.write(nsx.object_dump_write(OBJ_SONG_TIMBRE, 0, 7, 4, bytes(5640)))                            # Nautilus dump
 items, notes = read_song_timbre_sets(syx)
-check("loads-three-songs", [i.name for i in items] == ["Alpha (song 3)", "Beta (song 4)", "Whole (song 5)"])
-check("bodies-are-timbre-sets", all(len(i.body) == 7810 and i.obj_type == OBJ_SONG_TIMBRE for i in items))
-check("skips-reported", len(notes) == 3)
+check("loads-songs", [i.name for i in items] == ["Alpha", "Beta", "Whole", "(unnamed)"])
+check("bodies-are-timbre-sets", [len(i.body) for i in items] == [7810, 7810, 7810, 5640]
+      and all(i.obj_type == OBJ_SONG_TIMBRE for i in items))
+check("nautilus-dump-is-native", [i.native for i in items] == [False, False, False, True])
+check("skips-reported", len(notes) == 2)
 
 
 class FakeNautilus:
@@ -73,10 +77,11 @@ class FakeNautilus:
 tables = ConvertTables(RomWaveformMap(), ExsOptionIndex.from_catalog("{}"), KarmaGeCatalog(), ProgramRefMap())
 bk = os.path.join(tmp, "b.syx")
 svc = FakeNautilus({1: "Lady Zadora"})
-rep = push_converted(svc, items[:2], {OBJ_SONG_TIMBRE: (0, 1)}, tables, bk)
+rep = push_converted(svc, [items[0], items[3]], {OBJ_SONG_TIMBRE: (0, 1)}, tables, bk)
 check("song-written", [r.status for r in rep] == ["written", "written"])
 check("song-dest-labels", [r.dest for r in rep] == ["Song 001", "Song 002"])
 check("song-body-is-nautilus-size", len(svc.slots[1]) == 5640)
+check("native-body-copied-as-is", svc.slots[2] == bytes(5640))
 check("song-overwrite-warned", any("Lady Zadora" in m for m in rep[0].messages)
       and not any("Replaces" in m for m in rep[1].messages))
 check("song-one-store", [c for c in svc.calls if c[0] == "store"] == [("store", OBJ_SONG_TIMBRE, 0)])
@@ -84,6 +89,26 @@ check("song-one-store", [c for c in svc.calls if c[0] == "store"] == [("store", 
 rep = push_converted(FakeNautilus({}), [items[0]], {OBJ_SONG_TIMBRE: (0, SONG_SLOTS)}, tables, bk)
 check("song-past-end", rep[0].status == "refused" and "last slot" in rep[0].messages[0])
 check("song-label", dest_label(OBJ_SONG_TIMBRE, 0, 20) == "Song 020")
+
+
+# ---- .SNG sources (real files; skipped when the fixtures are absent)
+from fixture_paths import SNG_EXAMPLES
+
+kr = os.path.join(SNG_EXAMPLES, "Kronos", "CYNTHIA-MAIN-9_9_17.SNG")
+na = os.path.join(SNG_EXAMPLES, "Nautilus", "PRELOAD.SNG")
+if os.path.exists(kr) and os.path.exists(na):
+    songs, snotes = read_songs(kr)
+    check("sng-kronos-songs", len(songs) == 6 and not snotes and all(s.has_events for s in songs))
+    check("sng-kronos-layout", all(s.model == MODEL_KRONOS and len(s.timbre_set) == 7810 for s in songs))
+    kitems = convert_items(songs)
+    svc = FakeNautilus({})
+    rep = push_converted(svc, kitems, {OBJ_SONG_TIMBRE: (0, 30)}, tables, bk)
+    check("sng-kronos-converted", [r.status for r in rep] == ["written"] * 6 and all(len(b) == 5640 for b in svc.slots.values()))
+    check("sng-kronos-names-carry-over", all(svc.slots[30 + i][:len(s.name)] == s.name.encode() for i, s in enumerate(songs)))
+    nsongs, _ = read_songs(na)
+    check("sng-nautilus-native", all(s.model == MODEL_NAUTILUS for s in nsongs) and all(i.native for i in convert_items(nsongs)))
+    check("sng-whole-roundtrip", all(from_whole_body(s.whole_body()) == SongData(s.model, s.timbre_set, s.control)
+                                      for s in songs + nsongs))
 
 if fails:
     print("FAIL:", fails)
