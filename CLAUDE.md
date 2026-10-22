@@ -554,6 +554,7 @@ line here only after the live check. Back up any slot before writing (the conver
    against the C# app.
 6. A real Drum Kit and Wave Sequence write to the Kronos (only a Nautilus write is verified).
 6b. Load a converted .SNG (Nautilus -> Kronos from `Convert a .SNG file...`, and the reverse on the Nautilus) from disk on the instrument and check songs, tracks and Timbre Sets; also that a Kronos accepts `Conversion/combi_reverse` output.
+6c. More .SNG examples (owner to supply), especially songs with audio tracks, from both instruments: needed to decode `RGN1` per-region numbers, the 10-byte `ATE1` audio records, the 36-byte `BMT2` block, the header tail values, and to confirm which `SONGnnn` an audio path refers to.
 7. Song Timbre Sets on the Kronos: bank id, slot count, body size (docs imply 7810), version byte, whether
    obj 0x02 answers a digest (the Nautilus answers only 0x18), and capture a few real 0x02 dumps as .syx
    fixtures for `tests/` (no Kronos Song fixture exists anywhere in the workspace).
