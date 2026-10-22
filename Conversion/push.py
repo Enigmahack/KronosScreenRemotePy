@@ -348,8 +348,8 @@ def _push(service, items: List[ConvertItem], dest: Dict[int, Tuple[int, int]], t
         if back is not None and back.body == op.body:
             rep.status = "written"
         else:
-            # HW-VERIFY: whether the instrument normalises bodies on Store (so an exact re-read can differ even when
-            # the write is fine). Convert on the unit, then compare the re-read with the sent body byte for byte.
+            # HW-VERIFY: a Nautilus re-reads one converted HD-1 Program byte for byte after Store (2026-10-22); Combis,
+            # EXi Programs and arp patterns are untested, and may be normalised on Store.
             rep.status = "unverified"
             rep.messages.append("Stored, but the re-read " + (
                 "got no reply." if back is None else "differs from what was sent (the instrument may normalise bodies)."))
@@ -392,16 +392,6 @@ def _verify_backup(path: str, backups) -> Optional[str]:
     return None
 
 
-def _digest(service, obj: int, bank: int) -> Optional[bytes]:
-    fn = getattr(service, "bank_digest", None)
-    if fn is None:
-        return None
-    try:
-        return fn(obj, bank)
-    except Exception:
-        return None
-
-
 def _state_after_no_reply(service, op, pre: bytes) -> str:
     """What a slot looks like after a write whose Reply never arrived: "applied", "unchanged" or "unknown"."""
     back = service.dump_object_parsed(op.obj, op.bank, op.index, no_response_ms=6000)
@@ -413,24 +403,17 @@ def _state_after_no_reply(service, op, pre: bytes) -> str:
 
 
 def _store_checked(service, obj: int, bank: int) -> Tuple[Optional[bool], str]:
-    """Store a bank. (True|False|None, note): committed, not committed, or unknown. A lost Reply is decided by
-    comparing the bank's storage digest before and after, when the service can provide it."""
-    before = _digest(service, obj, bank)
+    """Store a bank. (True|False|None, note): committed, not committed, or unknown. A lost Reply stays unknown:
+    the bank digest reflects the live edit state, not storage, so it cannot say whether the Store committed."""
     code = service.store_bank(obj, bank)
     if code == 0:
         return True, ""
     if code != NO_REPLY:
         return False, f"Store Bank failed (reply {code}); the object is only in volatile memory."
-    after = _digest(service, obj, bank)
-    # HW-VERIFY: that the func-0x37 bank digest reflects NON-VOLATILE storage and changes exactly when a Store
-    # commits. Write one slot, Store, and confirm the digest differs; then write without Storing and confirm it
-    # does not. Also: Store Bank commits the WHOLE bank, including unrelated unsaved edits in other slots.
-    if before is not None and after is not None:
-        if after != before:
-            return True, "The Store Bank reply was lost, but the bank's storage digest changed: it was stored."
-        return False, ("No reply to Store Bank and the bank's storage digest is unchanged: not stored; "
-                       "the object is only in volatile memory.")
-    return None, "No reply to Store Bank and it could not be checked; the object may or may not be stored."
+    # HW-VERIFY: Store Bank commits the WHOLE bank, including unrelated unsaved edits in other slots. A lost Store
+    # reply cannot be resolved remotely (the func-0x37 digest changes on a write, before any Store; probed on a
+    # Nautilus 2026-10-22), so the user is told to check the instrument.
+    return None, "No reply to Store Bank; the object may or may not be stored."
 
 
 @dataclass
@@ -444,7 +427,7 @@ def restore_from_backup(service, backup_path: str,
     """Replays a push's .syx backup (Nautilus codec) and re-Stores every bank it touches, putting the previous
     contents of the target slots back. The file is parsed completely before the first write. A bank whose writes
     were not all acknowledged is not Stored. Not wired to any menu yet.
-    HW-VERIFY: restore on a real Nautilus (convert one Init slot, restore, compare the slot byte for byte)."""
+    Verified on a Nautilus for a Program slot (2026-10-22); Combi and arp-pattern restores are untested."""
     msgs: List[str] = []
     try:
         with open(backup_path, "rb") as f:

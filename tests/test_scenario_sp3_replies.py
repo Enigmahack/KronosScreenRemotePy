@@ -1,7 +1,7 @@
 """SP3 (replies): a write or Store whose Reply never arrives is UNKNOWN, not 'refused'. Drives
 Conversion.push.push_converted against a simulated Nautilus (writes volatile until Store; the bank digest reflects
-storage) and checks: a lost write reply is resolved by re-reading the slot; a bank is never Stored solely for slots
-whose state is unproven; a lost Store reply is resolved by the bank digest; a partial multi-bank Store names the
+the live state, as measured on a Nautilus) and checks: a lost write reply is resolved by re-reading the slot; a bank is never Stored solely for slots
+whose state is unproven; a lost Store reply stays unknown (the digest can't decide it); a partial multi-bank Store names the
 banks already stored and the backup; and restore_from_backup puts the previous contents back."""
 import os, sys, tempfile, hashlib
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -48,7 +48,7 @@ class Sim:
     def bank_digest(self, obj, bank):
         h = hashlib.sha1()
         for k in sorted(k for k in self.persistent if k[:2] == (obj, bank)):
-            h.update(bytes(k) + self.persistent[k])
+            h.update(bytes(k) + self.volatile.get(k, self.persistent[k]))
         return h.digest()
 
     def dump_object_parsed(self, obj, bank, index, **kw):
@@ -132,21 +132,12 @@ s = Sim(write_mode={1: "applied"}, dump_script={(OBJ_PROGRAM, 0x4C, 1): [True, F
 r = run(s, [P("a"), P("b"), P("c")])
 check("unknown then proven after Store: written", r[1].status == "written" and "Verified by re-read" in msgs(r[1]))
 
-# S2a: Store reply lost, digest changed -> committed
-s = Sim(store_mode={0: "applied"})
-r = run(s, [P("a")])
-check("lost Store reply, committed (digest changed): written", r[0].status == "written" and "digest changed" in msgs(r[0]))
-# S2b: Store reply lost, digest unchanged -> not stored, volatile only
-s = Sim(store_mode={0: "dropped"})
-r = run(s, [P("a")])
-check("lost Store reply, not committed: failed, says not stored", r[0].status == "failed" and "unchanged: not stored" in msgs(r[0]))
-check("lost Store reply, not committed: storage untouched", s.persistent == ORIG)
-# S2c: Store reply lost and no digest probe -> unknown, never claims volatile-only
-s = Sim(store_mode={0: "dropped"}, has_digest=False)
-r = run(s, [P("a")])
-check("lost Store reply, unverifiable: failed, 'may or may not'", r[0].status == "failed" and "may or may not be stored" in msgs(r[0])
-      and "only in volatile" not in msgs(r[0]))
-
+# S2a/b: Store reply lost -> unknown whether or not it committed; the digest changes on a write, so it can't decide
+for mode in ("applied", "dropped"):
+    s = Sim(store_mode={0: mode})
+    r = run(s, [P("a")])
+    check(f"lost Store reply ({mode}): failed, 'may or may not'", r[0].status == "failed" and "may or may not be stored" in msgs(r[0])
+          and "only in volatile" not in msgs(r[0]) and "digest" not in msgs(r[0]))
 # S2d: two banks, the second Store is refused -> first stored, second names the stored bank and the backup
 s = Sim(store_mode={1: "refuse"})
 r = run(s, [P("a"), ConvertItem(OBJ_COMBI, "c", bytes(7810))])
