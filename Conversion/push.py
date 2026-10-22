@@ -77,6 +77,13 @@ def dest_label(obj_type: int, bank: int, slot: int) -> str:
         else f"{bank_label(obj_type, bank)}:{slot:03d}"
 
 
+EXI_DEST = -1   # `dest` key for EXi Programs when they go to a different bank than HD-1 Programs
+
+
+def dest_key(item: ConvertItem, dest: Dict[int, Tuple[int, int]]) -> int:
+    return EXI_DEST if item.obj_type == OBJ_PROGRAM and item.is_exi and EXI_DEST in dest else item.obj_type
+
+
 def program_kind_of(item: ConvertItem) -> ProgramKind:
     return ProgramKind.EXI if item.is_exi else ProgramKind.HD1
 
@@ -152,7 +159,7 @@ def push_converted(service, items: List[ConvertItem], dest: Dict[int, Tuple[int,
                    backup_path: str, progress: Callable[[str], None] = lambda m: None,
                    arp_start: Optional[int] = None,
                    still_valid: Optional[Callable[[], bool]] = None) -> PushReports:
-    """`dest` maps object type -> (wire bank, first slot). `arp_start` = first bank-B slot for transcribed arp
+    """`dest` maps object type -> (wire bank, first slot); EXI_DEST adds a separate bank for EXi Programs. `arp_start` = first bank-B slot for transcribed arp
     patterns (None = don't use transcriptions). `service` needs dump_object_parsed, backup_objects, write_object
     and store_bank (SysExService, already switched to the Nautilus codec). `still_valid` is checked, with the
     service's own family/link state, before every phase and write; once it fails nothing more is sent.
@@ -177,9 +184,10 @@ def _push(service, items: List[ConvertItem], dest: Dict[int, Tuple[int, int]], t
     arp_patterns: Dict[int, bytes] = {}
 
     for item in items:
-        bank, _ = dest[item.obj_type]
-        slot = next_slot[item.obj_type]
-        next_slot[item.obj_type] += 1
+        key = dest_key(item, dest)
+        bank, _ = dest[key]
+        slot = next_slot[key]
+        next_slot[key] += 1
         where = dest_label(item.obj_type, bank, slot)
         rep = ItemReport(item.name, where, "refused")
         reports.append(rep)

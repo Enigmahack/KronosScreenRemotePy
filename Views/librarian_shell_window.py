@@ -228,8 +228,8 @@ from Commands.session_dependency_clipboard import SessionDependencyClipboard, Se
 from Utils.setlist_colors import ALL_COLORS as SETLIST_COLORS, get_by_index_or_default as setlist_color
 from Tools.setlist_data import MAX_COUNT
 import Models.storage
-from Conversion.push import (ARP_BANK_B_SLOTS, CONVERTIBLE_TYPES, ConvertItem, ConvertTables, ItemReport,
-                             bank_label as nautilus_bank_label, dest_label, plan_arp_slots, push_converted)
+from Conversion.push import (ARP_BANK_B_SLOTS, CONVERTIBLE_TYPES, EXI_DEST, ConvertItem, ConvertTables, ItemReport,
+                             bank_label as nautilus_bank_label, dest_key, dest_label, plan_arp_slots, push_converted)
 from Core.sysex_service import SysExService
 import Utils.theme as T
 
@@ -725,9 +725,10 @@ class _ConvertConfirmDialog(QDialog):
 
     def _refresh(self, *_args) -> None:
         self._summary.setText("\n".join(
-            f"{sum(1 for i in self._items if i.obj_type == t)} x {object_types.REGISTRY[t].display_name}  ->  "
-            f"{_slot_range(t, bank, first, sum(1 for i in self._items if i.obj_type == t))}"
-            for t, (bank, first) in self._dest.items()))
+            f"{n} x {'EXi Program' if k == EXI_DEST else object_types.REGISTRY[k].display_name}  ->  "
+            f"{_slot_range(OBJ_PROGRAM if k == EXI_DEST else k, bank, first, n)}"
+            for k, (bank, first) in self._dest.items()
+            for n in [sum(1 for i in self._items if dest_key(i, self._dest) == k)]))
         start = self.arp_start()
         if start is None:
             self._arp_line.setText("")
@@ -3941,6 +3942,7 @@ class LibrarianShellWindow(QDialog):
     # ── Convert to Nautilus ──────────────────────────────────────────────────
 
     _CONVERT_DEFAULT_DEST = {OBJ_PROGRAM: (0x4C, 0)}   # Nautilus Program bank "S", slot 000
+    _CONVERT_DEFAULT_EXI_DEST = (0x4A, 0)              # first all-Init EXi user bank on the instrument tested
     _CONVERT_TIP = "Write the selected objects to the connected Nautilus. Target slots are backed up first."
 
     def _convert_selected_locs(self, source: str):
@@ -3994,15 +3996,21 @@ class LibrarianShellWindow(QDialog):
             return
         dest: Dict[int, Tuple[int, int]] = {}
         for obj_type in CONVERTIBLE_TYPES:
-            n = sum(1 for i in items if i.obj_type == obj_type)
-            if not n:
-                continue
-            dlg = _DestinationDialog(obj_type, f"Convert {n} {object_types.REGISTRY[obj_type].display_name}(s) - start at",
-                                     self, default=self._CONVERT_DEFAULT_DEST.get(obj_type),
-                                     bank_label=lambda b, t=obj_type: nautilus_bank_label(t, b))
-            if dlg.exec() != QDialog.DialogCode.Accepted:
-                return
-            dest[obj_type] = dlg.selected()
+            if obj_type == OBJ_PROGRAM and any(i.is_exi for i in items if i.obj_type == OBJ_PROGRAM):
+                steps = [(OBJ_PROGRAM, "HD-1 Program", lambda i: not i.is_exi, self._CONVERT_DEFAULT_DEST[OBJ_PROGRAM]),
+                         (EXI_DEST, "EXi Program", lambda i: i.is_exi, self._CONVERT_DEFAULT_EXI_DEST)]
+            else:
+                steps = [(obj_type, object_types.REGISTRY[obj_type].display_name, lambda i, t=obj_type: i.obj_type == t,
+                          self._CONVERT_DEFAULT_DEST.get(obj_type))]
+            for dkey, label, pick, default in steps:
+                n = sum(1 for i in items if i.obj_type == obj_type and pick(i))
+                if not n:
+                    continue
+                dlg = _DestinationDialog(obj_type, f"Convert {n} {label}(s) - start at", self, default=default,
+                                         bank_label=lambda b, t=obj_type: nautilus_bank_label(t, b))
+                if dlg.exec() != QDialog.DialogCode.Accepted:
+                    return
+                dest[dkey] = dlg.selected()
         tables = ConvertTables.load()
         stamp = time.strftime("%Y%m%d_%H%M%S")
         backup_path = str(Models.storage.backup_dir() / f"{stamp}_nautilus_convert.syx")

@@ -42,7 +42,7 @@ class FakeNautilus:
 
     def __init__(self):
         self.slots, self.calls = {}, []
-        self.sizes = {(OBJ_PROGRAM, 0x4C): 3700, (OBJ_COMBI, 0x46): 5640, (0x19, 0x40): 556}
+        self.sizes = {(OBJ_PROGRAM, 0x4C): 3700, (OBJ_PROGRAM, 0x4A): 4954, (OBJ_COMBI, 0x46): 5640, (0x19, 0x40): 556}
 
     def bank_digest(self, obj, bank):
         return b"d" * 20
@@ -92,10 +92,11 @@ w._convert_to_nautilus("pcg")
 assert wait(lambda: not w._converting and shown), "conversion finished"
 written = sorted(k for k in fake.slots if k[0] == OBJ_PROGRAM)
 print("written:", written)
-assert len(written) >= 1 and all(k[1] == 0x4C for k in written)
-assert fake.calls[0] == "backup" and 1 <= fake.calls.count("store") <= 2, fake.calls   # +1 when arp bank B is written
-assert "EXI" not in shown[-1] or "HD-1 bank" in shown[-1]
-assert any("[WRITTEN]" in shown[-1] for _ in [0]) and "HD-1 bank" in shown[-1], shown[-1]
+assert len(written) >= 1 and {k[1] for k in written} <= {0x4C, 0x4A}
+assert any(k[1] == 0x4A for k in written), "the EXi Program goes to its own default bank, not the HD-1 one"
+assert all(len(fake.slots[k]) == (4954 if k[1] == 0x4A else 3700) for k in written)
+assert fake.calls[0] == "backup" and 2 <= fake.calls.count("store") <= 3, fake.calls   # +1 when arp bank B is written
+assert "[WRITTEN]" in shown[-1] and "bank; this is a" not in shown[-1], shown[-1]
 
 # not connected to a Nautilus -> explains, writes nothing
 fake.is_nautilus = False
