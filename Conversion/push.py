@@ -67,6 +67,8 @@ def bank_label(obj_type: int, bank: int) -> str:
     """Nautilus user banks continue past its factory A-F as G.. (wire 0x40 = G, 0x4C = S), where Kronos says U-A.."""
     if obj_type in (OBJ_PROGRAM, OBJ_COMBI) and 0x40 <= bank <= 0x4D:
         return chr(71 + bank - 0x40)
+    if obj_type == OBJ_ARP_PATTERN:
+        return "arp pattern bank B"
     return object_types.label_for(obj_type, bank)
 
 
@@ -348,8 +350,8 @@ def _push(service, items: List[ConvertItem], dest: Dict[int, Tuple[int, int]], t
         if back is not None and back.body == op.body:
             rep.status = "written"
         else:
-            # HW-VERIFY: a Nautilus re-reads one converted HD-1 Program byte for byte after Store (2026-10-22); Combis,
-            # EXi Programs and arp patterns are untested, and may be normalised on Store.
+            # HW-VERIFY: EXi Programs are untested; a Nautilus re-reads HD-1 Programs, Combis and arp patterns byte for
+            # byte after Store (2026-10-22), so a difference there is real.
             rep.status = "unverified"
             rep.messages.append("Stored, but the re-read " + (
                 "got no reply." if back is None else "differs from what was sent (the instrument may normalise bodies)."))
@@ -410,9 +412,10 @@ def _store_checked(service, obj: int, bank: int) -> Tuple[Optional[bool], str]:
         return True, ""
     if code != NO_REPLY:
         return False, f"Store Bank failed (reply {code}); the object is only in volatile memory."
-    # HW-VERIFY: Store Bank commits the WHOLE bank, including unrelated unsaved edits in other slots. A lost Store
-    # reply cannot be resolved remotely (the func-0x37 digest changes on a write, before any Store; probed on a
-    # Nautilus 2026-10-22), so the user is told to check the instrument.
+    # HW-VERIFY: Store Bank commits the WHOLE bank, including unrelated unsaved edits in other slots. Reads cannot
+    # show it: a Nautilus serves unstored edits from live memory (two edited slots, one Store, both read back the
+    # edit, 2026-10-22), so only a power cycle tells. A lost Store reply cannot be resolved remotely either (the
+    # func-0x37 digest changes on a write, before any Store), so the user is told to check the instrument.
     return None, "No reply to Store Bank; the object may or may not be stored."
 
 
@@ -427,7 +430,7 @@ def restore_from_backup(service, backup_path: str,
     """Replays a push's .syx backup (Nautilus codec) and re-Stores every bank it touches, putting the previous
     contents of the target slots back. The file is parsed completely before the first write. A bank whose writes
     were not all acknowledged is not Stored. Not wired to any menu yet.
-    Verified on a Nautilus for a Program slot (2026-10-22); Combi and arp-pattern restores are untested."""
+    Verified on a Nautilus for Program, Combi and arp-pattern slots (2026-10-22)."""
     msgs: List[str] = []
     try:
         with open(backup_path, "rb") as f:

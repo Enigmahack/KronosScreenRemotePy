@@ -175,8 +175,9 @@ class AppSettings:
     librarian_sync_mode: str = "TwoWay"
     # First bank-B slot Convert to Nautilus offers for transcribed arp patterns: one past the last one it wrote, so a
     # second conversion does not default onto the first batch's patterns. 128 = bank B is full.
-    # HW-VERIFY: whether a bank-B slot is occupied cannot be detected offline (what an Init arp pattern looks like
-    # is unknown), so this only avoids this app's own earlier patterns, not patterns made on the instrument.
+    # Offline this only avoids this app's own earlier patterns, not patterns made on the instrument. A Nautilus
+    # shows an empty bank-B slot as the 556-byte "InitArpPattern" body (identical in every empty slot, 2026-10-22),
+    # so occupancy is readable online.
     convert_arp_next_slot: int = 43
 
     # MIDI / SysEx (Settings > MIDI/SysEx)
