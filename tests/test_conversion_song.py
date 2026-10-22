@@ -46,6 +46,11 @@ check("bodies-are-timbre-sets", [len(i.body) for i in items] == [7810, 7810, 781
       and all(i.obj_type == OBJ_SONG_TIMBRE for i in items))
 check("nautilus-dump-is-native", [i.native for i in items] == [False, False, False, True])
 check("skips-reported", len(notes) == 2)
+dx7 = os.path.join(tmp, "dx7.syx")
+with open(dx7, "wb") as f:
+    f.write(bytes([0xF0, 0x43, 0x00, 0x09, 0x20, 0x00]) + bytes(4096) + bytes([0x00, 0xF7]))   # DX7 32-voice bulk dump
+dsongs, dnotes = read_songs(dx7)
+check("dx7-is-recognised-not-a-song", not dsongs and len(dnotes) == 1 and "Yamaha" in dnotes[0])
 
 
 class FakeNautilus:

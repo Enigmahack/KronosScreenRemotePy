@@ -38,7 +38,10 @@ def read_songs(path: str) -> Tuple[List[SongData], List[str]]:
         d, model = kx.parse_object_dump(msg), MODEL_KRONOS
         if d is None:
             d, model = nsx.parse_object_dump(msg), MODEL_NAUTILUS
-        if d is None:
+        if d is None and len(msg) > 2 and msg[0] == 0xF0 and msg[1] != 0x42:
+            notes.append(f"Skipped a SysEx message from another maker (manufacturer 0x{msg[1]:02X}"
+                         + (", Yamaha: a DX7/DX-series voice or bank" if msg[1] == 0x43 else "") + "); this is not a Korg song dump.")
+        elif d is None:
             notes.append("Skipped a record that is not an object dump.")
         elif d.obj == SONG_OBJECT:
             try:
