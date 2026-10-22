@@ -77,6 +77,10 @@ def program_zones_not_audio_identical(body: bytes, rom_map: RomWaveformMap) -> L
 def remap_drum_kit(body: bytes, rom_map: RomWaveformMap, exs: ExsOptionIndex) -> Tuple[bytes, List[UnmappedRef]]:
     out, unmapped = bytearray(body), []
     for note, zone, uuid, sample_id in iter_drum_kit_sample_refs(body):
+        # ROM drum sample #0 is "no sample": the Nautilus's own factory kits switch zones on at #0 for unused
+        # notes, and it has no entry in the ROM map because there is nothing to map.
+        if sample_id == 0 and classify(uuid).kind is RefClass.ROM:
+            continue
         outcome, new, reason = _resolve(uuid, sample_id, rom_map, exs, ROM_DRUMSAMPLES)
         if outcome is _Outcome.REMAPPED:
             set_drum_kit_sample_id(out, note, zone, new)
