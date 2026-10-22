@@ -358,8 +358,8 @@ def _push(service, items: List[ConvertItem], dest: Dict[int, Tuple[int, int]], t
         if back is not None and back.body == op.body:
             rep.status = "written"
         else:
-            # HW-VERIFY: EXi Programs are untested; a Nautilus re-reads HD-1 Programs, Combis and arp patterns byte for
-            # byte after Store (2026-10-22), so a difference there is real.
+            # A Nautilus re-reads HD-1/EXi Programs, Combis and arp patterns byte for byte after Store (live,
+            # 2026-10-22), so a difference there is real.
             rep.status = "unverified"
             rep.messages.append("Stored, but the re-read " + (
                 "got no reply." if back is None else "differs from what was sent (the instrument may normalise bodies)."))
