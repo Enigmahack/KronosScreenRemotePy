@@ -6,3 +6,4 @@ WORKSPACE = Path(__file__).resolve().parent.parent.parent
 SAMPLE_FIXTURES = os.environ.get(
     "KRONOS_SAMPLE_FIXTURES", str(WORKSPACE / "KronosScreenRemote" / "SampleFixtures"))
 PCG_EXAMPLES = os.environ.get("KRONOS_PCG_EXAMPLES", str(WORKSPACE / "PCG EXAMPLES"))
+SNG_EXAMPLES = os.environ.get("KRONOS_SNG_EXAMPLES", str(WORKSPACE / "SNG EXAMPLES"))
