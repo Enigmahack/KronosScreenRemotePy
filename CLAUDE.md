@@ -536,6 +536,30 @@ assumptions where the source itself is unverified. Defer C#'s USB-direct
 MIDI transport path (`MidiDeviceIdentity.cs`, no daemon link at all) unless
 asked — Python has no USB-direct transport today, only the TCP bridge.
 
+## Kronos live checklist (run when the Kronos is next online; Kronos 192.168.100.15)
+
+Everything here needs the real Kronos. Each item says what to check; remove the matching `# HW-VERIFY:` note or
+line here only after the live check. Back up any slot before writing (the convert flow does it; restore with
+`Conversion.push.restore_from_backup`).
+
+1. `Core/sample_ftp.py:101` - rename behaviour: does a Kronos accept RNTO over an existing file, and does it
+   list with MLSD? (The Nautilus accepts RNTO-over-existing and rejects MLSD, 2026-10-22.)
+2. `Data/kmp_multisample.py:126` - copy a test .KMP with no RLP2/RLP3 to the unit and see whether the Kronos
+   loads it, and what the Sample Editor then shows.
+3. `Core/sysex_service.py:725` - replies are matched by function only. With a second client (or front-panel
+   activity) during a dump, does a stray 0x24 get taken for the wanted reply?
+4. Hardware VALUE-slider CC: `tests/live_midi.py <host> --listen 30` while moving the slider; check GLOBAL >
+   MIDI has CC transmit on first.
+5. Sample Editor hardware audition check (play a pulled collection on the unit) and the side-by-side visual pass
+   against the C# app.
+6. A real Drum Kit and Wave Sequence write to the Kronos (only a Nautilus write is verified).
+7. Song Timbre Sets on the Kronos: bank id, slot count, body size (docs imply 7810), version byte, whether
+   obj 0x02 answers a digest (the Nautilus answers only 0x18), and capture a few real 0x02 dumps as .syx
+   fixtures for `tests/` (no Kronos Song fixture exists anywhere in the workspace).
+8. `Conversion/push.py` Store: on the Nautilus unstored edits revert on reboot (confirmed by the owner). Whether a
+   Store also commits ANOTHER slot's unstored SysEx write in the same bank is still unanswered; do it on the Kronos
+   too (write slot A and B, Store, reboot, read both).
+
 **Older, still-relevant items:**
 
 1. **Sample Editor is still not a full port of C#'s 2500+-line
