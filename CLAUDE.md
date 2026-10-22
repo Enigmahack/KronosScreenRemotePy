@@ -556,9 +556,9 @@ line here only after the live check. Back up any slot before writing (the conver
 7. Song Timbre Sets on the Kronos: bank id, slot count, body size (docs imply 7810), version byte, whether
    obj 0x02 answers a digest (the Nautilus answers only 0x18), and capture a few real 0x02 dumps as .syx
    fixtures for `tests/` (no Kronos Song fixture exists anywhere in the workspace).
-8. `Conversion/push.py` Store: on the Nautilus unstored edits revert on reboot (confirmed by the owner). Whether a
-   Store also commits ANOTHER slot's unstored SysEx write in the same bank is still unanswered; do it on the Kronos
-   too (write slot A and B, Store, reboot, read both).
+8. `Conversion/push.py` Store: on the Nautilus a Store commits the whole bank, including another slot's unstored
+   SysEx write (reboot test 2026-10-22: pre-Store writes survived, a post-Store write reverted). Repeat on the
+   Kronos (write B then A, Store, write C, reboot, read all three).
 
 **Older, still-relevant items:**
 

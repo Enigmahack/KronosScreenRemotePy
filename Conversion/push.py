@@ -442,9 +442,9 @@ def _store_checked(service, obj: int, bank: int) -> Tuple[Optional[bool], str]:
         return True, ""
     if code != NO_REPLY:
         return False, f"Store Bank failed (reply {code}); the object is only in volatile memory."
-    # HW-VERIFY: Store Bank commits the WHOLE bank, including unrelated unsaved edits in other slots. Reads cannot
-    # show it: a Nautilus serves unstored edits from live memory (two edited slots, one Store, both read back the
-    # edit, 2026-10-22), so only a power cycle tells. A lost Store reply cannot be resolved remotely either (the
+    # Store Bank commits the WHOLE bank, including unrelated unsaved edits in other slots (Nautilus, reboot test
+    # 2026-10-22: a slot written before the Store survived, one written after did not). Reads cannot show it, since
+    # unstored edits are served from live memory. A lost Store reply cannot be resolved remotely either (the
     # func-0x37 digest changes on a write, before any Store), so the user is told to check the instrument.
     return None, "No reply to Store Bank; the object may or may not be stored."
 
