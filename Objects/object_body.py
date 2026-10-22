@@ -421,6 +421,10 @@ def iter_drum_kit_sample_refs(body: bytes):
             yield note, zone, bytes(body[zb + 1:zb + 17]), body[zb + _DK_ID_OFS] | (body[zb + _DK_ID_OFS + 1] << 8)
 
 
+def set_drum_kit_zone_off(body: bytearray, note: int, zone: int) -> None:
+    body[_DK_NOTE_BASE + note * _DK_NOTE_STRIDE + zone * _DK_ZONE_STRIDE] = 0
+
+
 def set_drum_kit_sample_id(body: bytearray, note: int, zone: int, new_id: int) -> None:
     o = _DK_NOTE_BASE + note * _DK_NOTE_STRIDE + zone * _DK_ZONE_STRIDE + _DK_ID_OFS
     body[o] = new_id & 0xFF

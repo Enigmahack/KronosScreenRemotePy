@@ -116,6 +116,28 @@ check("waveseq-remap-miss", len(un) == 1 and "9999" in un[0].reason and "ROM_MUL
 check("media-wrong-size-refused", convert_drum_kit(b"x", dk_map, no_exs).body is None and convert_wave_seq(b"x", rmap, no_exs).body is None)
 check("media-convert-ok", convert_drum_kit(drum_kit(0, 5), dk_map, no_exs).body is not None)
 
+from Objects import object_body as _OB
+
+
+def add_dk_zone(body, note, zone, sample_id):
+    b = bytearray(body)
+    z = _OB._DK_NOTE_BASE + note * _OB._DK_NOTE_STRIDE + zone * _OB._DK_ZONE_STRIDE
+    b[z] = 1
+    b[z + 1:z + 16] = KORG_MS_PREFIX
+    b[z + 18], b[z + 19] = sample_id & 0xFF, sample_id >> 8
+    return bytes(b)
+
+
+mixed = add_dk_zone(drum_kit(0, 5), 1, 0, 9999)
+r = convert_drum_kit(mixed, dk_map, no_exs)
+kept = [(n, s) for n, _, _, s in iter_drum_kit_sample_refs(r.body)] if r.body else None
+check("drumkit-unmapped-zone-switched-off", kept == [(0, 99)])
+check("drumkit-switch-off-reported", r.body is not None and "1 zone(s) switched off" in r.warnings[0]
+      and "Note 1 zone 1" in r.warnings[0] and "Notes now silent: 1" in r.warnings[1])
+r = convert_drum_kit(drum_kit(0, 9999), dk_map, no_exs)
+check("drumkit-all-unmapped-refused", r.body is None and "nothing would play" in r.refusals[0])
+check("drumkit-rom-sample-0-is-no-sample", convert_drum_kit(add_dk_zone(drum_kit(0, 5), 2, 0, 0), dk_map, no_exs).warnings == [])
+
 # ---- KARMA stripper
 filled = bytes((i * 17 + 3) & 0xFF for i in range(WIRE_SIZE_HD1))
 stripped, was = karma.strip_karma_fields(filled)

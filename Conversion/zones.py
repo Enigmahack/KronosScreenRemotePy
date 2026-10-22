@@ -17,7 +17,7 @@ from typing import Callable, List, Tuple
 from Conversion.data import ROM_DRUMSAMPLES, ROM_MULTISAMPLES, RomWaveformMap
 from Data.librarian_sysex import set_program_zone_number
 from Objects.object_body import (iter_drum_kit_sample_refs, iter_wave_seq_sample_refs, set_drum_kit_sample_id,
-                                 set_wave_seq_step_select)
+                                 set_drum_kit_zone_off, set_wave_seq_step_select)
 from Tools.exs_option_index import ExsOptionIndex
 from Tools.sample_reference_walker import RefClass, classify, iter_program_sample_zone_refs
 
@@ -74,7 +74,9 @@ def program_zones_not_audio_identical(body: bytes, rom_map: RomWaveformMap) -> L
     return found
 
 
-def remap_drum_kit(body: bytes, rom_map: RomWaveformMap, exs: ExsOptionIndex) -> Tuple[bytes, List[UnmappedRef]]:
+def remap_drum_kit(body: bytes, rom_map: RomWaveformMap, exs: ExsOptionIndex,
+                   switch_off_unmapped: bool = False) -> Tuple[bytes, List[UnmappedRef]]:
+    """With `switch_off_unmapped` a zone whose sample has no Nautilus equivalent is turned off (and still listed)."""
     out, unmapped = bytearray(body), []
     for note, zone, uuid, sample_id in iter_drum_kit_sample_refs(body):
         # ROM drum sample #0 is "no sample": the Nautilus's own factory kits switch zones on at #0 for unused
@@ -86,6 +88,8 @@ def remap_drum_kit(body: bytes, rom_map: RomWaveformMap, exs: ExsOptionIndex) ->
             set_drum_kit_sample_id(out, note, zone, new)
         elif outcome is _Outcome.UNMAPPED:
             unmapped.append(UnmappedRef(f"Note {note} zone {zone + 1}", reason))
+            if switch_off_unmapped:
+                set_drum_kit_zone_off(out, note, zone)
     return bytes(out), unmapped
 
 
