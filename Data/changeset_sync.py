@@ -294,8 +294,11 @@ def build_changeset(index: LocalLibraryIndex, blobs: BlobStore,
             continue
         loc = ObjLoc(obj_type, bank, number)
         for missing in depscan.scan(push_resolver, obj_type, body):
+            r = missing.ref
+            # Accepting dangling references never covers a target this same push erases.
+            waived = allow_dangling and (r.obj_type, r.bank, r.number) not in being_erased
             plan.warnings.append(
-                f"{'CHECK' if allow_dangling else 'REFUSE'}: {loc.label()} references "
+                f"{'CHECK' if waived else 'REFUSE'}: {loc.label()} references "
                 f"{missing.ref.label()} ({missing.ref_kind}), which does not exist locally")
 
     # Step 3.5a: whole-bank type changes (requirement 4, port of ChangesetBuilder.cs's own

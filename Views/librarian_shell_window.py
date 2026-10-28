@@ -5004,7 +5004,8 @@ class LibrarianShellWindow(QDialog):
         mode, full, force = self._run_mode, self._run_full, self._run_force
         # "Continue anyway" at the gate, or YES on "Overwrite the instrument anyway?", is the
         # user's informed acceptance of references that stay unresolved.
-        dangling = getattr(self, "_dangling_ack", False) or getattr(self, "_run_is_overwrite_retry", False)
+        dangling = getattr(self, "_dangling_ack", False) or (getattr(self, "_run_is_overwrite_retry", False)
+                                                  and getattr(self, "_last_plan_refused_dangling", False))
         pull_result = plan = result = None
         try:
             self._armed_digests = {}
@@ -5125,6 +5126,9 @@ class LibrarianShellWindow(QDialog):
                       "changes and will go out on the next Sync.")
         for w in plan.warnings:
             self._log("  ! " + w)
+        self._last_plan_refused_dangling = any(
+            w.startswith("REFUSE:") and ("does not exist locally" in w or "still pending" in w)
+            for w in plan.warnings)
         if result is not None:
             self._log(f"Push: {result.written} written, {result.erased} erased, "
                       f"{result.deleted} local-only delete(s), {result.failed} failed, "

@@ -205,7 +205,8 @@ def _realign_program_banks(objects: List[PcgObjectEntry]) -> Tuple[List[PcgObjec
     user = [e for e in objects if e.obj_type == OBJ_PROGRAM and e.bank is not None]
     if not user or any(e.bank.obj_bank < 0x41 or e.bank.obj_bank > 0x4D for e in user):
         return objects, 0
-    have = {(e.bank.obj_bank, e.index) for e in user}
+    from Objects.object_body import program_name_is_init
+    have = {(e.bank.obj_bank, e.index) for e in user if not program_name_is_init(e.name)}
     total = at_stored = at_lower = 0
     for e in objects:
         if e.obj_type != OBJ_COMBI:
@@ -217,7 +218,7 @@ def _realign_program_banks(objects: List[PcgObjectEntry]) -> Tuple[List[PcgObjec
             total += 1
             at_stored += (ob, number) in have
             at_lower += (ob + 1, number) in have
-    if total == 0 or at_stored * 2 > total or at_lower * 10 < total * 9:
+    if total < 8 or at_stored * 2 > total or at_lower * 10 < total * 9:
         return objects, 0
     out = []
     for e in objects:
