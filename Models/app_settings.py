@@ -171,6 +171,9 @@ class AppSettings:
     # Treat the Local Library as the source of truth: skip the conflict pre-scan on push.
     # Does NOT bypass the staleness gate or the missing-reference / bank-type REFUSE gates.
     librarian_force_destructive_write: bool = False
+    # Merge Window / Auto-Fill / Fill Sequentially keep the source PCG's bank + slot order instead of
+    # sorting by name.
+    librarian_preserve_placement_order: bool = True
     # Which direction the Sync button's plain click runs: "TwoWay" | "PullOnly" | "PushOnly"
     librarian_sync_mode: str = "TwoWay"
     # First bank-B slot Convert to Nautilus offers for transcribed arp patterns: one past the last one it wrote, so a

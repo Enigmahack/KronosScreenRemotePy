@@ -110,7 +110,7 @@ from Data.librarian_sysex import OBJ_COMBI, OBJ_PROGRAM, OBJ_SET_LIST
 from Data.library_pull_pipeline import GetBankObjects, GetLiveDigest, PullResult
 import Data.library_pull_pipeline as pull_pipeline
 from Data.local_library_store import BlobStore, LocalLibraryIndex
-from Data.pcg_file import WIRE_SIZE_EXI, WIRE_SIZE_HD1
+from Data.pcg_file import WIRE_SIZE_EXI, WIRE_SIZE_HD1, wire_body_is_exi
 from Commands.session_dependency_clipboard import SessionDependencyClipboard
 
 WriteToHardware = Callable[[int, int, int, bytes], bool]
@@ -205,8 +205,12 @@ def build_changeset(index: LocalLibraryIndex, blobs: BlobStore,
                      get_live_bank_type: Optional[GetLiveBankType] = None,
                      pending_bank_type_change: Optional[PendingBankTypeChange] = None,
                      force_destructive_write: bool = False,
+                     allow_dangling: bool = False,
                      ) -> ChangesetPlan:
-    """force_destructive_write (Settings > Librarian): the Local Library is the source of
+    """allow_dangling: the user explicitly accepted leaving references unresolved ("Continue
+    anyway" / "Overwrite anyway"), so steps 1 and 3 report them as CHECKs instead of refusing.
+
+    force_destructive_write (Settings > Librarian): the Local Library is the source of
     truth, so step 2's conflict pre-scan is skipped outright rather than run and ignored —
     its digest round trip exists only to decide what to exclude, and flagging a conflict
     here would mark objects this very push is about to write. The gates that survive it
@@ -217,10 +221,14 @@ def build_changeset(index: LocalLibraryIndex, blobs: BlobStore,
 
     # Step 1: dependency-completeness gate.
     if clipboard.has_unresolved():
+        if not allow_dangling:
+            plan.warnings.append(
+                f"REFUSE: {len(clipboard.pending)} dependency(ies) still pending "
+                "in the session clipboard — place them before pushing")
+            return plan
         plan.warnings.append(
-            f"REFUSE: {len(clipboard.pending)} dependency(ies) still pending "
-            "in the session clipboard — place them before pushing")
-        return plan
+            f"CHECK: {len(clipboard.pending)} dependency(ies) still pending in the session "
+            "clipboard — their references are left dangling")
 
     # Delete supersedes edit: pull pending-delete entries out of the dirty set
     # up front so an erase is never ALSO queued as a normal edit write.
@@ -287,8 +295,8 @@ def build_changeset(index: LocalLibraryIndex, blobs: BlobStore,
         loc = ObjLoc(obj_type, bank, number)
         for missing in depscan.scan(push_resolver, obj_type, body):
             plan.warnings.append(
-                f"REFUSE: {loc.label()} references {missing.ref.label()} "
-                f"({missing.ref_kind}), which does not exist locally")
+                f"{'CHECK' if allow_dangling else 'REFUSE'}: {loc.label()} references "
+                f"{missing.ref.label()} ({missing.ref_kind}), which does not exist locally")
 
     # Step 3.5a: whole-bank type changes (requirement 4, port of ChangesetBuilder.cs's own
     # BankTypeChanges assembly) — a Program bank the caller has an INTENTIONAL, already-staged
@@ -345,7 +353,7 @@ def build_changeset(index: LocalLibraryIndex, blobs: BlobStore,
                     continue
                 entry2 = index.entries[k2]
                 body2 = blobs.get(entry2.current_hash)
-                if body2 is not None and (len(body2) == WIRE_SIZE_EXI) != live_is_exi:
+                if body2 is not None and wire_body_is_exi(len(body2)) != live_is_exi:
                     mismatch = True
                     break
             if mismatch:
@@ -538,6 +546,7 @@ def commit_changes(index: LocalLibraryIndex, blobs: BlobStore,
                     write_bank_type_change: Optional[WriteBankTypeChange] = None,
                     cancel: Optional[Callable[[], bool]] = None,
                     force_destructive_write: bool = False,
+                    allow_dangling: bool = False,
                     prepare_hardware: Optional[Callable[[ChangesetPlan], bool]] = None,
                     store_bank: Optional[Callable[[int, int], bool]] = None,
                     ) -> Tuple[ChangesetPlan, SyncResult]:
@@ -546,7 +555,7 @@ def commit_changes(index: LocalLibraryIndex, blobs: BlobStore,
     already on record. `cancel` is forwarded to execute_changeset (see there)."""
     plan = build_changeset(index, blobs, clipboard, get_live_digest, resolver,
                             get_live_bank_type, pending_bank_type_change,
-                            force_destructive_write)
+                            force_destructive_write, allow_dangling)
     result = execute_changeset(plan, index, write_to_hardware, write_bank_type_change,
                                 record_success, cancel=cancel,
                                 prepare_hardware=prepare_hardware, store_bank=store_bank)
@@ -564,6 +573,7 @@ def sync_library(index: LocalLibraryIndex, blobs: BlobStore,
                   write_bank_type_change: Optional[WriteBankTypeChange] = None,
                   cancel: Optional[Callable[[], bool]] = None,
                   force_destructive_write: bool = False,
+                  allow_dangling: bool = False,
                   prepare_hardware: Optional[Callable[[ChangesetPlan], bool]] = None,
                   store_bank: Optional[Callable[[int, int], bool]] = None,
                   ) -> Tuple[PullResult, ChangesetPlan, SyncResult]:
@@ -586,6 +596,7 @@ def sync_library(index: LocalLibraryIndex, blobs: BlobStore,
                                   get_live_bank_type, pending_bank_type_change,
                                   write_bank_type_change, cancel=cancel,
                                   force_destructive_write=force_destructive_write,
+                                  allow_dangling=allow_dangling,
                                   prepare_hardware=prepare_hardware, store_bank=store_bank)
     return pull_result, plan, result
 
@@ -728,6 +739,17 @@ def _selftest() -> None:
         check("missing-ref-no-entries", plan4.entries == [])
         check("missing-ref-warning-mentions-refuse",
               any(w.startswith("REFUSE:") and "does not exist locally" in w for w in plan4.warnings))
+
+        # explicit acceptance ("Continue anyway" / "Overwrite anyway"): same plan, but it writes
+        plan4b = build_changeset(idx4, blobs, clip_empty,
+                                  get_live_digest=lambda bk: "combidigest-v1",
+                                  resolver=lambda t, b, n: (t, b, n) in present, allow_dangling=True)
+        check("allow-dangling-missing-ref-writes", not plan4b.is_refusable and len(plan4b.entries) == 1)
+        check("allow-dangling-missing-ref-is-check",
+              any(w.startswith("CHECK:") and "does not exist locally" in w for w in plan4b.warnings))
+        plan3d = build_changeset(idx1, blobs, clip_blocked, get_live_digest=lambda bk: "x",
+                                  resolver=lambda t, b, n: True, allow_dangling=True)
+        check("allow-dangling-pending-deps-not-refused", not plan3d.is_refusable)
 
         # ── (5) pending_delete entry executes, clears pending_delete, advances baseline ──
         idx5 = LocalLibraryIndex(root / "s5")

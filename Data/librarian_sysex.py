@@ -270,8 +270,11 @@ def set_combi_timbre_ref(body: bytearray, timbre: int,
 
 
 def iter_combi_timbre_refs(body: bytes):
-    """Yield (timbre_index, func33_bank, number) for all 16 timbres."""
+    """Yield (timbre_index, func33_bank, number) for all 16 timbres. A truncated body (a damaged
+    or foreign blob) yields only the timbres it actually holds rather than raising."""
     for t in range(_TIMBRE_COUNT):
+        if _TIMBRE0_PROG_NUM_OFS + t * _TIMBRE_STRIDE + 1 >= len(body):
+            break
         bank, number = combi_timbre_ref(body, t)
         yield t, bank, number
 

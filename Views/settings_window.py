@@ -747,6 +747,13 @@ class SettingsWindow(QDialog):
         warn.setStyleSheet("color: #CC8888; font-size: 10px;")
         vb.addWidget(warn)
 
+        vb.addSpacing(10)
+        self._lib_preserve_order = QCheckBox("Preserve placement order")
+        self._lib_preserve_order.setToolTip(
+            "Merge Window, Auto-Fill and Fill Sequentially keep the source PCG's bank and slot order.")
+        vb.addWidget(self._lib_preserve_order)
+        vb.addWidget(_hint("Off sorts the Merge Window by name and fills in staging order."))
+
         vb.addStretch()
         return w
 
@@ -967,6 +974,7 @@ class SettingsWindow(QDialog):
         self._preserve_dup_combis.setChecked(s.merge_preserve_duplicate_combis)
         self._lib_sync_on_launch.setChecked(s.librarian_full_sync_on_launch)
         self._lib_force_destructive.setChecked(s.librarian_force_destructive_write)
+        self._lib_preserve_order.setChecked(s.librarian_preserve_placement_order)
 
         # Sample Editor
         i = self._se_device.findData(s.sample_editor_output_device_id)
@@ -1056,6 +1064,7 @@ class SettingsWindow(QDialog):
         s.merge_preserve_duplicate_combis   = self._preserve_dup_combis.isChecked()
         s.librarian_full_sync_on_launch     = self._lib_sync_on_launch.isChecked()
         s.librarian_force_destructive_write = self._lib_force_destructive.isChecked()
+        s.librarian_preserve_placement_order = self._lib_preserve_order.isChecked()
         self._save_sample_editor_fields(s)
 
         # Streaming
@@ -1478,6 +1487,7 @@ class SettingsWindow(QDialog):
         s.merge_preserve_duplicate_combis   = self._preserve_dup_combis.isChecked()
         s.librarian_full_sync_on_launch     = self._lib_sync_on_launch.isChecked()
         s.librarian_force_destructive_write = self._lib_force_destructive.isChecked()
+        s.librarian_preserve_placement_order = self._lib_preserve_order.isChecked()
         self._save_sample_editor_fields(s)
         s.pull_mode              = self._stream_mode.currentIndex() == 1
         s.max_fps                = self._fps_slider.value()

@@ -224,7 +224,7 @@ from Data.local_library_store import (
     BlobStore, LocalIndexEntry, LocalLibraryIndex, LocalLibraryWriteError, OpLog,
 )
 from Data.merge_cache import MergeCache, MergeEntry, MergeRefSite
-from Data.pcg_file import PcgFile, PcgObjectEntry, WIRE_SIZE_EXI, open_pcg, wire_body_from_pcg_entry
+from Data.pcg_file import PcgFile, PcgObjectEntry, WIRE_SIZE_EXI, open_pcg, wire_body_from_pcg_entry, wire_body_is_exi
 from Commands.session_dependency_clipboard import SessionDependencyClipboard, SessionDependencyEntry
 from Utils.setlist_colors import ALL_COLORS as SETLIST_COLORS, get_by_index_or_default as setlist_color
 from Tools.setlist_data import MAX_COUNT
@@ -337,14 +337,33 @@ def _group_pcg(objects: List[PcgObjectEntry]) -> Dict[int, Dict[int, List[PcgObj
     return groups
 
 
-def _group_merge(entries: List[MergeEntry]) -> Dict[int, List[MergeEntry]]:
+def _placement_order(entries: List[MergeEntry]) -> List[MergeEntry]:
+    """Source order: by the PCG each entry first came from (in the order the sources were first
+    staged), then its bank and slot there. Stable, so entries with no origin keep staging order."""
+    rank: Dict[str, int] = {}
+    for e in entries:
+        if e.origins:
+            rank.setdefault(e.origins[0].source, len(rank))
+
+    def key(e: MergeEntry):
+        if not e.origins:
+            return (len(rank), 0, 0)
+        o = e.origins[0]
+        return (rank[o.source], o.address[1], o.address[2])
+    return sorted(entries, key=key)
+
+
+def _group_merge(entries: List[MergeEntry], preserve_order: bool = False) -> Dict[int, List[MergeEntry]]:
     """{obj_type: [MergeEntry, ...]} — bag-based, so no bank grouping (MergeCache
     has no address space until placement; see merge_cache.py's own docstring)."""
     groups: Dict[int, List[MergeEntry]] = {t: [] for t in object_types.TYPE_ORDER}
     for e in entries:
         groups.setdefault(e.obj_type, []).append(e)
-    for lst in groups.values():
-        lst.sort(key=lambda e: (e.display_name or "", e.content_hash))
+    for t, lst in groups.items():
+        if preserve_order:
+            groups[t] = _placement_order(lst)
+        else:
+            lst.sort(key=lambda e: (e.display_name or "", e.content_hash))
     return groups
 
 
@@ -2280,7 +2299,7 @@ class LibrarianShellWindow(QDialog):
             return
         tree = self._tree_merge
         tree.clear()
-        groups = _group_merge(self._merge.entries)
+        groups = _group_merge(self._merge.entries, self._settings.librarian_preserve_placement_order)
         for obj_type in _ROOT_ORDER:
             entries = groups.get(obj_type, [])
             if not entries:
@@ -2349,6 +2368,8 @@ class LibrarianShellWindow(QDialog):
         else:
             n_rejected = len(self._pcg.rejected_banks)
             extra = f" ({n_rejected} rejected bank(s))" if n_rejected else ""
+            if self._pcg.program_bank_shift:
+                extra += " (Program banks re-aligned to match the Combis' references)"
             self._pcg_status_label.setText(
                 f"{self._pcg_source_label} - {len(objects)} object(s){extra}")
         self._on_tree_rebuilt("pcg")
@@ -3349,8 +3370,10 @@ class LibrarianShellWindow(QDialog):
         for obj_type in _PLACE_ORDER:
             # A snapshot per type - _place_merge_entry_at mutates self._merge as it goes
             # (removes on write, or on a dedup-reuse), so this list must not be a live view.
-            self._auto_fill_queue.extend(
-                e for e in self._merge.entries if e.obj_type == obj_type)
+            of_type = [e for e in self._merge.entries if e.obj_type == obj_type]
+            if self._settings.librarian_preserve_placement_order:
+                of_type = _placement_order(of_type)
+            self._auto_fill_queue.extend(of_type)
         self._auto_fill_total = len(self._auto_fill_queue)
         self._auto_fill_timer.start()
         self._merge_status_label.setText(
@@ -3953,6 +3976,8 @@ class LibrarianShellWindow(QDialog):
         if any(p[1] != obj_type for p in payloads):
             self._log("Fill Sequentially: all selected items must be the same object type.")
             return
+        if self._settings.librarian_preserve_placement_order:
+            payloads = sorted(payloads, key=lambda p: (p[2], p[3]))
         seq_items = [it for it in (self._seq_item_from_pcg(p[1], p[2], p[3]) for p in payloads)
                     if it is not None]
         if not seq_items:
@@ -4319,6 +4344,8 @@ class LibrarianShellWindow(QDialog):
                 self._place_merge_entry_at(entries[0], dst_bank, dst_number)
             else:
                 # Multi-select: auto-fill sequentially starting at the drop target.
+                if self._settings.librarian_preserve_placement_order:
+                    entries = _placement_order(list(entries))
                 seq_pairs = [self._seq_item_from_merge(e) for e in entries]
                 seq_items = [p[0] for p in seq_pairs]
                 hash_by_label = {it.label: e.content_hash for it, e in zip(seq_items, entries)}
@@ -4424,6 +4451,7 @@ class LibrarianShellWindow(QDialog):
         un-overridable block)."""
         self._retry_resolve_pending_dependencies()
         pending = self._clipboard.pending
+        self._dangling_ack = False
         if not pending:
             self._refresh_local_tree()
             return True
@@ -4439,6 +4467,7 @@ class LibrarianShellWindow(QDialog):
             rows, allow_continue=True, parent=self)
         proceed = dlg.exec() == QDialog.DialogCode.Accepted
         if proceed:
+            self._dangling_ack = True   # the plan builder must not re-refuse what was just accepted
             self._refresh_local_tree()
         return proceed
 
@@ -4635,7 +4664,7 @@ class LibrarianShellWindow(QDialog):
         d = self._service.dump_object_parsed(OBJ_PROGRAM, bank, 0, no_response_ms=3000)
         if d is None:
             return None
-        return len(d.body) == WIRE_SIZE_EXI
+        return wire_body_is_exi(len(d.body))
 
     def _write_bank_type_change(self, bank: int, to_exi: bool) -> bool:
         """changeset_sync.build_changeset's WriteBankTypeChange adapter — the func-0x7C
@@ -4883,6 +4912,7 @@ class LibrarianShellWindow(QDialog):
         self._set_status(status)
         self._run_mode = mode
         self._run_force = force
+        self._run_is_overwrite_retry = False   # _start_push_only sets it after this call
         self._run_full = self._chk_force_full.isChecked()
         self._sync_cancel.clear()
         self._sync_thread_running = True
@@ -4972,10 +5002,14 @@ class LibrarianShellWindow(QDialog):
 
     def _sync_worker(self) -> None:
         mode, full, force = self._run_mode, self._run_full, self._run_force
+        # "Continue anyway" at the gate, or YES on "Overwrite the instrument anyway?", is the
+        # user's informed acceptance of references that stay unresolved.
+        dangling = getattr(self, "_dangling_ack", False) or getattr(self, "_run_is_overwrite_retry", False)
         pull_result = plan = result = None
         try:
             self._armed_digests = {}
             common = dict(
+                allow_dangling=dangling,
                 get_live_bank_type=self._get_live_bank_type,
                 pending_bank_type_change=self._index.get_pending_bank_type_change,
                 write_bank_type_change=self._write_bank_type_change,

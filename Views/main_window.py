@@ -1950,7 +1950,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
                                  "Keyboard capture — click in frame to capture")
         self._notify_label = _NotifyBubble()
         self._notify_label.setToolTip("No notifications")
-        self._kbd_info_btn = _icon("▦", T.TEXT_IDLE,
+        self._kbd_info_btn = _icon("▦", T.TEXT_DIM,
                                    "Keyboard Info / Performance Meter", clickable=True)
         self._lib_btn = _StatusToolIcon("librarian", "Librarian")
         self._ftp_btn = _StatusToolIcon("files", "File Transfer")
@@ -2330,6 +2330,11 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         # Clickable status bar widgets (event filter handles mouse press)
         for w in (self._notify_label, self._kbd_info_btn, self._vu_picker_btn):
             w.installEventFilter(self)
+
+        # The Librarian's imports cost ~5 s over the SMB-hosted tree; do them while the user is
+        # still looking at the main window so the first Librarian click only builds the window.
+        QTimer.singleShot(1500, lambda: threading.Thread(
+            target=self._preload_librarian_modules, daemon=True, name="LibrarianPreload").start())
 
         # Mode buttons
         for i, (act, cmd) in enumerate(zip(self._act_modes, _MODE_CMDS[1:]), 1):
@@ -4485,6 +4490,13 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         self._sysex_tool_win.show()
 
     # ── Librarian ─────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _preload_librarian_modules() -> None:
+        try:
+            import Views.librarian_shell_window  # noqa: F401 - import only, no widgets off the GUI thread
+        except Exception:
+            logging.getLogger(__name__).debug("Librarian preload failed", exc_info=True)
 
     def _open_librarian_shell(self):
         """Local Library / Merge / PCG three-pane shell — the only Librarian
