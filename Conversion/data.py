@@ -103,13 +103,50 @@ class ProgramRefMap:
         return cls.from_entries(_read_json("KronosToNautilusProgramRefs.json"))
 
 
+# A Combi's Timbre Program bank byte counts user banks from 18 on the Kronos (U-A; 17 is the GM drum bank) and from 17
+# on the Nautilus (G; checked against the Combis of a factory Nautilus PCG), so a user bank keeps its wire bank only
+# if the byte moves by one.
+KRONOS_USER_BANK_FIRST, KRONOS_USER_BANK_LAST = 18, 31
+NAUTILUS_USER_BANK_FIRST, NAUTILUS_USER_BANK_LAST = 17, 30
+_USER_WIRE_FIRST = 0x40
+
+
+def kronos_timbre_bank_for_obj(obj_bank: int) -> Optional[int]:
+    """The Timbre bank byte a Kronos Combi uses for Program bank `obj_bank` (SysEx bank), if it can name it."""
+    if 0 <= obj_bank <= 5:
+        return obj_bank
+    if _USER_WIRE_FIRST <= obj_bank <= _USER_WIRE_FIRST + KRONOS_USER_BANK_LAST - KRONOS_USER_BANK_FIRST:
+        return KRONOS_USER_BANK_FIRST + obj_bank - _USER_WIRE_FIRST
+    return None
+
+
+def nautilus_timbre_bank_for_wire(wire_bank: int) -> Optional[int]:
+    if 0 <= wire_bank <= 5:
+        return wire_bank
+    if _USER_WIRE_FIRST <= wire_bank <= _USER_WIRE_FIRST + NAUTILUS_USER_BANK_LAST - NAUTILUS_USER_BANK_FIRST:
+        return NAUTILUS_USER_BANK_FIRST + wire_bank - _USER_WIRE_FIRST
+    return None
+
+
+def kronos_user_to_nautilus_bank(bank: int) -> Optional[int]:
+    if KRONOS_USER_BANK_FIRST <= bank <= KRONOS_USER_BANK_LAST:
+        return bank - 1
+    return None
+
+
+def nautilus_user_to_kronos_bank(bank: int) -> Optional[int]:
+    if NAUTILUS_USER_BANK_FIRST <= bank <= NAUTILUS_USER_BANK_LAST:
+        return bank + 1
+    return None
+
+
 def kronos_program_label(bank: int, index: int) -> str:
     if bank <= 5:
         return f"I-{chr(65 + bank)}{index:03d}"
-    if 17 <= bank <= 23:
-        return f"U-{chr(65 + bank - 17)}{index:03d}"
-    if 24 <= bank <= 30:
-        return f"U-{chr(65 + bank - 24) * 2}{index:03d}"
+    if 18 <= bank <= 24:
+        return f"U-{chr(65 + bank - 18)}{index:03d}"
+    if 25 <= bank <= 31:
+        return f"U-{chr(65 + bank - 25) * 2}{index:03d}"
     return f"bank {bank}:{index:03d}"
 
 

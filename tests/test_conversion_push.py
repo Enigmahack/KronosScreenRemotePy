@@ -87,6 +87,39 @@ combi = ConvertItem(OBJ_COMBI, "C", bytes(7810))
 rep = push_converted(svc, [combi], {OBJ_COMBI: (0x46, 0)}, tables, bk)
 check("combi-written", rep[0].status == "written" and len(svc.slots[(OBJ_COMBI, 0x46, 0)]) == 5640)
 
+# ---- Combi Timbre references follow the Programs written in the same run
+def _timbre(body, t):
+    o = 2632 + t * 188
+    return body[o + 1], body[o]
+
+
+def _combi_refs(*refs):
+    body = bytearray(7810)
+    for t, (bank, num) in enumerate(refs):
+        o = 4802 + t * 188
+        body[o], body[o + 1] = num, bank
+        body[o + 2] = 0x20   # status On
+    return bytes(body)
+
+
+# Kronos U-A (byte 18) is wire 0x40; on the Nautilus that bank is G and its Timbre byte is 17.
+p_a = ConvertItem(OBJ_PROGRAM, "A", bytes(3706), is_exi=False, src_ref=(18, 10))
+p_b = ConvertItem(OBJ_PROGRAM, "B", bytes(3706), is_exi=False, src_ref=(19, 3))
+cmb = ConvertItem(OBJ_COMBI, "C", _combi_refs((18, 10), (19, 3), (20, 7)))
+svc = FakeNautilus({(OBJ_PROGRAM, 0x4C): 3700, (OBJ_COMBI, 0x40): 5640})
+rep = push_converted(svc, [p_a, p_b, cmb], {OBJ_PROGRAM: (0x4C, 5), OBJ_COMBI: (0x40, 0)}, tables, bk)
+out = svc.slots[(OBJ_COMBI, 0x40, 0)]
+check("batch-repoint-written", [r.status for r in rep] == ["written"] * 3)
+check("batch-repoint-first", _timbre(out, 0) == (17 + 0x4C - 0x40, 5))
+check("batch-repoint-second", _timbre(out, 1) == (17 + 0x4C - 0x40, 6))
+check("unplaced-user-bank-keeps-wire-bank", _timbre(out, 2) == (19, 7))
+check("batch-repoint-reported", any("written in this run" in m for m in rep[2].messages))
+
+lone = ConvertItem(OBJ_COMBI, "C", _combi_refs((18, 10)))
+svc = FakeNautilus({(OBJ_COMBI, 0x40): 5640})
+push_converted(svc, [lone], {OBJ_COMBI: (0x40, 0)}, tables, bk)
+check("lone-combi-user-bank-shifted", _timbre(svc.slots[(OBJ_COMBI, 0x40, 0)], 0) == (17, 10))
+
 # ---- arp patterns
 pat47, pat48 = bytes([47]) * ARP_PATTERN_SIZE, bytes([48]) * ARP_PATTERN_SIZE
 lib = KarmaGePatternLibrary.parse(KarmaGePatternLibrary.pack([

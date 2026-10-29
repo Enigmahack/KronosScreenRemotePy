@@ -17,7 +17,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 from Conversion import karma
 from Conversion.data import (KarmaGeCatalog, KarmaGePatternLibrary, ProgramRefMap, kronos_program_label,
-                             nautilus_program_label)
+                             kronos_user_to_nautilus_bank, nautilus_program_label)
 from Conversion.profiles import (COMBI_KRONOS_SIZE, COMBI_KRONOS_TAIL, COMBI_NAUTILUS_SIZE, COMBI_NAUTILUS_TAIL,
                                  COMBI_SHARED_HEAD_END)
 from Conversion.result import ConversionResult
@@ -48,10 +48,12 @@ def convert_combi(body: bytes, ge_catalog: KarmaGeCatalog, template: Optional[by
                   options: Optional[karma.ArpOptions] = None, ge_patterns: Optional[KarmaGePatternLibrary] = None,
                   program_refs: TimbreProgramRefs = TimbreProgramRefs.FACTORY_EQUIVALENTS,
                   ref_map: Optional[ProgramRefMap] = None,
-                  kronos_program_name: Optional[Callable[[int, int], Optional[str]]] = None) -> ConversionResult:
+                  kronos_program_name: Optional[Callable[[int, int], Optional[str]]] = None,
+                  placed: Optional[Dict[Tuple[int, int], Tuple[int, int]]] = None) -> ConversionResult:
     """`kronos_program_name(bank, index)` names the Program stored at a Kronos slot in the source set; a reference
     is only re-pointed when that name still matches the factory Program the map was built from. Without it the
-    source slots are assumed to hold factory content."""
+    source slots are assumed to hold factory content. `placed` maps (Kronos bank byte, slot) of Programs converted in
+    the same run to the (Nautilus bank byte, slot) they were written to; it wins over the factory map."""
     options = options or karma.ArpOptions()
     warnings: List[str] = []
     refusals: List[str] = []
@@ -130,17 +132,16 @@ def convert_combi(body: bytes, ge_catalog: KarmaGeCatalog, template: Optional[by
     warnings.append(f"Kronos-only settings removed: {', '.join(cleared)}.")
     warnings.append("KARMA performance data (Realtime Controls, Dynamic MIDI, Scenes), Drum Track and audio "
                     "input settings were not carried over.")
-    _remap_timbre_programs(out, program_refs, ref_map, kronos_program_name, warnings)
+    _remap_timbre_programs(out, program_refs, ref_map, kronos_program_name, warnings, placed)
 
     return ConversionResult(None if refusals else bytes(out), warnings, refusals, to_store)
 
 
 def _remap_timbre_programs(out: bytearray, mode: TimbreProgramRefs, ref_map: Optional[ProgramRefMap],
-                           kronos_program_name, warnings: List[str]) -> None:
-    if mode is TimbreProgramRefs.KEEP_SLOTS or ref_map is None or len(ref_map) == 0:
-        warnings.append("Timbre Program references were kept as-is; the referenced Programs must be converted "
-                        "and placed at the same Nautilus slots.")
-        return
+                           kronos_program_name, warnings: List[str],
+                           placed: Optional[Dict[Tuple[int, int], Tuple[int, int]]] = None) -> None:
+    use_map = mode is not TimbreProgramRefs.KEEP_SLOTS and ref_map is not None and len(ref_map) > 0
+    moved: List[str] = []
     remapped: List[str] = []
     kept: List[Tuple[int, str]] = []
     for t in range(_TIMBRE_COUNT):
@@ -148,16 +149,26 @@ def _remap_timbre_programs(out: bytearray, mode: TimbreProgramRefs, ref_map: Opt
         if out[o + 2] >> 5 == 0:
             continue   # Status Off: not played, leave it alone
         index, bank = out[o], out[o + 1]
-        e = ref_map.get(bank, index)
+        if placed and (bank, index) in placed:
+            nb, ni = placed[(bank, index)]
+            out[o], out[o + 1] = ni & 0xFF, nb & 0xFF
+            moved.append(f"{t + 1}: {kronos_program_label(bank, index)} -> {nautilus_program_label(nb, ni)}")
+            continue
+        e = ref_map.get(bank, index) if use_map else None
         actual = kronos_program_name(bank, index) if kronos_program_name else None
         if e is None or (actual is not None and actual.strip() != e.kronos_name.strip()):
             label = kronos_program_label(bank, index) + (f' "{actual.strip()}"' if actual is not None else "")
+            shifted = kronos_user_to_nautilus_bank(bank)
+            if shifted is not None:
+                out[o + 1] = shifted
             kept.append((t + 1, label))
             continue
         out[o], out[o + 1] = e.nautilus_index & 0xFF, e.nautilus_bank & 0xFF
         remapped.append(f'{t + 1}: {kronos_program_label(bank, index)} "{e.kronos_name}" -> '
                         f'{nautilus_program_label(e.nautilus_bank, e.nautilus_index)} "{e.nautilus_name}"'
                         f'{" (as in Korg" + chr(39) + "s Nautilus factory Combis)" if e.source == "korg" else ""}')
+    if moved:
+        warnings.append(f"Timbre Programs re-pointed to where they were written in this run: {'; '.join(moved)}.")
     if remapped:
         warnings.append(f"Timbre Programs re-pointed to Nautilus factory equivalents: {'; '.join(remapped)}.")
     if kept:
@@ -167,5 +178,5 @@ def _remap_timbre_programs(out: bytearray, mode: TimbreProgramRefs, ref_map: Opt
         text = "; ".join(f"{'Timbre' if len(ts) == 1 else 'Timbres'} {','.join(map(str, ts))} ({label})"
                          for label, ts in groups.items())
         why = ", or the source slot no longer holds the factory Program" if kronos_program_name else ""
-        warnings.append(f"{text} kept their slot numbers (no factory equivalent{why}) - convert and place "
-                        "those Programs at the same Nautilus slots.")
+        warnings.append(f"{text} kept their slot numbers (no factory equivalent{why}; a user bank keeps its position, "
+                        "U-A -> G) - convert and place those Programs at the same Nautilus slots.")

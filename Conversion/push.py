@@ -16,7 +16,8 @@ import Data.nautilus_sysex as nsx
 import Data.object_types as object_types
 from Conversion import karma
 from Conversion.combi import convert_combi
-from Conversion.data import KarmaGeCatalog, KarmaGePatternLibrary, ProgramRefMap, RomWaveformMap
+from Conversion.data import (KarmaGeCatalog, KarmaGePatternLibrary, ProgramRefMap, RomWaveformMap,
+                             nautilus_timbre_bank_for_wire)
 from Conversion.media import convert_drum_kit, convert_wave_seq
 from Conversion.profiles import NAUTILUS, ProgramKind, COMBI_NAUTILUS_SIZE
 from Conversion.program import convert_program
@@ -38,6 +39,7 @@ class ConvertItem:
     body: bytes                 # Kronos wire body (Program: 3706 HD-1 / 4960 EXi)
     is_exi: bool = False
     native: bool = False        # body is already a Nautilus body (a Nautilus .SNG / dump): copied, not converted
+    src_ref: Optional[Tuple[int, int]] = None   # Program: (Kronos Combi Timbre bank byte, slot) it was read from
 
 
 @dataclass
@@ -196,6 +198,7 @@ def _push(service, items: List[ConvertItem], dest: Dict[int, Tuple[int, int]], t
 
     pending: List[Tuple[ItemReport, SimpleNamespace, bytes, Set[int]]] = []   # report, op, pre-image, arp slots needed
     next_slot = {t: s for t, (_, s) in dest.items()}
+    placed = _placements(items, dest)
     arp = _ArpSlots(arp_start, tables)
     arp_patterns: Dict[int, bytes] = {}
 
@@ -236,7 +239,7 @@ def _push(service, items: List[ConvertItem], dest: Dict[int, Tuple[int, int]], t
             old = target.body[:24].split(b"\x00")[0].decode("ascii", "replace").rstrip()
             if not re.fullmatch(r"NEW SONG \d{3}", old):
                 rep.messages.append(f'Replaces the song "{old}"; its previous content is in the backup.')
-        result = _convert(item, target.body, tables, arp.options_for(item))
+        result = _convert(item, target.body, tables, arp.options_for(item), placed)
         rep.messages += result.warnings
         if result.body is None:
             rep.messages += result.refusals
@@ -509,7 +512,26 @@ def restore_from_backup(service, backup_path: str,
     return RestoreResult(ok, msgs)
 
 
-def _convert(item: ConvertItem, template: bytes, tables: ConvertTables, options: karma.ArpOptions):
+def _placements(items: List[ConvertItem], dest: Dict[int, Tuple[int, int]]) -> Dict[Tuple[int, int], Tuple[int, int]]:
+    """Where each Program of this run will be written, as Combi Timbre references: a Combi converted alongside its
+    Programs must point at them there, not at the slot numbers it had on the Kronos."""
+    placed: Dict[Tuple[int, int], Tuple[int, int]] = {}
+    next_slot = {t: s for t, (_, s) in dest.items()}
+    for item in items:
+        key = dest_key(item, dest)
+        bank, _ = dest[key]
+        slot = next_slot[key]
+        next_slot[key] += 1
+        if item.obj_type != OBJ_PROGRAM or item.src_ref is None or item.native:
+            continue
+        byte = nautilus_timbre_bank_for_wire(bank)
+        if byte is not None and slot < slot_count(OBJ_PROGRAM, bank):
+            placed[item.src_ref] = (byte, slot)
+    return placed
+
+
+def _convert(item: ConvertItem, template: bytes, tables: ConvertTables, options: karma.ArpOptions,
+             placed: Optional[Dict[Tuple[int, int], Tuple[int, int]]] = None):
     t = tables
     if item.obj_type == OBJ_PROGRAM:
         return convert_program(item.body, program_kind_of(item), t.rom_map, t.exs, t.ge_catalog, template,
@@ -518,7 +540,7 @@ def _convert(item: ConvertItem, template: bytes, tables: ConvertTables, options:
         return ConversionResult(item.body) if len(item.body) == COMBI_NAUTILUS_SIZE else ConversionResult(
             None, [], [f"A Nautilus Song Timbre Set is {COMBI_NAUTILUS_SIZE} bytes, not {len(item.body)}."])
     if item.obj_type in (OBJ_COMBI, OBJ_SONG_TIMBRE):
-        return convert_combi(item.body, t.ge_catalog, template, options, t.ge_patterns, ref_map=t.ref_map)
+        return convert_combi(item.body, t.ge_catalog, template, options, t.ge_patterns, ref_map=t.ref_map, placed=placed)
     if item.obj_type == OBJ_DRUM_KIT:
         return convert_drum_kit(item.body, t.rom_map, t.exs)
     return convert_wave_seq(item.body, t.rom_map, t.exs)

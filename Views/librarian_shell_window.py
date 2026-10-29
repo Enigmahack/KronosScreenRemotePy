@@ -233,6 +233,7 @@ from Conversion.push import (ARP_BANK_B_SLOTS, CONVERTIBLE_TYPES, EXI_DEST, Conv
                              bank_label as nautilus_bank_label, dest_key, dest_label, plan_arp_slots, push_converted,
                              slot_count as conv_slot_count, type_name as conv_type_name)
 from Conversion.song_source import read_song_timbre_sets
+from Conversion.data import kronos_timbre_bank_for_obj
 from Conversion.song_convert import MODEL_NAMES, convert_sng
 from Data.sng_file import MODEL_KRONOS, MODEL_NAUTILUS, SngError, read_sng
 from Data.song_library import SongLibrary
@@ -4040,7 +4041,9 @@ class LibrarianShellWindow(QDialog):
                 name = entry.display_name if entry is not None else ""
                 is_exi = body is not None and len(body) == 4960
             if body is not None:
-                items.append(ConvertItem(loc.obj_type, name, body, is_exi))
+                tbank = kronos_timbre_bank_for_obj(loc.bank) if loc.obj_type == OBJ_PROGRAM else None
+                items.append(ConvertItem(loc.obj_type, name, body, is_exi,
+                                         src_ref=None if tbank is None else (tbank, loc.number)))
         if not items:
             self._log("Convert to Nautilus: select Programs, Combinations, Drum Kits or Wave Sequences.")
             return

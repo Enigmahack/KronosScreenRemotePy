@@ -27,6 +27,19 @@ tables = ConvertTables.load()
 check("size-refused", convert_combi_to_kronos(b"x").body is None)
 check("same-model-is-identity", convert_timbre_set(bytes(5640), MODEL_NAUTILUS, MODEL_NAUTILUS, tables)[0] == bytes(5640))
 
+# Timbre bank bytes: Kronos U-A = 18, Nautilus G = 17 (same wire bank 0x40). A user Program with no factory equivalent
+# must stay in the same wire bank both ways.
+from Conversion.combi import convert_combi
+from Conversion.data import KarmaGeCatalog
+
+kc = bytearray(7810)
+for t, (bank, num) in enumerate([(18, 10), (24, 3), (31, 127), (2, 9)]):
+    kc[4802 + t * 188], kc[4803 + t * 188], kc[4804 + t * 188] = num, bank, 0x20
+n = convert_combi(bytes(kc), KarmaGeCatalog(), None, ref_map=None).body
+check("user-bank-k2n", [(n[2632 + t * 188 + 1], n[2632 + t * 188]) for t in range(4)] == [(17, 10), (23, 3), (30, 127), (2, 9)])
+b = convert_combi_to_kronos(n, template=bytes(kc)).body
+check("user-bank-n2k-roundtrip", [(b[4803 + t * 188], b[4802 + t * 188]) for t in range(4)] == [(18, 10), (24, 3), (31, 127), (2, 9)])
+
 kr = sorted(glob.glob(os.path.join(SNG_EXAMPLES, "Kronos", "*.SNG")))
 na = sorted(glob.glob(os.path.join(SNG_EXAMPLES, "Nautilus", "*.SNG")))
 if not kr or not na:

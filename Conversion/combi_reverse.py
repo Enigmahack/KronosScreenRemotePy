@@ -13,7 +13,7 @@ from __future__ import annotations
 from typing import Dict, List, Optional, Tuple
 
 from Conversion.combi import _ASSIGN_END, _ASSIGN_START, _TIMBRE_BASE, _TIMBRE_COUNT, _TIMBRE_STRIDE
-from Conversion.data import ProgramRefMap, kronos_program_label, nautilus_program_label
+from Conversion.data import ProgramRefMap, kronos_program_label, nautilus_program_label, nautilus_user_to_kronos_bank
 from Conversion.profiles import (COMBI_KRONOS_SIZE, COMBI_KRONOS_TAIL, COMBI_NAUTILUS_SIZE, COMBI_NAUTILUS_TAIL,
                                  COMBI_SHARED_HEAD_END)
 from Conversion.result import ConversionResult
@@ -50,10 +50,6 @@ def convert_combi_to_kronos(body: bytes, template: Optional[bytes] = None,
 
 
 def _repoint_timbre_programs(out: bytearray, ref_map: Optional[ProgramRefMap], warnings: List[str]) -> None:
-    if ref_map is None or len(ref_map) == 0:
-        warnings.append("Timbre Program references were kept as-is; the referenced Programs must exist at the same "
-                        "Kronos slots.")
-        return
     remapped: List[str] = []
     kept: Dict[str, List[int]] = {}
     for t in range(_TIMBRE_COUNT):
@@ -61,9 +57,12 @@ def _repoint_timbre_programs(out: bytearray, ref_map: Optional[ProgramRefMap], w
         if out[o + 2] >> 5 == 0:
             continue   # Status Off
         index, bank = out[o], out[o + 1]
-        e = ref_map.get_by_nautilus(bank, index)
+        e = ref_map.get_by_nautilus(bank, index) if ref_map is not None else None
         if e is None:
             kept.setdefault(nautilus_program_label(bank, index), []).append(t + 1)
+            shifted = nautilus_user_to_kronos_bank(bank)
+            if shifted is not None:
+                out[o + 1] = shifted
             continue
         out[o], out[o + 1] = e.kronos_index & 0xFF, e.kronos_bank & 0xFF
         remapped.append(f'{t + 1}: {nautilus_program_label(bank, index)} "{e.nautilus_name}" -> '
@@ -73,5 +72,5 @@ def _repoint_timbre_programs(out: bytearray, ref_map: Optional[ProgramRefMap], w
     if kept:
         text = "; ".join(f"{'Timbre' if len(ts) == 1 else 'Timbres'} {','.join(map(str, ts))} ({label})"
                          for label, ts in kept.items())
-        warnings.append(f"{text} kept their slot numbers (no Kronos factory equivalent) - those Programs must exist "
-                        "at the same Kronos slots.")
+        warnings.append(f"{text} kept their slot numbers (no Kronos factory equivalent; a user bank keeps its position, "
+                        "G -> U-A) - those Programs must exist at the same Kronos slots.")
