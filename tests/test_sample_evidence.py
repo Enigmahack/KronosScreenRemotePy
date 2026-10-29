@@ -116,5 +116,30 @@ out, unmapped = remap_program_hd1(nbody, back, exs, substitute=True)
 check("a Nautilus-only EXs bank has no Kronos equivalent", len(unmapped) == 1 and refs(out)[0][3] == 0
       and refs(out)[0][2] == rom())
 
+# ---- Wave Sequences: an unmatched step plays the piano instead of refusing the sequence
+from Conversion.media import convert_wave_seq
+from Objects.object_body import iter_wave_seq_sample_refs
+
+
+def wave_seq(steps):
+    b = bytearray(2216)
+    for i, (uuid, number) in enumerate(steps):
+        s = 40 + i * 34
+        b[s] = 0
+        b[s + 1:s + 17] = uuid
+        b[s + 18], b[s + 19] = number & 0xFF, number >> 8
+    return bytes(b)
+
+
+r = convert_wave_seq(wave_seq([(rom(), 447), (exs_ref(11), 95), (rom(), 197)]), rmap, exs)
+steps = list(iter_wave_seq_sample_refs(r.body)) if r.body else []
+check("wave sequence with an unmatched step converts", r.body is not None and not r.refusals and len(steps) >= 3)
+check("matched steps remapped, the unmatched one plays ROM ms 0",
+      steps and steps[0][2] == 635 and steps[2][2] == 318 and steps[1][2] == 0 and steps[1][1] == rom())
+check("the user is told which step and why", len(r.substitutions) == 1 and r.substitutions[0].startswith("Step 2")
+      and any("Step 2" in w and "substituted by a piano sound" in w and "may not match perfectly" in w for w in r.warnings))
+r = convert_wave_seq(wave_seq([(rom(), 197)]), rmap, exs)
+check("a clean sequence has no substitution warning", r.body is not None and not r.substitutions and not r.warnings)
+
 print("ALL PASS" if not failures else "FAILED: %s" % failures)
 sys.exit(1 if failures else 0)

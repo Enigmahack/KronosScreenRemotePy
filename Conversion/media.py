@@ -46,7 +46,18 @@ def convert_drum_kit(body: bytes, rom_map, exs: ExsOptionIndex, source: str = "K
 
 
 def convert_wave_seq(body: bytes, rom_map, exs: ExsOptionIndex, source: str = "Kronos") -> ConversionResult:
-    return _convert(body, WAVE_SEQ_SIZE, "Wave Sequence", remap_wave_seq, rom_map, exs, source)
+    """A step whose waveform has no equivalent plays a piano sound instead; the rest of the sequence is kept."""
+    target = getattr(rom_map, "target_name", "Nautilus")
+    if len(body) != WAVE_SEQ_SIZE:
+        return ConversionResult(None, [], [f"{source} Wave Sequence body is {len(body)} bytes, expected {WAVE_SEQ_SIZE}."])
+    warnings: list = []
+    remapped, unmapped = remap_wave_seq(body, rom_map, exs, substitute=True, notes=warnings)
+    steps = [u.where for u in unmapped]
+    if steps:
+        warnings.append(f"The waveform for {', '.join(steps[:12])}{' and ' + str(len(steps) - 12) + ' more' if len(steps) > 12 else ''}"
+                        f" was not found on the {target} and has been substituted by a piano sound, so the sequence may "
+                        "not match perfectly.")
+    return ConversionResult(remapped, warnings, substitutions=[f"{u.where}: {u.reason}" for u in unmapped])
 
 
 def convert_drum_kit_to_kronos(body: bytes, rom_map: RomWaveformMap, exs: ExsOptionIndex) -> ConversionResult:

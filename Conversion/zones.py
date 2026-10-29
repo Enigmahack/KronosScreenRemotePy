@@ -143,8 +143,10 @@ def remap_drum_kit(body: bytes, rom_map: RomWaveformMap, exs: ExsOptionIndex,
     return bytes(out), unmapped
 
 
-def remap_wave_seq(body: bytes, rom_map: RomWaveformMap, exs: ExsOptionIndex) -> Tuple[bytes, List[UnmappedRef]]:
-    out, unmapped = bytearray(body), []
+def remap_wave_seq(body: bytes, rom_map: RomWaveformMap, exs: ExsOptionIndex, substitute: bool = False,
+                   notes: Optional[List[str]] = None) -> Tuple[bytes, List[UnmappedRef]]:
+    """With `substitute`, a step whose sample has no equivalent plays the default piano (still returned in the list)."""
+    out, unmapped, partial = bytearray(body), [], []
     for step, uuid, select in iter_wave_seq_sample_refs(body):
         # The Nautilus's own Wave Sequences leave their unused steps on ROM sample #0, which has no Kronos twin.
         if select == 0 and classify(uuid).kind is RefClass.ROM and getattr(rom_map, "target_name", "") == "Kronos":
@@ -153,6 +155,14 @@ def remap_wave_seq(body: bytes, rom_map: RomWaveformMap, exs: ExsOptionIndex) ->
         if outcome is _Outcome.REMAPPED:
             set_wave_seq_step_uuid(out, step, new.ref_bytes(uuid))
             set_wave_seq_step_select(out, step, new.index)
+            if new.partial:
+                partial.append(str(step + 1))
         elif outcome is _Outcome.UNMAPPED:
             unmapped.append(UnmappedRef(f"Step {step + 1}", reason))
+            if substitute:
+                set_wave_seq_step_uuid(out, step, DEFAULT_PIANO.ref_bytes(uuid))
+                set_wave_seq_step_select(out, step, DEFAULT_PIANO.index)
+    if notes is not None and partial:
+        notes.append("Only part of the multisample used by step(s) " + ", ".join(partial) + " exists on the "
+                     + getattr(rom_map, "target_name", "Nautilus") + ", so those steps may sound slightly different.")
     return bytes(out), unmapped
