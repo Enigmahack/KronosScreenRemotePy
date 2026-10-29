@@ -127,7 +127,7 @@ class ProgramRefEntry:
 
 
 class ProgramRefMap:
-    """Kronos factory Program (timbre bank code, index) -> the Nautilus factory Program that replaces it."""
+    """Kronos factory Program (Combi Timbre bank byte, index) -> the Nautilus factory Program that replaces it."""
 
     def __init__(self) -> None:
         self._by_kronos: Dict[Tuple[int, int], ProgramRefEntry] = {}
@@ -150,7 +150,11 @@ class ProgramRefMap:
     def from_entries(cls, entries: Optional[list]) -> "ProgramRefMap":
         m = cls()
         for e in entries or []:
-            r = ProgramRefEntry(e["kronos_bank"], e["kronos_index"], e["kronos_name"], e["nautilus_bank"],
+            # The table counts Kronos user banks from 17 (U-A); the bank byte of a Kronos Combi Timbre counts from 18,
+            # which is what every lookup here uses. (Checked: its Kronos names match 17-based addresses in 53 of 53
+            # corpus PCGs, its Nautilus banks are already the Nautilus Combi's own byte.)
+            kronos_bank = e["kronos_bank"] + 1 if 17 <= e["kronos_bank"] <= 30 else e["kronos_bank"]
+            r = ProgramRefEntry(kronos_bank, e["kronos_index"], e["kronos_name"], e["nautilus_bank"],
                                 e["nautilus_index"], e["nautilus_name"], e["source"])
             m._by_kronos[(r.kronos_bank, r.kronos_index)] = r
         return m

@@ -68,22 +68,74 @@ check("wrong-size-refused", convert_object(OBJ_PROGRAM, b"x", True, FAMILY_NAUTI
 
 kc = bytearray(init_combi_template(False))
 kc[:24] = b"Roundtrip Combi".ljust(24, b"\0")
-for t, (bank, num) in enumerate([(18, 126), (24, 125), (31, 127)]):   # slots the factory map does not cover
+def uncovered(bank):
+    """A slot of Kronos user bank byte `bank` that neither factory table maps in either direction."""
+    return next(n for n in range(127, -1, -1)
+                if T.ref_map.get(bank, n) is None and T.ref_map.get_by_nautilus(bank - 1, n) is None)
+
+
+SLOTS = [(b, uncovered(b)) for b in (18, 24, 31)]
+for t, (bank, num) in enumerate(SLOTS):
     o = 4802 + t * 188
     kc[o], kc[o + 1], kc[o + 2] = num, bank, 0x20
 nc = convert_object(OBJ_COMBI, bytes(kc), False, FAMILY_KRONOS, FAMILY_NAUTILUS, T)
 check("k2n-combi", nc.body is not None and len(nc.body) == 5640)
 check("k2n-combi-refs-same-wire-bank",
-      [(r.ref.bank, r.ref.number) for r in walk_object_references(OBJ_COMBI, nc.body)][:3] == [(0x40, 126), (0x46, 125), (0x4D, 127)])
+      [(r.ref.bank, r.ref.number) for r in walk_object_references(OBJ_COMBI, nc.body)][:3] == [(0x40 + b - 18, n) for b, n in SLOTS])
 bc = convert_combi_to_kronos(nc.body, init_combi_template(False), None)   # no factory map: only the bank shift
 check("n2k-combi", bc.body is not None and len(bc.body) == 7810
-      and [combi_timbre_ref(bc.body, t) for t in range(3)] == [(18, 126), (24, 125), (31, 127)])
+      and [combi_timbre_ref(bc.body, t) for t in range(3)] == SLOTS)
 
 # ---- an unused Oscillator 2 (Single mode) does not block a Program
 rm = RomWaveformMap.from_entries([{"section": "ROM_MULTISAMPLES", "kronos_index": 5, "nautilus_index": 9, "name": "a",
                                    "nautilus_name": "a", "source": "audio", "audio": "content"}])
 check("reverse-map", rm.reversed().try_map("ROM_MULTISAMPLES", 9) == 5 and rm.reversed().try_map("ROM_MULTISAMPLES", 5) is None
       and rm.reversed().is_audio_identical("ROM_MULTISAMPLES", 9))
+
+# ---- factory re-pointing only while the source Program is still the factory one
+ent = next(e for e in T.ref_map._by_kronos.values() if 18 <= e.kronos_bank <= 31)
+kcb2 = bytearray(init_combi_template(False))
+o = 4802
+kcb2[o], kcb2[o + 1], kcb2[o + 2] = ent.kronos_index, ent.kronos_bank, 0x20
+for t in range(1, 16):
+    kcb2[4802 + t * 188 + 2] &= 0x1F      # Status Off, so only timbre 1 is looked at
+kcb2 = bytes(kcb2)
+
+
+def first_ref(body):
+    return combi_timbre_ref(body, 0)
+
+
+factory = convert_object(OBJ_COMBI, kcb2, False, FAMILY_KRONOS, FAMILY_NAUTILUS, T, lambda b, n: ent.kronos_name)
+check("factory-name-repointed", first_ref(factory.body) == (ent.nautilus_bank, ent.nautilus_index))
+own = convert_object(OBJ_COMBI, kcb2, False, FAMILY_KRONOS, FAMILY_NAUTILUS, T, lambda b, n: "My Own Sound")
+check("user-program-keeps-slot-in-same-wire-bank", first_ref(own.body) == (ent.kronos_bank, ent.kronos_index))
+absent = convert_object(OBJ_COMBI, kcb2, False, FAMILY_KRONOS, FAMILY_NAUTILUS, T, lambda b, n: None)
+check("slot-not-in-set-assumed-factory", first_ref(absent.body) == (ent.nautilus_bank, ent.nautilus_index))
+back_own = convert_object(OBJ_COMBI, own.body, False, FAMILY_NAUTILUS, FAMILY_KRONOS, T, lambda b, n: "My Own Sound")
+check("reverse-user-program-keeps-slot", first_ref(back_own.body) == (ent.kronos_bank, ent.kronos_index))
+nent = next(e for e in T.ref_map._by_kronos.values() if 17 <= e.nautilus_bank <= 30)
+ncb = bytearray(init_combi_template(True))
+ncb[2632], ncb[2633], ncb[2634] = nent.nautilus_index, nent.nautilus_bank, 0x20
+for t in range(1, 16):
+    ncb[2632 + t * 188 + 2] &= 0x1F
+back_f = convert_object(OBJ_COMBI, bytes(ncb), False, FAMILY_NAUTILUS, FAMILY_KRONOS, T, lambda b, n: nent.nautilus_name)
+check("reverse-factory-name-repointed", first_ref(back_f.body) == (T.ref_map.get_by_nautilus(nent.nautilus_bank, nent.nautilus_index).kronos_bank,
+                                                                   T.ref_map.get_by_nautilus(nent.nautilus_bank, nent.nautilus_index).kronos_index))
+
+# ---- the model re-points a Nautilus-format Combi when a Program moves (raw bytes stay 17-based)
+from Data.librarian_model import LibraryCatalog, ObjLoc, plan_move
+from Data.librarian_sysex import ObjectDump
+nb = bytearray(5640)
+set_combi_timbre_ref(nb, 3, 18, 7)        # Program U-A:007
+cat = LibraryCatalog()
+cat.add_combi(ObjectDump(OBJ_COMBI, 0x40, 0, 3, bytes(nb)))
+src, dst = ObjLoc(OBJ_PROGRAM, 0x40, 7), ObjLoc(OBJ_PROGRAM, 0x41, 5)
+plan = plan_move(cat, src, ObjectDump(OBJ_PROGRAM, 0x40, 7, 5, bytes(4954)), dst, ObjectDump(OBJ_PROGRAM, 0x41, 5, 5, bytes(4954)))
+cw = next((w for w in plan.writes if w.obj == OBJ_COMBI), None)
+check("move-repoints-nautilus-combi", cw is not None and len(cw.body) == 5640
+      and (cw.body[2632 + 3 * 188 + 1], cw.body[2632 + 3 * 188]) == (18, 5)      # U-B:005 is raw byte 18 on a Nautilus
+      and combi_timbre_ref(cw.body, 3) == (19, 5))
 
 # ---- real Nautilus factory PCG
 PRELOAD = os.environ.get("KRONOS_NAUTILUS_PRELOAD", "Z:/Nautilus Research/PCG Info/FACTORY_extracted/FACTORY/PRELOAD.PCG")
@@ -153,6 +205,23 @@ check("window-raw-bypass", len(w._pcg_resolve_content(*addr_p, raw=True)) == 496
 check("window-conversion-cached", len(w._pcg_conv_cache) == 2)
 w._service = Fake(False)
 check("window-no-conversion-same-family", len(w._pcg_resolve_content(*addr_p)) == 4960)
+# a Set List cannot be converted: it is refused (not passed through) and the row says why
+w._service = Fake(True)
+w._pcg = kpcg
+sl_blob = pf._KORG_HEADER + pf._make_bank_chunk(b"SBK1", 1, pf.SETLIST_ITEM_SIZE, 0, [bytes(pf.SETLIST_ITEM_SIZE)])
+slp = open_pcg(sl_blob)
+w._pcg = slp
+w._refresh_pcg_tree()
+sl_addr = next(a for a in w._pcg_by_addr if a[0] == pf.OBJ_SET_LIST)
+check("setlist-refused-cross-family", w._pcg_resolve_content(*sl_addr) is None and sl_addr in w._pcg_conv_refused)
+w._service = Fake(False)
+check("setlist-passes-same-family", w._pcg_resolve_content(*sl_addr) is not None)
+w._service = Fake(True)
+w._pcg = kpcg
+w._refresh_pcg_tree()
+w._pcg_conv_refused[addr_p] = "Oscillator 1 zone 1: EXs1 waveform #3"
+check("refusal-reason-in-dependency-row", "can't be converted" in w._describe_missing_name(L.ObjLoc(*addr_p)))
+
 import dataclasses
 w._service = Fake(True)
 w._pcg = dataclasses.replace(kpcg, family=FAMILY_NAUTILUS)

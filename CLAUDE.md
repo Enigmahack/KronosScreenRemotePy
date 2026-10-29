@@ -547,6 +547,11 @@ REFUSEs a Program/Combi in the other family's format (Drum Kits and Wave Sequenc
 checked). The manual "Convert to Nautilus..." path reads the raw Kronos body (`raw=True`) and still writes arp patterns,
 which the conversion-on-entry path cannot. Nautilus factory content lives in user banks too, so a Combi Timbre in a user
 bank whose slot holds factory content is re-pointed to the other instrument's factory equivalent (`ProgramRefMap`).
+`KronosToNautilusProgramRefs.json` counts Kronos user banks from 17 (U-A) although a Kronos Combi Timbre byte counts from 18;
+`ProgramRefMap.from_entries` shifts them on load (checked: Kronos names match in 53 of 53 corpus PCGs, Nautilus names 895/909).
+A Timbre is re-pointed to a factory Program only while the source set's Program at that slot still has the factory name
+(`convert_object(..., program_name=)`); otherwise it keeps its slot in the same wire bank. Set Lists are not converted
+(refused with a reason, shown on the dependency row).
 
 ## Kronos live checklist (run when the Kronos is next online; Kronos 192.168.100.15)
 

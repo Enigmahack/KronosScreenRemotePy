@@ -40,6 +40,7 @@ class ConvertItem:
     is_exi: bool = False
     native: bool = False        # body is already a Nautilus body (a Nautilus .SNG / dump): copied, not converted
     src_ref: Optional[Tuple[int, int]] = None   # Program: (Kronos Combi Timbre bank byte, slot) it was read from
+    program_name: Optional[Callable[[int, int], Optional[str]]] = None   # Combi: names the Programs its Timbres use
 
 
 @dataclass
@@ -540,7 +541,8 @@ def _convert(item: ConvertItem, template: bytes, tables: ConvertTables, options:
         return ConversionResult(item.body) if len(item.body) == COMBI_NAUTILUS_SIZE else ConversionResult(
             None, [], [f"A Nautilus Song Timbre Set is {COMBI_NAUTILUS_SIZE} bytes, not {len(item.body)}."])
     if item.obj_type in (OBJ_COMBI, OBJ_SONG_TIMBRE):
-        return convert_combi(item.body, t.ge_catalog, template, options, t.ge_patterns, ref_map=t.ref_map, placed=placed)
+        return convert_combi(item.body, t.ge_catalog, template, options, t.ge_patterns, ref_map=t.ref_map, placed=placed,
+                             kronos_program_name=item.program_name)
     if item.obj_type == OBJ_DRUM_KIT:
         return convert_drum_kit(item.body, t.rom_map, t.exs)
     return convert_wave_seq(item.body, t.rom_map, t.exs)

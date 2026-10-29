@@ -236,6 +236,7 @@ from Conversion.push import (ARP_BANK_B_SLOTS, CONVERTIBLE_TYPES, EXI_DEST, Conv
 from Conversion.song_source import read_song_timbre_sets
 from Conversion.auto import CONVERTIBLE as AUTO_CONVERTIBLE, convert_object
 from Conversion.data import kronos_timbre_bank_for_obj
+from Conversion.result import ConversionResult
 from Conversion.song_convert import MODEL_NAMES, convert_sng
 from Data.sng_file import MODEL_KRONOS, MODEL_NAUTILUS, SngError, read_sng
 from Data.song_library import SongLibrary
@@ -338,6 +339,37 @@ def _group_pcg(objects: List[PcgObjectEntry]) -> Dict[int, Dict[int, List[PcgObj
         for lst in by_bank.values():
             lst.sort(key=lambda e: e.index)
     return groups
+
+
+def _KRONOS_TIMBRE_TO_OBJ_BANK(bank_byte: int) -> Optional[int]:
+    if 0 <= bank_byte <= 5:
+        return bank_byte
+    if 18 <= bank_byte <= 31:
+        return 0x40 + bank_byte - 18
+    return None
+
+
+_NAME_LOOKUP: Optional[tuple] = None   # (pcg, lookup) of the PCG converted last
+
+
+def _program_name_lookup(pcg: PcgFile):
+    """Names the Program a Combi Timbre (bank byte, slot) points at inside `pcg`, None when the PCG doesn't hold it."""
+    global _NAME_LOOKUP
+    if _NAME_LOOKUP is None or _NAME_LOOKUP[0] is not pcg:
+        names = {(e.bank.obj_bank, e.index): e.name for e in pcg.objects
+                 if e.obj_type == OBJ_PROGRAM and e.bank is not None}
+        first_user = 17 if pcg.family == FAMILY_NAUTILUS else 18
+
+        def lookup(bank_byte: int, number: int) -> Optional[str]:
+            if 0 <= bank_byte <= 5:
+                ob = bank_byte
+            elif first_user <= bank_byte <= first_user + 13:
+                ob = 0x40 + bank_byte - first_user
+            else:
+                return None
+            return names.get((ob, number))
+        _NAME_LOOKUP = (pcg, lookup)
+    return _NAME_LOOKUP[1]
 
 
 def _placement_order(entries: List[MergeEntry]) -> List[MergeEntry]:
@@ -1293,6 +1325,7 @@ class LibrarianShellWindow(QDialog):
         self._walk_cache: Dict[Tuple[int, str], tuple] = {}
         self._pcg_dep_cache: Dict[Tuple[int, int, int], Optional[Tuple[str, bytes]]] = {}
         self._pcg_conv_cache: Dict[tuple, Optional[bytes]] = {}
+        self._pcg_conv_refused: Dict[Tuple[int, int, int], str] = {}
         self._convert_tables: Optional[ConvertTables] = None
         self._exs_index: Optional[ExsOptionIndex] = None
         self._busy = False
@@ -1941,7 +1974,10 @@ class LibrarianShellWindow(QDialog):
         if e is not None:
             return e.display_name or ""
         pe = self._pcg_by_addr.get((loc.obj_type, loc.bank, loc.number))
-        return pe.name if pe is not None else ""
+        if pe is None:
+            return ""
+        why = self._pcg_conv_refused.get((loc.obj_type, loc.bank, loc.number))
+        return f"{pe.name} (can't be converted: {why})" if why else pe.name
 
     def _update_object_dependencies(self, pane: str, tree: QTreeWidget) -> None:
         """Selection changed in one of the three trees."""
@@ -2342,6 +2378,7 @@ class LibrarianShellWindow(QDialog):
         self._pcg_by_addr = {}
         self._pcg_dep_cache = {}
         self._pcg_conv_cache = {}
+        self._pcg_conv_refused = {}
         groups = _group_pcg(objects)
         for obj_type in _ROOT_ORDER:
             by_bank = groups.get(obj_type, {})
@@ -3896,6 +3933,17 @@ class LibrarianShellWindow(QDialog):
             return None
         return self._pcg_wire_body(e, raw=raw)
 
+    def _kronos_program_namer(self, source: str):
+        """Names the Program at a Kronos Combi Timbre reference in the pane `source` converts from."""
+        if source == "pcg":
+            return _program_name_lookup(self._pcg) if self._pcg is not None else None
+
+        def local_name(bank_byte: int, number: int) -> Optional[str]:
+            ob = _KRONOS_TIMBRE_TO_OBJ_BANK(bank_byte)
+            entry = self._index.get(OBJ_PROGRAM, ob, number) if ob is not None else None
+            return entry.display_name if entry is not None else None
+        return local_name
+
     def _device_family(self) -> str:
         return FAMILY_NAUTILUS if getattr(self._service, "is_nautilus", False) is True else FAMILY_KRONOS
 
@@ -3905,16 +3953,24 @@ class LibrarianShellWindow(QDialog):
         pcg = pcg or self._pcg
         body = wire_body_from_pcg_entry(e.obj_type, e)
         target = self._device_family()
-        if raw or body is None or pcg is None or pcg.family == target or e.obj_type not in AUTO_CONVERTIBLE:
+        if raw or body is None or pcg is None or pcg.family == target:
             return body
-        key = (id(pcg), target, e.obj_type, e.bank.obj_bank if e.bank is not None else 0, e.index)
+        addr = (e.obj_type, e.bank.obj_bank if e.bank is not None else 0, e.index)
+        key = (id(pcg), target) + addr
         if key not in self._pcg_conv_cache:
-            if self._convert_tables is None:
-                self._convert_tables = ConvertTables.load()
-            result = convert_object(e.obj_type, body, e.is_exi, pcg.family, target, self._convert_tables)
+            if e.obj_type not in AUTO_CONVERTIBLE:
+                # Set Lists hold user-bank references in the source family's numbering and are not converted.
+                result = ConversionResult(None, [], [f"{_ROOT_LABEL.get(e.obj_type, 'this kind of object')} are not "
+                                                     "converted between instruments"])
+            else:
+                if self._convert_tables is None:
+                    self._convert_tables = ConvertTables.load()
+                result = convert_object(e.obj_type, body, e.is_exi, pcg.family, target, self._convert_tables,
+                                        _program_name_lookup(pcg))
             if result.body is None:
-                self._log(f"Not converted to the {target.title()} format: {e.name or '(unnamed)'} - "
-                          + "; ".join(result.refusals[:3]))
+                reason = "; ".join(result.refusals[:2])
+                self._pcg_conv_refused[addr] = reason[:90]
+                self._log(f"Not converted to the {target.title()} format: {e.name or '(unnamed)'} - {reason}")
             self._pcg_conv_cache[key] = result.body
         return self._pcg_conv_cache[key]
 
@@ -4075,7 +4131,8 @@ class LibrarianShellWindow(QDialog):
             if body is not None:
                 tbank = kronos_timbre_bank_for_obj(loc.bank) if loc.obj_type == OBJ_PROGRAM else None
                 items.append(ConvertItem(loc.obj_type, name, body, is_exi,
-                                         src_ref=None if tbank is None else (tbank, loc.number)))
+                                         src_ref=None if tbank is None else (tbank, loc.number),
+                                         program_name=self._kronos_program_namer(source)))
         if not items:
             self._log("Convert to Nautilus: select Programs, Combinations, Drum Kits or Wave Sequences.")
             return

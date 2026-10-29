@@ -3,6 +3,8 @@ templates standing in for the target slot (the Librarian converts when an object
 is chosen). Kronos -> Nautilus is the live-verified direction; Nautilus -> Kronos is NOT verified on a Kronos."""
 from __future__ import annotations
 
+from typing import Callable, Optional
+
 from Conversion import karma
 from Conversion.combi import convert_combi
 from Conversion.combi_reverse import convert_combi_to_kronos
@@ -21,8 +23,13 @@ CONVERTIBLE = (OBJ_PROGRAM, OBJ_COMBI, OBJ_SONG_TIMBRE, OBJ_DRUM_KIT, OBJ_WAVE_S
 
 
 def convert_object(obj_type: int, body: bytes, is_exi: bool, src_family: str, dst_family: str,
-                   tables: ConvertTables) -> ConversionResult:
-    """`body` is a wire body (a Program may also be a PCG slot). Same family: returned as is."""
+                   tables: ConvertTables,
+                   program_name: Optional[Callable[[int, int], Optional[str]]] = None) -> ConversionResult:
+    """`body` is a wire body (a Program may also be a PCG slot). Same family: returned as is.
+
+    `program_name(Timbre bank byte, slot)` names the Program a Combi Timbre points at in the source set (None when the
+    set does not hold it). A Timbre is re-pointed to the other instrument's factory Program only while that name still
+    matches the factory Program; a user's own Program of the same slot keeps its place in the same wire bank."""
     if src_family == dst_family:
         return ConversionResult(body)
     to_nautilus = dst_family == FAMILY_NAUTILUS and src_family == FAMILY_KRONOS
@@ -39,8 +46,8 @@ def convert_object(obj_type: int, body: bytes, is_exi: bool, src_family: str, ds
     if obj_type in (OBJ_COMBI, OBJ_SONG_TIMBRE):
         if to_nautilus:
             return convert_combi(body, tables.ge_catalog, init_combi_template(True), karma.ArpOptions(),
-                                 tables.ge_patterns, ref_map=tables.ref_map)
-        return convert_combi_to_kronos(body, init_combi_template(False), tables.ref_map)
+                                 tables.ge_patterns, ref_map=tables.ref_map, kronos_program_name=program_name)
+        return convert_combi_to_kronos(body, init_combi_template(False), tables.ref_map, program_name)
     if obj_type == OBJ_DRUM_KIT:
         return (convert_drum_kit if to_nautilus else convert_drum_kit_to_kronos)(body, tables.rom_map, tables.exs)
     if obj_type == OBJ_WAVE_SEQ:
