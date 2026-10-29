@@ -536,6 +536,18 @@ assumptions where the source itself is unverified. Defer C#'s USB-direct
 MIDI transport path (`MidiDeviceIdentity.cs`, no daemon link at all) unless
 asked — Python has no USB-direct transport today, only the TCP bridge.
 
+## Cross-family conversion (2026-10-29)
+A PCG of the other instrument family is converted when its objects are used, for the *connected* instrument
+(`LibrarianShellWindow._pcg_wire_body`, cached per object; `Conversion/auto.convert_object`, Init templates in
+`Resources/Conversion/*InitProgram.bin`). `open_pcg` reads Kronos (0x68) and Nautilus (0xDD) files and sets `PcgFile.family`;
+the bank-realign heuristic is Kronos-only. The Combi and Program accessors in `Data/librarian_sysex.py`, the sample walker
+and the dependency scanner recognise Nautilus bodies by length (Combi 5640, Program 4954/3700) and translate the Timbre bank
+byte to the Kronos numbering, so everything downstream keeps one numbering. `changeset_sync` takes `device_family` and
+REFUSEs a Program/Combi in the other family's format (Drum Kits and Wave Sequences are the same size on both and cannot be
+checked). The manual "Convert to Nautilus..." path reads the raw Kronos body (`raw=True`) and still writes arp patterns,
+which the conversion-on-entry path cannot. Nautilus factory content lives in user banks too, so a Combi Timbre in a user
+bank whose slot holds factory content is re-pointed to the other instrument's factory equivalent (`ProgramRefMap`).
+
 ## Kronos live checklist (run when the Kronos is next online; Kronos 192.168.100.15)
 
 Everything here needs the real Kronos. Each item says what to check; remove the matching `# HW-VERIFY:` note or
@@ -561,6 +573,15 @@ line here only after the live check. Back up any slot before writing (the conver
 8. `Conversion/push.py` Store: on the Nautilus a Store commits the whole bank, including another slot's unstored
    SysEx write (reboot test 2026-10-22: pre-Store writes survived, a post-Store write reverted). Repeat on the
    Kronos (write B then A, Store, write C, reboot, read all three).
+9. Nautilus -> Kronos conversion on entry (`Conversion/auto.py`, `program_reverse.py`, `combi_reverse.py`, reverse ROM map;
+   NOT verified on a Kronos): open a Nautilus .pcg while connected to the Kronos, place a Program (EXi and HD-1), a Combi
+   whose Timbres use user-bank Programs, a Drum Kit and a Wave Sequence, push, and check they sound right and the Combi
+   plays its own Programs. The Kronos-only S/PDIF, Drum Track and KARMA block comes from `KronosInitProgram.bin`.
+10. The Combi Timbre bank byte: Kronos user banks start at 18 (U-A), Nautilus at 17 (G) - checked only against the
+    Combis of the factory Nautilus PCG (1,635 of 1,635 user-bank references land on real Programs). Confirm on the
+    Kronos with a Combi pulled over SysEx.
+11. Nautilus `g(d)` (GM drum) Timbre references: byte 17 is G on the Nautilus, so a Kronos Combi that references
+    `g(d)` cannot be converted faithfully; nothing flags it yet.
 
 **Older, still-relevant items:**
 

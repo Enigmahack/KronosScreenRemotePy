@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from typing import Dict, Iterator, List, Optional, Tuple
 
 from Data.librarian_sysex import OBJ_DRUM_KIT, OBJ_PROGRAM, OBJ_WAVE_SEQ
-from Data.pcg_file import WIRE_SIZE_EXI, WIRE_SIZE_HD1
+from Data.pcg_file import NAUTILUS_WIRE_SIZE_EXI, NAUTILUS_WIRE_SIZE_HD1, WIRE_SIZE_EXI, WIRE_SIZE_HD1
 
 # Bucket names match the C# BankBucket enum (also what the panel's colour table keys on).
 RAM = "SamplingModeRam"
@@ -55,6 +55,17 @@ class SampleDependencyRow:
     key: str          # dedup identity: bucket|bank identity (no count suffix)
     count: int
     bucket: str
+
+
+_NAUTILUS_TAIL_START, _NAUTILUS_SHIFT = 2552, 6
+
+
+def kronos_layout_view(body: bytes) -> bytes:
+    """A Nautilus Program with the 6 bytes its Kronos twin has before the oscillator section put back, so the
+    Kronos offsets below read it unchanged. Kronos bodies pass through."""
+    if len(body) in (NAUTILUS_WIRE_SIZE_EXI, NAUTILUS_WIRE_SIZE_HD1):
+        return bytes(body[:_NAUTILUS_TAIL_START]) + bytes(_NAUTILUS_SHIFT) + bytes(body[_NAUTILUS_TAIL_START:])
+    return body
 
 
 def _is_legacy_form(uuid: bytes) -> bool:
@@ -118,6 +129,7 @@ def _classify_legacy_uuid(uuid: bytes) -> Optional[Tuple[str, str, str]]:
 def iter_program_sample_zone_refs(body: bytes) -> Iterator[Tuple[int, int, bytes, int]]:
     """HD-1 zone-type==1 ('Sample') zones that are NOT Drums-mode (osc mode 4/5 zones are Drum
     Kit object refs, reported elsewhere) — (osc, zone, uuid, number)."""
+    body = kronos_layout_view(body)
     if _OSC_MODE_OFFSET >= len(body):
         return
     osc_mode = body[_OSC_MODE_OFFSET] & 0x07
@@ -136,6 +148,7 @@ def iter_program_sample_zone_refs(body: bytes) -> Iterator[Tuple[int, int, bytes
 def iter_exi_pcm_high_slot_candidates(body: bytes) -> Iterator[Tuple[str, bytes, int]]:
     """(engine, 16-byte blob, raw number) for an EXi Program whose engine is MOD-7 or STR-1 and
     whose PCM High slot has its 'MS Type' on-bit set."""
+    body = kronos_layout_view(body)
     if _EXI_ALGORITHM_TYPE_OFFSET >= len(body):
         return
     algo = body[_EXI_ALGORITHM_TYPE_OFFSET]
@@ -180,10 +193,10 @@ def walk(obj_type: int, body: bytes) -> List[SampleDependencyRow]:
         from Objects.object_body import iter_wave_seq_sample_refs
         for _st, uuid, _sel in iter_wave_seq_sample_refs(body):
             add_legacy(uuid)
-    elif len(body) == WIRE_SIZE_HD1:
+    elif len(body) in (WIRE_SIZE_HD1, NAUTILUS_WIRE_SIZE_HD1):
         for _o, _z, uuid, _n in iter_program_sample_zone_refs(body):
             add_legacy(uuid)
-    elif len(body) == WIRE_SIZE_EXI:
+    elif len(body) in (WIRE_SIZE_EXI, NAUTILUS_WIRE_SIZE_EXI):
         for engine, blob, raw in iter_exi_pcm_high_slot_candidates(body):
             if blob == EXI_PCM_HIGH_DEFAULT_BLOB:
                 continue   # ROM / unassigned

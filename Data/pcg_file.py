@@ -59,11 +59,45 @@ WIRE_SIZE_EXI = 4960
 WIRE_SIZE_HD1 = 3706
 # A Nautilus answers the same Program formats 6 bytes shorter (live-read: EXi 4954, HD-1 3700).
 NAUTILUS_WIRE_SIZE_EXI = 4954
+NAUTILUS_WIRE_SIZE_HD1 = 3700
+NAUTILUS_PCG_SLOT_SIZE = 4954
+MODEL_KRONOS, MODEL_NAUTILUS = 0x68, 0xDD   # PCG header byte 4
+FAMILY_KRONOS, FAMILY_NAUTILUS = "kronos", "nautilus"
 
 
 def wire_body_is_exi(body_len: int) -> bool:
     """EXi vs HD-1 from a Program wire body's length, on either instrument family."""
     return body_len in (WIRE_SIZE_EXI, NAUTILUS_WIRE_SIZE_EXI)
+
+
+def program_body_kind(body_len: int) -> Optional[bool]:
+    """True = EXi, False = HD-1, None = not a Program wire body of either instrument family."""
+    if body_len in (WIRE_SIZE_EXI, NAUTILUS_WIRE_SIZE_EXI):
+        return True
+    if body_len in (WIRE_SIZE_HD1, NAUTILUS_WIRE_SIZE_HD1):
+        return False
+    return None
+
+
+COMBI_WIRE_SIZE_KRONOS, COMBI_WIRE_SIZE_NAUTILUS = 7810, 5640
+
+
+def body_family(obj_type: int, body_len: int) -> Optional[str]:
+    """Which instrument family a Program or Combi wire body belongs to, from its length (None when it can't say:
+    other object types are the same size on both)."""
+    if obj_type == OBJ_PROGRAM:
+        return program_body_family(body_len)
+    if obj_type == OBJ_COMBI:
+        return {COMBI_WIRE_SIZE_KRONOS: FAMILY_KRONOS, COMBI_WIRE_SIZE_NAUTILUS: FAMILY_NAUTILUS}.get(body_len)
+    return None
+
+
+def program_body_family(body_len: int) -> Optional[str]:
+    if body_len in (WIRE_SIZE_EXI, WIRE_SIZE_HD1):
+        return FAMILY_KRONOS
+    if body_len in (NAUTILUS_WIRE_SIZE_EXI, NAUTILUS_WIRE_SIZE_HD1):
+        return FAMILY_NAUTILUS
+    return None
 
 _BANK_CHUNK_OBJ_TYPE = {
     "MBK1": OBJ_PROGRAM,
@@ -174,6 +208,7 @@ class PcgFile:
     # -1 when the file's user Program banks were stored one bank high and were re-aligned to
     # the banks its Combis reference (see _realign_program_banks); 0 otherwise.
     program_bank_shift: int = 0
+    family: str = FAMILY_KRONOS
 
 
 def open_pcg(data: bytes) -> Optional[PcgFile]:
@@ -185,11 +220,13 @@ def open_pcg(data: bytes) -> Optional[PcgFile]:
         return None
     if data[0:4] != b"KORG":
         return None
-    if data[4] != 0x68:   # Product ID: Kronos (other Korg models out of scope)
+    if data[4] not in (MODEL_KRONOS, MODEL_NAUTILUS):   # Product ID (other Korg models out of scope)
         return None
     if data[5] != 0x00:   # File type: 00 = PCG (01 = SNG -- Songs out of scope)
         return None
     objects, rejected = extract_objects(data)
+    if data[4] == MODEL_NAUTILUS:
+        return PcgFile(objects, rejected, 0, FAMILY_NAUTILUS)
     objects, shift = _realign_program_banks(objects)
     return PcgFile(objects, rejected, shift)
 
@@ -358,11 +395,12 @@ def pcg_program_to_wire(pcg_body: bytes, is_exi: bool) -> bytes:
     HD-1 matched as an exact byte-offset truncation across 620/632 pairs,
     remainder differing only by ordinary patch-content edits).
     """
-    if len(pcg_body) != PCG_SLOT_SIZE:
-        raise ValueError(f"expected a {PCG_SLOT_SIZE}-byte .pcg Program record, got {len(pcg_body)}")
+    if len(pcg_body) not in (PCG_SLOT_SIZE, NAUTILUS_PCG_SLOT_SIZE):
+        raise ValueError(f"expected a {PCG_SLOT_SIZE}-byte (Nautilus {NAUTILUS_PCG_SLOT_SIZE}) .pcg Program record, "
+                         f"got {len(pcg_body)}")
     if is_exi:
         return pcg_body
-    return bytes(pcg_body[:WIRE_SIZE_HD1])
+    return bytes(pcg_body[:WIRE_SIZE_HD1 if len(pcg_body) == PCG_SLOT_SIZE else NAUTILUS_WIRE_SIZE_HD1])
 
 
 def wire_body_from_pcg_entry(obj_type: int, entry: PcgObjectEntry) -> Optional[bytes]:

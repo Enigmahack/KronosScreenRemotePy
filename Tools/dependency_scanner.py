@@ -30,7 +30,7 @@ from typing import Callable, Iterator, List, Optional
 from Data.librarian_model import ObjLoc, _READONLY_PROGRAM_BANKS
 from Data.librarian_sysex import (
     OBJ_COMBI, OBJ_DRUM_KIT, OBJ_PROGRAM, OBJ_SET_LIST, OBJ_WAVE_SEQ,
-    PROGRAM_HD1_WIRE_SIZE, ZONES_PER_OSC,
+    PROGRAM_HD1_NAUTILUS_SIZE, PROGRAM_HD1_WIRE_SIZE, ZONES_PER_OSC,
     func33_to_obj_bank, iter_combi_timbre_refs, iter_program_zone_refs, iter_setlist_slot_refs,
     program_drum_track_on, program_drum_track_ref, program_oscillator_mode,
 )
@@ -113,7 +113,7 @@ def _walk_program_references(body: bytes) -> Iterator[ObjectRef]:
         obj_bank = func33_to_obj_bank(1, dt_bank)
         if obj_bank >= 0:
             yield ObjectRef("drum track", -1, ObjLoc(OBJ_PROGRAM, obj_bank, dt_num))
-    if len(body) == PROGRAM_HD1_WIRE_SIZE:
+    if len(body) in (PROGRAM_HD1_WIRE_SIZE, PROGRAM_HD1_NAUTILUS_SIZE):
         osc_mode = program_oscillator_mode(body)
         for osc, zone, ms_type, number in iter_program_zone_refs(body):
             label = f"OSC{osc + 1} zone {zone + 1}"

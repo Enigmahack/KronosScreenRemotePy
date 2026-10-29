@@ -68,6 +68,12 @@ _TIMBRE_COUNT = 16
 _TIMBRE0_PROG_NUM_OFS = 4802     # timbre 0 program NUMBER byte
 _TIMBRE0_PROG_BANK_OFS = 4803    # timbre 0 program BANK byte (internal linear)
 _TIMBRE_STRIDE = 188
+# The Nautilus Combi is 2170 bytes shorter and its Timbres sit that much earlier. Its Timbre Program bank byte counts
+# user banks from 17 (G), the Kronos from 18 (U-A); the accessors below hide both differences so every caller keeps
+# using the Kronos ("func33") numbering.
+COMBI_NAUTILUS_SIZE = 5640
+_NAUTILUS_TIMBRE_SHIFT = 2170
+_NAUTILUS_USER_BANKS = (17, 30)
 
 # Set-list slot reference layout — mirror setlist_data.py so there is one source
 # of truth for these offsets.
@@ -253,18 +259,26 @@ def parse_object_dump(msg: bytes) -> Optional[ObjectDump]:
 # ── Combi timbre reference accessors (operate on a decoded body) ─────────────
 
 
+def _timbre0_num_ofs(body) -> int:
+    return _TIMBRE0_PROG_NUM_OFS - (_NAUTILUS_TIMBRE_SHIFT if len(body) == COMBI_NAUTILUS_SIZE else 0)
+
+
 def combi_timbre_ref(body: bytes, timbre: int) -> Tuple[int, int]:
     """Return (func33_bank, number) the given 0-based timbre points at."""
-    base = _TIMBRE0_PROG_NUM_OFS + timbre * _TIMBRE_STRIDE
+    base = _timbre0_num_ofs(body) + timbre * _TIMBRE_STRIDE
     number = body[base]
     bank = body[base + 1]
+    if len(body) == COMBI_NAUTILUS_SIZE and _NAUTILUS_USER_BANKS[0] <= bank <= _NAUTILUS_USER_BANKS[1]:
+        bank += 1
     return bank, number
 
 
 def set_combi_timbre_ref(body: bytearray, timbre: int,
                          func33_bank: int, number: int) -> None:
     """Patch a 0-based timbre's program reference in place (bytearray body)."""
-    base = _TIMBRE0_PROG_NUM_OFS + timbre * _TIMBRE_STRIDE
+    base = _timbre0_num_ofs(body) + timbre * _TIMBRE_STRIDE
+    if len(body) == COMBI_NAUTILUS_SIZE and _NAUTILUS_USER_BANKS[0] < func33_bank <= _NAUTILUS_USER_BANKS[1] + 1:
+        func33_bank -= 1
     body[base] = number & 0x7F
     body[base + 1] = func33_bank & 0x7F
 
@@ -273,7 +287,7 @@ def iter_combi_timbre_refs(body: bytes):
     """Yield (timbre_index, func33_bank, number) for all 16 timbres. A truncated body (a damaged
     or foreign blob) yields only the timbres it actually holds rather than raising."""
     for t in range(_TIMBRE_COUNT):
-        if _TIMBRE0_PROG_NUM_OFS + t * _TIMBRE_STRIDE + 1 >= len(body):
+        if _timbre0_num_ofs(body) + t * _TIMBRE_STRIDE + 1 >= len(body):
             break
         bank, number = combi_timbre_ref(body, t)
         yield t, bank, number
@@ -320,10 +334,13 @@ def iter_setlist_slot_refs(body: bytes):
 # share; the oscillator zone layout below exists in the HD-1 wire format only (EXi bodies have no
 # OSC1/OSC2 zones), so callers gate on len(body) == WIRE_SIZE_HD1 before iterating zones.
 
+NAUTILUS_PROGRAM_SIZES = (4954, 3700)   # EXi, HD-1; the Kronos sections after the common head sit 6 bytes later
+_NAUTILUS_PROGRAM_SHIFT = 6
 _DT_NUM_OFS = 2688
 _DT_BANK_OFS = 2689
 _DT_ON_BYTE, _DT_ON_BIT = 1295, 0x10
 PROGRAM_HD1_WIRE_SIZE = 3706
+PROGRAM_HD1_NAUTILUS_SIZE = 3700
 ZONES_PER_OSC = 8
 _OSC_ZONE_BASE = (2774, 3240)
 _ZONE_STRIDE, _ZONE_NUM_OFS = 22, 18
@@ -333,7 +350,8 @@ _OSC_MODE_OFS = 2558
 def program_drum_track_on(body: bytes) -> bool:
     """A never-touched Program's Drum Track bytes default to 0,0 (a valid-looking I-A:000 address),
     so the reference only exists when its own 'Drum Track On' bit is set."""
-    return len(body) > _DT_BANK_OFS and bool(body[_DT_ON_BYTE] & _DT_ON_BIT)
+    return (len(body) not in NAUTILUS_PROGRAM_SIZES and len(body) > _DT_BANK_OFS
+            and bool(body[_DT_ON_BYTE] & _DT_ON_BIT))
 
 
 def program_drum_track_ref(body: bytes) -> Tuple[int, int]:
@@ -346,16 +364,21 @@ def set_program_drum_track_ref(body: bytearray, func33_bank: int, number: int) -
     body[_DT_BANK_OFS] = func33_bank & 0x1F
 
 
+def _program_shift(body) -> int:
+    return _NAUTILUS_PROGRAM_SHIFT if len(body) in NAUTILUS_PROGRAM_SIZES else 0
+
+
 def program_oscillator_mode(body: bytes) -> int:
-    return body[_OSC_MODE_OFS] & 0x07
+    return body[_OSC_MODE_OFS - _program_shift(body)] & 0x07
 
 
 def iter_program_zone_refs(body: bytes):
     """Yield (osc, zone, ms_type, number) for each HD-1 oscillator zone. ms_type: 1 = Sample /
     Drum Kit, 2 = Wave Sequence; number is the LINEAR MS number."""
+    shift = _program_shift(body)
     for osc in (0, 1):
         for zone in range(ZONES_PER_OSC):
-            type_ofs = _OSC_ZONE_BASE[osc] + zone * _ZONE_STRIDE
+            type_ofs = _OSC_ZONE_BASE[osc] - shift + zone * _ZONE_STRIDE
             num_ofs = type_ofs + _ZONE_NUM_OFS
             if num_ofs + 1 >= len(body):
                 return
@@ -363,7 +386,7 @@ def iter_program_zone_refs(body: bytes):
 
 
 def set_program_zone_number(body: bytearray, osc: int, zone: int, new_number: int) -> None:
-    ofs = _OSC_ZONE_BASE[osc] + zone * _ZONE_STRIDE + _ZONE_NUM_OFS
+    ofs = _OSC_ZONE_BASE[osc] - _program_shift(body) + zone * _ZONE_STRIDE + _ZONE_NUM_OFS
     body[ofs] = new_number & 0xFF
     body[ofs + 1] = (new_number >> 8) & 0xFF
 

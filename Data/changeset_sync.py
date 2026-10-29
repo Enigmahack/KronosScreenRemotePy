@@ -110,7 +110,7 @@ from Data.librarian_sysex import OBJ_COMBI, OBJ_PROGRAM, OBJ_SET_LIST
 from Data.library_pull_pipeline import GetBankObjects, GetLiveDigest, PullResult
 import Data.library_pull_pipeline as pull_pipeline
 from Data.local_library_store import BlobStore, LocalLibraryIndex
-from Data.pcg_file import WIRE_SIZE_EXI, WIRE_SIZE_HD1, wire_body_is_exi
+from Data.pcg_file import WIRE_SIZE_EXI, WIRE_SIZE_HD1, body_family, program_body_kind, wire_body_is_exi
 from Commands.session_dependency_clipboard import SessionDependencyClipboard
 
 WriteToHardware = Callable[[int, int, int, bytes], bool]
@@ -206,8 +206,12 @@ def build_changeset(index: LocalLibraryIndex, blobs: BlobStore,
                      pending_bank_type_change: Optional[PendingBankTypeChange] = None,
                      force_destructive_write: bool = False,
                      allow_dangling: bool = False,
+                     device_family: Optional[str] = None,
                      ) -> ChangesetPlan:
-    """allow_dangling: the user explicitly accepted leaving references unresolved ("Continue
+    """device_family ("kronos"/"nautilus"): a Program or Combi in the other family's format is refused, never
+    written; a Kronos body sent to a Nautilus is the right size for some banks but lays its parameters out differently.
+
+    allow_dangling: the user explicitly accepted leaving references unresolved ("Continue
     anyway" / "Overwrite anyway"), so steps 1 and 3 report them as CHECKs instead of refusing.
 
     force_destructive_write (Settings > Librarian): the Local Library is the source of
@@ -301,6 +305,18 @@ def build_changeset(index: LocalLibraryIndex, blobs: BlobStore,
                 f"{'CHECK' if waived else 'REFUSE'}: {loc.label()} references "
                 f"{missing.ref.label()} ({missing.ref_kind}), which does not exist locally")
 
+    # Step 3.4: instrument-family gate over surviving edits.
+    if device_family is not None:
+        for k in surviving:
+            obj_type, bank, number = _parse_key(k)
+            body = blobs.get(index.entries[k].current_hash)
+            fam = body_family(obj_type, len(body)) if body is not None else None
+            if fam is not None and fam != device_family:
+                plan.warnings.append(
+                    f"REFUSE: {ObjLoc(obj_type, bank, number).label()} is in the {fam.title()} format, but the "
+                    f"connected instrument is a {device_family.title()} - convert it first (open the PCG while "
+                    "connected, or use Convert to Nautilus...)")
+
     # Step 3.5a: whole-bank type changes (requirement 4, port of ChangesetBuilder.cs's own
     # BankTypeChanges assembly) — a Program bank the caller has an INTENTIONAL, already-staged
     # HD-1/EXi conversion on record for (pending_bank_type_change), AND which this push is
@@ -321,8 +337,7 @@ def build_changeset(index: LocalLibraryIndex, blobs: BlobStore,
             obj_type, bank, number = _parse_key(k)
             if obj_type == OBJ_PROGRAM and bank in staged_targets:
                 body = blobs.get(index.entries[k].current_hash)
-                expected_size = WIRE_SIZE_EXI if staged_targets[bank] else WIRE_SIZE_HD1
-                if body is not None and len(body) != expected_size:
+                if body is not None and program_body_kind(len(body)) is not staged_targets[bank]:
                     plan.warnings.append(
                         f"REFUSE: {ObjLoc(obj_type, bank, number).label()} does not match the "
                         "staged bank format — replace it with content in the target format before reformatting")
@@ -552,13 +567,14 @@ def commit_changes(index: LocalLibraryIndex, blobs: BlobStore,
                     allow_dangling: bool = False,
                     prepare_hardware: Optional[Callable[[ChangesetPlan], bool]] = None,
                     store_bank: Optional[Callable[[int, int], bool]] = None,
+                    device_family: Optional[str] = None,
                     ) -> Tuple[ChangesetPlan, SyncResult]:
     """Push-only — port of SyncPipeline.CommitChangesAsync. Deliberately
     skips pulling; pushes straight against whatever bank-digest baseline is
     already on record. `cancel` is forwarded to execute_changeset (see there)."""
     plan = build_changeset(index, blobs, clipboard, get_live_digest, resolver,
                             get_live_bank_type, pending_bank_type_change,
-                            force_destructive_write, allow_dangling)
+                            force_destructive_write, allow_dangling, device_family)
     result = execute_changeset(plan, index, write_to_hardware, write_bank_type_change,
                                 record_success, cancel=cancel,
                                 prepare_hardware=prepare_hardware, store_bank=store_bank)
@@ -579,6 +595,7 @@ def sync_library(index: LocalLibraryIndex, blobs: BlobStore,
                   allow_dangling: bool = False,
                   prepare_hardware: Optional[Callable[[ChangesetPlan], bool]] = None,
                   store_bank: Optional[Callable[[int, int], bool]] = None,
+                  device_family: Optional[str] = None,
                   ) -> Tuple[PullResult, ChangesetPlan, SyncResult]:
     """Pull, then push — port of SyncPipeline.SyncLibraryAsync. See module
     docstring's pull-vs-commit invariant note for why the ordering is pull
@@ -600,7 +617,8 @@ def sync_library(index: LocalLibraryIndex, blobs: BlobStore,
                                   write_bank_type_change, cancel=cancel,
                                   force_destructive_write=force_destructive_write,
                                   allow_dangling=allow_dangling,
-                                  prepare_hardware=prepare_hardware, store_bank=store_bank)
+                                  prepare_hardware=prepare_hardware, store_bank=store_bank,
+                                  device_family=device_family)
     return pull_result, plan, result
 
 
@@ -750,6 +768,17 @@ def _selftest() -> None:
         check("allow-dangling-missing-ref-writes", not plan4b.is_refusable and len(plan4b.entries) == 1)
         check("allow-dangling-missing-ref-is-check",
               any(w.startswith("CHECK:") and "does not exist locally" in w for w in plan4b.warnings))
+        # a Kronos-format Combi is refused for a Nautilus (and the reverse), never written
+        plan4c = build_changeset(idx4, blobs, clip_empty, get_live_digest=lambda bk: "combidigest-v1",
+                                  resolver=lambda t, b, n: True, device_family="nautilus")
+        check("wrong-family-refused", plan4c.is_refusable
+              and any("Kronos format" in w and "Nautilus" in w for w in plan4c.warnings))
+        plan4d = build_changeset(idx4, blobs, clip_empty, get_live_digest=lambda bk: "combidigest-v1",
+                                  resolver=lambda t, b, n: True, device_family="kronos")
+        check("right-family-writes", not plan4d.is_refusable and len(plan4d.entries) == 1)
+        plan4e = build_changeset(idx4, blobs, clip_empty, get_live_digest=lambda bk: "combidigest-v1",
+                                  resolver=lambda t, b, n: True)
+        check("no-family-no-gate", not plan4e.is_refusable)
         plan3d = build_changeset(idx1, blobs, clip_blocked, get_live_digest=lambda bk: "x",
                                   resolver=lambda t, b, n: True, allow_dangling=True)
         check("allow-dangling-pending-deps-not-refused", not plan3d.is_refusable)

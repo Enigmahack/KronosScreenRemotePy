@@ -224,7 +224,8 @@ from Data.local_library_store import (
     BlobStore, LocalIndexEntry, LocalLibraryIndex, LocalLibraryWriteError, OpLog,
 )
 from Data.merge_cache import MergeCache, MergeEntry, MergeRefSite
-from Data.pcg_file import PcgFile, PcgObjectEntry, WIRE_SIZE_EXI, open_pcg, wire_body_from_pcg_entry, wire_body_is_exi
+from Data.pcg_file import (FAMILY_KRONOS, FAMILY_NAUTILUS, PcgFile, PcgObjectEntry, WIRE_SIZE_EXI, open_pcg,
+                           wire_body_from_pcg_entry, wire_body_is_exi)
 from Commands.session_dependency_clipboard import SessionDependencyClipboard, SessionDependencyEntry
 from Utils.setlist_colors import ALL_COLORS as SETLIST_COLORS, get_by_index_or_default as setlist_color
 from Tools.setlist_data import MAX_COUNT
@@ -233,6 +234,7 @@ from Conversion.push import (ARP_BANK_B_SLOTS, CONVERTIBLE_TYPES, EXI_DEST, Conv
                              bank_label as nautilus_bank_label, dest_key, dest_label, plan_arp_slots, push_converted,
                              slot_count as conv_slot_count, type_name as conv_type_name)
 from Conversion.song_source import read_song_timbre_sets
+from Conversion.auto import CONVERTIBLE as AUTO_CONVERTIBLE, convert_object
 from Conversion.data import kronos_timbre_bank_for_obj
 from Conversion.song_convert import MODEL_NAMES, convert_sng
 from Data.sng_file import MODEL_KRONOS, MODEL_NAUTILUS, SngError, read_sng
@@ -1290,6 +1292,8 @@ class LibrarianShellWindow(QDialog):
         self._dep_rerun: Optional[Callable[[], None]] = None
         self._walk_cache: Dict[Tuple[int, str], tuple] = {}
         self._pcg_dep_cache: Dict[Tuple[int, int, int], Optional[Tuple[str, bytes]]] = {}
+        self._pcg_conv_cache: Dict[tuple, Optional[bytes]] = {}
+        self._convert_tables: Optional[ConvertTables] = None
         self._exs_index: Optional[ExsOptionIndex] = None
         self._busy = False
         # True = the Kronos answered no SysEx (probe / aborted pull). Browsing and staging still
@@ -1919,7 +1923,7 @@ class LibrarianShellWindow(QDialog):
             k = (loc.obj_type, loc.bank, loc.number)
             if k not in self._pcg_dep_cache:
                 e = self._pcg_by_addr.get(k)
-                body = wire_body_from_pcg_entry(loc.obj_type, e) if e is not None else None
+                body = self._pcg_wire_body(e) if e is not None else None
                 self._pcg_dep_cache[k] = (e.name, body) if e is not None and body is not None else None
             return self._pcg_dep_cache[k]
         return PcgSource(get=get)
@@ -2067,7 +2071,7 @@ class LibrarianShellWindow(QDialog):
 
             def resolve_content(obj_type: int, bank: int, number: int):
                 e = by_addr.get((obj_type, bank, number))
-                return wire_body_from_pcg_entry(obj_type, e) if e is not None else None
+                return self._pcg_wire_body(e, pcg) if e is not None else None
 
             # One undo step for the whole sweep: the user made one decision (this file).
             scope = self._undo.begin(f"Staged dependencies found in {file_name}")
@@ -2337,6 +2341,7 @@ class LibrarianShellWindow(QDialog):
         objects = self._pcg.objects if self._pcg is not None else []
         self._pcg_by_addr = {}
         self._pcg_dep_cache = {}
+        self._pcg_conv_cache = {}
         groups = _group_pcg(objects)
         for obj_type in _ROOT_ORDER:
             by_bank = groups.get(obj_type, {})
@@ -2371,6 +2376,9 @@ class LibrarianShellWindow(QDialog):
             extra = f" ({n_rejected} rejected bank(s))" if n_rejected else ""
             if self._pcg.program_bank_shift:
                 extra += " (Program banks re-aligned to match the Combis' references)"
+            if self._pcg.family != self._device_family():
+                extra += (f" ({self._pcg.family.title()} file: objects are converted to the "
+                          f"{self._device_family().title()} format as you use them)")
             self._pcg_status_label.setText(
                 f"{self._pcg_source_label} - {len(objects)} object(s){extra}")
         self._on_tree_rebuilt("pcg")
@@ -3882,11 +3890,33 @@ class LibrarianShellWindow(QDialog):
             + (f" ({len(pcg.rejected_banks)} rejected bank(s))" if pcg.rejected_banks else ""))
         self._refresh_pcg_tree()
 
-    def _pcg_resolve_content(self, obj_type: int, bank: int, number: int) -> Optional[bytes]:
+    def _pcg_resolve_content(self, obj_type: int, bank: int, number: int, raw: bool = False) -> Optional[bytes]:
         e = self._pcg_by_addr.get((obj_type, bank, number))
         if e is None:
             return None
-        return wire_body_from_pcg_entry(obj_type, e)
+        return self._pcg_wire_body(e, raw=raw)
+
+    def _device_family(self) -> str:
+        return FAMILY_NAUTILUS if getattr(self._service, "is_nautilus", False) is True else FAMILY_KRONOS
+
+    def _pcg_wire_body(self, e: PcgObjectEntry, pcg: Optional[PcgFile] = None, raw: bool = False) -> Optional[bytes]:
+        """The entry as a wire body for the connected instrument: converted when the PCG is from the other family
+        (None when it can't be), as stored when `raw`. Cached per object; refusals are logged once."""
+        pcg = pcg or self._pcg
+        body = wire_body_from_pcg_entry(e.obj_type, e)
+        target = self._device_family()
+        if raw or body is None or pcg is None or pcg.family == target or e.obj_type not in AUTO_CONVERTIBLE:
+            return body
+        key = (id(pcg), target, e.obj_type, e.bank.obj_bank if e.bank is not None else 0, e.index)
+        if key not in self._pcg_conv_cache:
+            if self._convert_tables is None:
+                self._convert_tables = ConvertTables.load()
+            result = convert_object(e.obj_type, body, e.is_exi, pcg.family, target, self._convert_tables)
+            if result.body is None:
+                self._log(f"Not converted to the {target.title()} format: {e.name or '(unnamed)'} - "
+                          + "; ".join(result.refusals[:3]))
+            self._pcg_conv_cache[key] = result.body
+        return self._pcg_conv_cache[key]
 
     @staticmethod
     def _resolve_refs(obj_type: int, body: bytes) -> List[Tuple[str, int, Tuple[int, int, int]]]:
@@ -4007,6 +4037,8 @@ class LibrarianShellWindow(QDialog):
         if service is None or not service.can_dump or not getattr(service, "is_nautilus", False):
             return ("Connect to a Nautilus first. Just connected? Wait a moment: the instrument type "
                     "is still being detected.")
+        if source == "pcg" and self._pcg is not None and self._pcg.family != FAMILY_KRONOS:
+            return "This PCG is already in the Nautilus format."
         if not any(loc.obj_type in CONVERTIBLE_TYPES for loc in self._convert_selected_locs(source)):
             return "Select Programs, Combinations, Drum Kits or Wave Sequences."
         return None
@@ -4032,7 +4064,7 @@ class LibrarianShellWindow(QDialog):
             if loc.obj_type not in CONVERTIBLE_TYPES:
                 continue
             if source == "pcg":
-                body = self._pcg_resolve_content(loc.obj_type, loc.bank, loc.number)
+                body = self._pcg_resolve_content(loc.obj_type, loc.bank, loc.number, raw=True)
                 entry = self._pcg_by_addr.get((loc.obj_type, loc.bank, loc.number))
                 name, is_exi = (entry.name, entry.is_exi) if entry is not None else ("", False)
             else:
@@ -5014,6 +5046,7 @@ class LibrarianShellWindow(QDialog):
             self._armed_digests = {}
             common = dict(
                 allow_dangling=dangling,
+                device_family=self._device_family() if hasattr(self, "_device_family") else None,
                 get_live_bank_type=self._get_live_bank_type,
                 pending_bank_type_change=self._index.get_pending_bank_type_change,
                 write_bank_type_change=self._write_bank_type_change,

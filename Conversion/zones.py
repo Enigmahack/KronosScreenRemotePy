@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import Callable, List, Tuple
 
 from Conversion.data import ROM_DRUMSAMPLES, ROM_MULTISAMPLES, RomWaveformMap
-from Data.librarian_sysex import set_program_zone_number
+from Data.librarian_sysex import program_oscillator_mode, set_program_zone_number
 from Objects.object_body import (iter_drum_kit_sample_refs, iter_wave_seq_sample_refs, set_drum_kit_sample_id,
                                  set_drum_kit_zone_off, set_wave_seq_step_select)
 from Tools.exs_option_index import ExsOptionIndex
@@ -42,7 +42,8 @@ def _resolve(uuid: bytes, number: int, rom_map: RomWaveformMap, exs: ExsOptionIn
         mapped = rom_map.try_map(section, number)
         if mapped is not None:
             return _Outcome.REMAPPED, mapped, None
-        return _Outcome.UNMAPPED, 0, f"ROM waveform #{number} ({section}) has no Nautilus mapping"
+        return _Outcome.UNMAPPED, 0, (f"ROM waveform #{number} ({section}) has no "
+                                      f"{getattr(rom_map, 'target_name', 'Nautilus')} mapping")
     if c.kind is RefClass.EXS:
         return _Outcome.UNMAPPED, 0, (f"EXs{c.exs_number} waveform #{number} - EXs bank availability is not "
                                       "verified cross-platform (no mapping table for EXs content)")
@@ -55,11 +56,12 @@ def _resolve(uuid: bytes, number: int, rom_map: RomWaveformMap, exs: ExsOptionIn
 
 def remap_program_hd1(body: bytes, rom_map: RomWaveformMap, exs: ExsOptionIndex) -> Tuple[bytes, List[UnmappedRef]]:
     out, unmapped = bytearray(body), []
+    osc2_unused = program_oscillator_mode(body) == 0   # Single: Oscillator 2 is silent, whatever its zones hold
     for osc, zone, uuid, number in iter_program_sample_zone_refs(body):
         outcome, new, reason = _resolve(uuid, number, rom_map, exs, ROM_MULTISAMPLES)
         if outcome is _Outcome.REMAPPED:
             set_program_zone_number(out, osc, zone, new)
-        elif outcome is _Outcome.UNMAPPED:
+        elif outcome is _Outcome.UNMAPPED and not (osc == 1 and osc2_unused):
             unmapped.append(UnmappedRef(f"Oscillator {osc + 1} zone {zone + 1}", reason))
     return bytes(out), unmapped
 
@@ -96,6 +98,9 @@ def remap_drum_kit(body: bytes, rom_map: RomWaveformMap, exs: ExsOptionIndex,
 def remap_wave_seq(body: bytes, rom_map: RomWaveformMap, exs: ExsOptionIndex) -> Tuple[bytes, List[UnmappedRef]]:
     out, unmapped = bytearray(body), []
     for step, uuid, select in iter_wave_seq_sample_refs(body):
+        # The Nautilus's own Wave Sequences leave their unused steps on ROM sample #0, which has no Kronos twin.
+        if select == 0 and classify(uuid).kind is RefClass.ROM and getattr(rom_map, "target_name", "") == "Kronos":
+            continue
         outcome, new, reason = _resolve(uuid, select, rom_map, exs, ROM_MULTISAMPLES)
         if outcome is _Outcome.REMAPPED:
             set_wave_seq_step_select(out, step, new)

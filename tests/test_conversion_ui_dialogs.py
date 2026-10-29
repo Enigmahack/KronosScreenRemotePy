@@ -93,7 +93,7 @@ class Fake:
 fake = Fake()
 w = L.LibrarianShellWindow("1.2.3.4", fake, parent=None, settings=AppSettings())
 w._selected_pcg_object_locs = lambda: [ObjLoc(OBJ_PROGRAM, 0, i) for i in range(3)]
-w._pcg_resolve_content = lambda t, b, n: bytes(3706)
+w._pcg_resolve_content = lambda t, b, n, raw=False: bytes(3706)
 w._pcg_by_addr = {}
 logs, boxes = [], []
 w._log = lambda m: logs.append(m)

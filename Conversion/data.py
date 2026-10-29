@@ -2,6 +2,7 @@
 revised table can ship without a release; an override that won't parse never shadows the bundled one."""
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import pathlib
@@ -29,10 +30,40 @@ def _read_json(*names: str) -> Optional[list]:
     return None
 
 
+@functools.lru_cache(maxsize=None)
+def read_resource(name: str) -> bytes:
+    """A bundled binary table (an app-data-dir copy wins, like the JSON ones); read once, the data dir is on a share."""
+    import Models.storage as storage
+    for path in (storage.data_dir() / name, _BUNDLED / name):
+        try:
+            if path.exists():
+                return path.read_bytes()
+        except OSError as ex:
+            log.warning("[conversion] %s unreadable: %s", path, ex)
+    raise FileNotFoundError(name)
+
+
+def init_program_template(nautilus: bool, exi: bool) -> bytes:
+    """An Init Program of the given instrument (EXi shape; HD-1 is its prefix, as on the wire)."""
+    raw = read_resource("NautilusInitProgram.bin" if nautilus else "KronosInitProgram.bin")
+    return raw if exi else raw[:3700 if nautilus else 3706]
+
+
+def init_combi_template(nautilus: bool) -> bytes:
+    return read_resource("NautilusInitSongTimbreSet.bin" if nautilus else "KronosInitCombination.bin")
+
+
 class RomWaveformMap:
+    target_name = "Nautilus"
+
     def __init__(self) -> None:
         self._map: Dict[Tuple[str, int], int] = {}
         self._audio_differs: set = set()
+
+    def reversed(self) -> "ReverseRomWaveformMap":
+        if getattr(self, "_reversed", None) is None:
+            self._reversed = ReverseRomWaveformMap(self)
+        return self._reversed
 
     def __len__(self) -> int:
         return len(self._map)
@@ -56,6 +87,32 @@ class RomWaveformMap:
     @classmethod
     def from_catalog(cls) -> "RomWaveformMap":
         return cls.from_entries(_read_json("nautilus_rom_waveform_map.json", "NautilusRomWaveformMap.json"))
+
+
+class ReverseRomWaveformMap:
+    """Nautilus ROM sample -> Kronos ROM sample, for the same lookups RomWaveformMap offers. Where several Kronos
+    samples map to one Nautilus sample, one with identical audio wins, then the lowest index."""
+    target_name = "Kronos"
+
+    def __init__(self, forward: RomWaveformMap) -> None:
+        best: Dict[Tuple[str, int], Tuple[bool, int]] = {}
+        for (section, kronos_index), nautilus_index in forward._map.items():
+            same = (section, kronos_index) not in forward._audio_differs
+            key = (section, nautilus_index)
+            if key not in best or (same, -kronos_index) > (best[key][0], -best[key][1]):
+                best[key] = (same, kronos_index)
+        self._best = best
+
+    def __len__(self) -> int:
+        return len(self._best)
+
+    def try_map(self, section: str, nautilus_index: int) -> Optional[int]:
+        hit = self._best.get((section, nautilus_index))
+        return None if hit is None else hit[1]
+
+    def is_audio_identical(self, section: str, nautilus_index: int) -> bool:
+        hit = self._best.get((section, nautilus_index))
+        return hit is not None and hit[0]
 
 
 @dataclass(frozen=True)

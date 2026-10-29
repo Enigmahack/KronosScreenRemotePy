@@ -30,14 +30,14 @@ from typing import Callable, Dict, List, Optional, Tuple
 import Data.librarian_sysex as lsx
 from Data.librarian_sysex import (
     OBJ_COMBI, OBJ_DRUM_KIT, OBJ_PROGRAM, OBJ_SET_LIST, OBJ_WAVE_SEQ, ObjectDump,
-    PROGRAM_HD1_WIRE_SIZE, ZONES_PER_OSC,
+    PROGRAM_HD1_NAUTILUS_SIZE, PROGRAM_HD1_WIRE_SIZE, ZONES_PER_OSC,
     iter_combi_timbre_refs, iter_program_zone_refs, iter_setlist_slot_refs,
     obj_bank_to_func33, program_drum_track_on, program_drum_track_ref, program_oscillator_mode,
     set_combi_timbre_ref, set_program_drum_track_ref, set_program_zone_number, set_setlist_slot_ref,
 )
 import Data.object_types as object_types
 import Core.kronos_sysex as ksx
-from Data.pcg_file import WIRE_SIZE_EXI, WIRE_SIZE_HD1
+from Data.pcg_file import program_body_kind
 
 
 # ── Value types ──────────────────────────────────────────────────────────────
@@ -211,7 +211,7 @@ class LibraryCatalog:
             if want_linear is not None:
                 for (bank, index), dump in self.programs.items():
                     # HD-1 wire format only — EXi bodies have no oscillator zones.
-                    if len(dump.body) != PROGRAM_HD1_WIRE_SIZE:
+                    if len(dump.body) not in (PROGRAM_HD1_WIRE_SIZE, PROGRAM_HD1_NAUTILUS_SIZE):
                         continue
                     osc_mode = program_oscillator_mode(dump.body)
                     for osc, zone, ms_type, number in iter_program_zone_refs(dump.body):
@@ -603,16 +603,15 @@ def plan_batch_move(catalog: LibraryCatalog, obj_type: int,
                         "type couldn't be fully verified — the write may be rejected (Reply 64).")
             else:
                 # Fresh placement (no local source bank to compare) — check the wire body's own
-                # length (deterministically EXi=4960B or HD-1=3706B) against what the destination
+                # length (EXi 4960B/4954B or HD-1 3706B/3700B, Kronos/Nautilus) against what the destination
                 # bank actually is.
                 dt = bank_type_of(p.dst.bank)
                 if dt is not None:
-                    expected_len = WIRE_SIZE_EXI if dt else WIRE_SIZE_HD1
-                    if len(p.dump.body) != expected_len:
+                    if program_body_kind(len(p.dump.body)) is not dt:
                         plan.warnings.append(
                             f"REFUSE: {p.dst.label()} is a {'EXi' if dt else 'HD-1'} bank "
-                            f"({expected_len}-byte Programs), but {p.label} is {len(p.dump.body)} "
-                            "bytes — wrong format for this bank.")
+                            f"({'4960/4954' if dt else '3706/3700'}-byte Programs), but {p.label} is "
+                            f"{len(p.dump.body)} bytes — wrong format for this bank.")
                 else:
                     plan.warnings.append(
                         f"CHECK: {p.dst.label()}'s HD-1/EXi type couldn't be fully verified — the "
