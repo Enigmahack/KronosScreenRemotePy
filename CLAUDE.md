@@ -553,6 +553,22 @@ A Timbre is re-pointed to a factory Program only while the source set's Program 
 (`convert_object(..., program_name=)`); otherwise it keeps its slot in the same wire bank. Set Lists are not converted
 (refused with a reason, shown on the dependency row).
 
+### Sample references between instruments (2026-10-29)
+`Resources/Conversion/NautilusSampleEvidence.json` is layered over the hand-made `NautilusRomWaveformMap.json` by
+`RomWaveformMap.merge_evidence`: it comes from decrypting and hashing every ROM / EXs bank of both instruments
+(`Nautilus Research/scripts/hash_all_banks.py`, `fingerprint_banks.py`, `match_trimmed.py`, `map_banks.py`,
+`build_conversion_evidence.py`), so a match is identical audio, also after a few samples were trimmed, never a listening
+guess. A map entry marked `"source": "manual"` is never replaced; approximate or name-based ones are upgraded. A Kronos
+`EXs<N>` reference is the Kronos folder `Bank<N>`: much of EXs1 / 18 sits in the Nautilus ROM (the reference becomes a ROM
+reference), EXs22 is the Nautilus EXs bank `efd825c7-...` (bank id written in the Program), and the other EXs banks and the
+third-party ones (206-218) have no counterpart. `SampleTarget.ref_bytes` rewrites the 16-byte bank id and keeps the
+mono/stereo flag. A zone with no equivalent plays ROM multisample 0 (Acoustic Piano 1) and the rest of the Program is kept:
+`ConversionResult.substitutions` lists those zones, and the Librarian logs them. A multisample with only some zones on the
+other instrument is used with a "may differ slightly" warning. A Kronos "...REV" multisample is the same PCM block as its
+forward twin with bit 0x200 set in the sample record word at +0x3C; it maps to the forward sample and the zone's
+Zone MS Reverse bit (bit 7 of zone byte 21) is set. Drum Kits and Wave Sequences get the new mappings but still switch off
+(Drum Kit) or refuse (Wave Sequence) a sample with no equivalent.
+
 ## Kronos live checklist (run when the Kronos is next online; Kronos 192.168.100.15)
 
 Everything here needs the real Kronos. Each item says what to check; remove the matching `# HW-VERIFY:` note or
@@ -587,6 +603,14 @@ line here only after the live check. Back up any slot before writing (the conver
     Kronos with a Combi pulled over SysEx.
 11. Nautilus `g(d)` (GM drum) Timbre references: byte 17 is G on the Nautilus, so a Kronos Combi that references
     `g(d)` cannot be converted faithfully; nothing flags it yet.
+
+12. Sample references (`Conversion/zones.py`, `NautilusSampleEvidence.json`): on the Nautilus, convert Programs that use
+    (a) a REV sample, (b) a REV sample and a normal one in the same oscillator, (c) a Kronos EXs1 sample, (d) EXs22, (e) a
+    sound with no equivalent, and listen. Confirms that the Zone MS Reverse bit reverses, whether it is per zone or per
+    oscillator (the warning says "check"), that the ROM-reference rewrite for EXs1 sounds right, that the bank id written
+    for EXs22 loads, and that ROM multisample 0 plays as the default piano. The reverse flag (word +0x3C bit 0x200) is
+    inferred from 294 of 294 REV zones, not hardware-checked. Nautilus `Bank330` (37 multisamples) has not been
+    MD5-checked against the unit and is not hashed yet.
 
 **Older, still-relevant items:**
 

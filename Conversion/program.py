@@ -7,13 +7,13 @@ S/PDIF + Drum Track + KARMA block (1278 B) is replaced by an unrelated RT Contro
 or is zero-filled with a warning."""
 from __future__ import annotations
 
-from typing import Optional
+from typing import List, Optional
 
 from Conversion import karma
 from Conversion.data import KarmaGeCatalog, KarmaGePatternLibrary, RomWaveformMap
 from Conversion.profiles import (KRONOS, NAUTILUS, PROGRAM_SHARED_HEAD_END, PROGRAM_SIZE_DELTA, ProgramKind)
 from Conversion.result import ConversionResult
-from Conversion.zones import program_zones_not_audio_identical, remap_program_hd1
+from Conversion.zones import program_zones_not_audio_identical, remap_program_hd1, substitution_warning
 from Tools.exs_option_index import ExsOptionIndex
 
 
@@ -39,7 +39,7 @@ def convert_program(body: bytes, kind: ProgramKind, rom_map: RomWaveformMap, exs
                     ge_patterns: Optional[KarmaGePatternLibrary] = None) -> ConversionResult:
     """`body` is a Kronos wire body for `kind`, or a 4960-byte PCG slot. The result is a Nautilus wire body."""
     options = options or karma.ArpOptions()
-    warnings, refusals = [], []
+    warnings, refusals, substitutions = [], [], []
     wire_size = KRONOS.wire_size(kind)
     if len(body) == KRONOS.slot_size and wire_size != KRONOS.slot_size:
         body = pcg_slot_to_wire(body, kind)
@@ -64,8 +64,12 @@ def convert_program(body: bytes, kind: ProgramKind, rom_map: RomWaveformMap, exs
         if approx:
             warnings.append("ROM waveforms without an identical Nautilus sample, mapped to the nearest equivalent "
                             "(audio differs): " + ", ".join(f"osc {o + 1} zone {z + 1} (#{n})" for o, z, n in approx) + ".")
-        kronos_body, unmapped = remap_program_hd1(kronos_body, rom_map, exs)
-        refusals += [f"{u.where}: {u.reason}" for u in unmapped]
+        notes: List[str] = []
+        kronos_body, unmapped = remap_program_hd1(kronos_body, rom_map, exs, substitute=True, notes=notes)
+        warnings += notes
+        substitutions = [f"{u.where}: {u.reason}" for u in unmapped]
+        if substitutions:
+            warnings.append(substitution_warning("Nautilus", substitutions))
 
     stripped_body, was_stripped = karma.strip_karma_fields(kronos_body)
     if was_stripped:
@@ -89,4 +93,4 @@ def convert_program(body: bytes, kind: ProgramKind, rom_map: RomWaveformMap, exs
     # Tempo/latch/switch come from the original, not the stripped, Kronos body.
     karma.carry_karma_common(original, out, assigned)
     patterns = [arp.to_store] if arp is not None and arp.to_store else []
-    return ConversionResult(bytes(out), warnings, refusals, patterns)
+    return ConversionResult(bytes(out), warnings, refusals, patterns, substitutions)

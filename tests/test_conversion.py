@@ -189,7 +189,9 @@ slot = hd1_zone(0, 9) + bytes(4960 - WIRE_SIZE_HD1)
 slot_r = convert_program(slot, HD1, rmap, no_exs, ge_cat)
 check("hd1-pcg-slot-remapped", slot_r.body is not None and len(slot_r.body) == 3700)
 slot_bad = convert_program(hd1_zone(0, 9999) + bytes(4960 - WIRE_SIZE_HD1), HD1, rmap, no_exs, ge_cat)
-check("hd1-pcg-slot-refuses-unmapped", slot_bad.body is None and "9999" in slot_bad.refusals[0])
+check("hd1-pcg-slot-substitutes-unmapped", slot_bad.body is not None and not slot_bad.refusals
+      and len(slot_bad.substitutions) == 1 and "9999" in slot_bad.substitutions[0]
+      and any("default piano" in w for w in slot_bad.warnings))
 check("program-wrong-size-refused", convert_program(b"x" * 100, HD1, rmap, no_exs, ge_cat).body is None)
 
 
@@ -242,7 +244,14 @@ nb2 = convert_program(bytes(cs_src), HD1, rmap, no_exs, ge_cat, tm).body
 check("arp-switch-only-when-assigned", nb2[1349] & 0b10 == 0 and nb2[1349] & 1 == 1)
 
 ref = convert_program(hd1_zone(0, 9999), HD1, rmap, no_exs, ge_cat)
-check("refusal", ref.body is None and len(ref.refusals) == 1 and "9999" in ref.refusals[0])
+check("unmapped-becomes-default-piano", ref.body is not None and not ref.refusals and len(ref.substitutions) == 1
+      and "9999" in ref.substitutions[0])
+if ref.body:
+    back = bytearray(len(hd1_zone(0, 0)))
+    back[:2552] = ref.body[:2552]
+    back[2558:] = ref.body[2552:]
+    z = next(iter_program_sample_zone_refs(bytes(back)))
+    check("default-piano-is-rom-ms-0", z[3] == 0 and z[2][:15] == KORG_MS_PREFIX and z[2][15] >> 1 == 0)
 
 # ---- combi
 kc = bytearray((i * 13 + 5) & 0xFF for i in range(7810))

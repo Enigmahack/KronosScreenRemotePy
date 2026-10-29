@@ -5,12 +5,12 @@ Kronos S/PDIF + Drum Track + KARMA block [1280, 2558) of `template` (normally an
 Track stay off. Everything else is shared, and HD-1 ROM sample references are mapped back through the inverted ROM table."""
 from __future__ import annotations
 
-from typing import Optional
+from typing import List, Optional
 
 from Conversion.data import RomWaveformMap
 from Conversion.profiles import KRONOS, NAUTILUS, PROGRAM_SHARED_HEAD_END, PROGRAM_SIZE_DELTA, ProgramKind
 from Conversion.result import ConversionResult
-from Conversion.zones import program_zones_not_audio_identical, remap_program_hd1
+from Conversion.zones import program_zones_not_audio_identical, remap_program_hd1, substitution_warning
 from Tools.exs_option_index import ExsOptionIndex
 
 
@@ -35,7 +35,7 @@ def convert_program_to_kronos(body: bytes, kind: ProgramKind, rom_map: RomWavefo
                               nautilus_init: Optional[bytes] = None) -> ConversionResult:
     """`body` is a Nautilus wire body for `kind`, or a 4954-byte Nautilus PCG slot. `nautilus_init` (an Init Program
     of the Nautilus) lets the result say whether any Nautilus-only setting was actually in use."""
-    warnings, refusals = [], []
+    warnings, refusals, substitutions = [], [], []
     wire_size = NAUTILUS.wire_size(kind)
     if len(body) == NAUTILUS.slot_size and wire_size != NAUTILUS.slot_size:
         body = pcg_slot_to_wire(body, kind)
@@ -57,12 +57,16 @@ def convert_program_to_kronos(body: bytes, kind: ProgramKind, rom_map: RomWavefo
         if approx:
             warnings.append("ROM waveforms without an identical Kronos sample, mapped to the nearest equivalent "
                             "(audio differs): " + ", ".join(f"osc {o + 1} zone {z + 1} (#{n})" for o, z, n in approx) + ".")
-        remapped, unmapped = remap_program_hd1(bytes(out), reverse, exs)
-        refusals += [f"{u.where}: {u.reason}" for u in unmapped]
+        notes: List[str] = []
+        remapped, unmapped = remap_program_hd1(bytes(out), reverse, exs, substitute=True, notes=notes)
+        warnings += notes
+        substitutions = [f"{u.where}: {u.reason}" for u in unmapped]
+        if substitutions:
+            warnings.append(substitution_warning("Kronos", substitutions))
         out = bytearray(remapped)
     if refusals:
         return ConversionResult(None, warnings, refusals)
     if nautilus_init is None or body[PROGRAM_SHARED_HEAD_END:NAUTILUS.tail_start] != \
             nautilus_init[PROGRAM_SHARED_HEAD_END:NAUTILUS.tail_start]:
         warnings.append("Nautilus-only settings (RT Controller, Scenes, Step Sequencer) were not carried over.")
-    return ConversionResult(bytes(out), warnings, refusals)
+    return ConversionResult(bytes(out), warnings, refusals, substitutions=substitutions)

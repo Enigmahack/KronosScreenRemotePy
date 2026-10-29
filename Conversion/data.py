@@ -17,6 +17,34 @@ _BUNDLED = pathlib.Path(__file__).resolve().parent.parent / "Resources" / "Conve
 ROM_MULTISAMPLES = "ROM_MULTISAMPLES"
 ROM_DRUMSAMPLES = "ROM_DRUMSAMPLES"
 
+# "KORG", eight zero bytes, "MS", zero: the first 15 bytes of a ROM / RAM / numbered-EXs bank reference; byte 15 is bank << 1 | mono-stereo flag.
+KORG_MS_PREFIX = bytes([0x4B, 0x4F, 0x52, 0x47, 0, 0, 0, 0, 0, 0, 0, 0, 0x4D, 0x53, 0x00])
+
+
+@dataclass(frozen=True)
+class SampleTarget:
+    """Where a sample lives on the other instrument. `uuid` is None for its ROM, else the 16-byte bank id of one of its
+    EXs banks. `partial`: some zones of the multisample have no counterpart there. `reverse`: the source multisample is
+    a reversed one and the target is the forward sample, so the Program has to play it reversed."""
+    index: int
+    uuid: Optional[bytes] = None
+    partial: bool = False
+    reverse: bool = False
+
+    def ref_bytes(self, source_uuid: bytes) -> bytes:
+        """The 16-byte bank reference to write; the source's mono/stereo flag (byte 15 bit 0) is kept."""
+        flag = source_uuid[15] & 1
+        if self.uuid is None:
+            return KORG_MS_PREFIX + bytes([flag])
+        return self.uuid[:15] + bytes([(self.uuid[15] & 0xFE) | flag])
+
+
+DEFAULT_PIANO = SampleTarget(0)   # ROM multisample 0 on either instrument: an acoustic piano
+
+
+def _section_kind(section: str) -> str:
+    return ROM_DRUMSAMPLES if "DRUMSAMPLES" in section else ROM_MULTISAMPLES
+
 
 def _read_json(*names: str) -> Optional[list]:
     import Models.storage as storage
@@ -59,6 +87,20 @@ class RomWaveformMap:
     def __init__(self) -> None:
         self._map: Dict[Tuple[str, int], int] = {}
         self._audio_differs: set = set()
+        self._ext: Dict[Tuple[str, int, int], SampleTarget] = {}   # (kind, Kronos EXs number, index) -> target
+        self._partial: set = set()                                  # ROM keys mapped to a partial multisample
+        self._reverse: set = set()                                  # ROM keys whose Kronos sample is a reversed one
+        self._source: Dict[Tuple[str, int], Optional[str]] = {}
+        self._manual: set = set()
+        self._nautilus_banks: set = set()   # bank ids (upper-case hex, flag bit cleared) of every Nautilus EXs bank
+
+    def lookup(self, section: str, bank: int, kronos_index: int) -> Optional[SampleTarget]:
+        """`bank` 0 is the Kronos ROM, N >= 1 is its EXs<N>."""
+        key = (section, kronos_index)
+        if bank == 0:
+            idx = self._map.get(key)
+            return None if idx is None else SampleTarget(idx, None, key in self._partial, key in self._reverse)
+        return self._ext.get((section, bank, kronos_index))
 
     def reversed(self) -> "ReverseRomWaveformMap":
         if getattr(self, "_reversed", None) is None:
@@ -80,13 +122,46 @@ class RomWaveformMap:
         for e in entries or []:
             key = (e["section"], e["kronos_index"])
             m._map[key] = e["nautilus_index"]
+            m._source[key] = e.get("source")
+            if e.get("source") == "manual":
+                m._manual.add(key)
             if e.get("audio") == "differs":
                 m._audio_differs.add(key)
         return m
 
+    def merge_evidence(self, entries: Optional[list]) -> None:
+        """Layer the audio-comparison results (build_conversion_evidence.py) over the hand-made ROM map. An entry marked
+        "manual" is never touched; an approximate or name-based one is replaced by a better audio match."""
+        manual = {k for k in self._manual}
+        for e in entries or []:
+            kind = _section_kind(e["section"])
+            n = int(e["kronos_bank"][4:])
+            uuid = bytes.fromhex(e["nautilus_uuid"].replace("-", "")) if e.get("nautilus_uuid") else None
+            partial = e["match"] == "partial"
+            if n:
+                self._ext[(kind, n, e["kronos_index"])] = SampleTarget(e["nautilus_index"], uuid, partial,
+                                                                       bool(e.get("reverse")))
+                continue
+            key = (kind, e["kronos_index"])
+            if key in manual:
+                continue
+            old = self._map.get(key)
+            weak = key in self._audio_differs or self._source.get(key) == "name"
+            if old is None or (weak and not partial):
+                self._map[key] = e["nautilus_index"]
+                self._audio_differs.discard(key)
+                (self._partial.add if partial else self._partial.discard)(key)
+            if e.get("reverse") and self._map.get(key) == e["nautilus_index"]:
+                self._reverse.add(key)
+
     @classmethod
     def from_catalog(cls) -> "RomWaveformMap":
-        return cls.from_entries(_read_json("nautilus_rom_waveform_map.json", "NautilusRomWaveformMap.json"))
+        m = cls.from_entries(_read_json("nautilus_rom_waveform_map.json", "NautilusRomWaveformMap.json"))
+        m.merge_evidence(_read_json("nautilus_sample_evidence.json", "NautilusSampleEvidence.json"))
+        for b in _read_json("nautilus_exs_banks.json", "NautilusExsBanks.json") or []:
+            raw = bytes.fromhex(b["uuid"].replace("-", ""))
+            m._nautilus_banks.add(bytes([*raw[:15], raw[15] & 0xFE]).hex().upper())
+        return m
 
 
 class ReverseRomWaveformMap:
@@ -102,6 +177,25 @@ class ReverseRomWaveformMap:
             if key not in best or (same, -kronos_index) > (best[key][0], -best[key][1]):
                 best[key] = (same, kronos_index)
         self._best = best
+        self._fwd = forward
+        self._by_uuid: Dict[Tuple[str, str, int], SampleTarget] = {}
+        for (kind, n, kronos_index), t in forward._ext.items():
+            if t.uuid is not None:
+                key = (kind, bytes([*t.uuid[:15], t.uuid[15] & 0xFE]).hex().upper(), t.index)
+                self._by_uuid.setdefault(key, SampleTarget(kronos_index, KORG_MS_PREFIX + bytes([(n + 1) << 1]),
+                                                           t.partial))
+
+    def lookup(self, section: str, bank: int, nautilus_index: int) -> Optional[SampleTarget]:
+        hit = self._best.get((section, nautilus_index)) if bank == 0 else None
+        return None if hit is None else SampleTarget(hit[1], None, (section, hit[1]) in self._fwd._partial)
+
+    def lookup_uuid(self, section: str, uuid_hex: str, nautilus_index: int) -> Optional[SampleTarget]:
+        """A Nautilus EXs bank (by its upper-case bank id with the flag bit cleared) -> the Kronos EXs bank holding the same audio."""
+        return self._by_uuid.get((section, uuid_hex, nautilus_index))
+
+    def known_uuid(self, uuid_hex: str) -> bool:
+        """True for any Nautilus EXs bank, with or without a Kronos twin; anything else is the user's own content."""
+        return uuid_hex in self._fwd._nautilus_banks
 
     def __len__(self) -> int:
         return len(self._best)

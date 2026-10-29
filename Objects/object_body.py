@@ -425,6 +425,11 @@ def set_drum_kit_zone_off(body: bytearray, note: int, zone: int) -> None:
     body[_DK_NOTE_BASE + note * _DK_NOTE_STRIDE + zone * _DK_ZONE_STRIDE] = 0
 
 
+def set_drum_kit_zone_uuid(body: bytearray, note: int, zone: int, uuid16: bytes) -> None:
+    o = _DK_NOTE_BASE + note * _DK_NOTE_STRIDE + zone * _DK_ZONE_STRIDE + 1
+    body[o:o + 16] = uuid16
+
+
 def set_drum_kit_sample_id(body: bytearray, note: int, zone: int, new_id: int) -> None:
     o = _DK_NOTE_BASE + note * _DK_NOTE_STRIDE + zone * _DK_ZONE_STRIDE + _DK_ID_OFS
     body[o] = new_id & 0xFF
@@ -447,6 +452,11 @@ def iter_wave_seq_sample_refs(body: bytes):
         if (body[sb] & 0x03) != 0:
             continue
         yield step, bytes(body[sb + 1:sb + 17]), body[sb + _WS_SEL_OFS] | (body[sb + _WS_SEL_OFS + 1] << 8)
+
+
+def set_wave_seq_step_uuid(body: bytearray, step: int, uuid16: bytes) -> None:
+    o = _WS_STEP_BASE + step * _WS_STEP_STRIDE + 1
+    body[o:o + 16] = uuid16
 
 
 def set_wave_seq_step_select(body: bytearray, step: int, new_select: int) -> None:

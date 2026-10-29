@@ -391,6 +391,23 @@ def set_program_zone_number(body: bytearray, osc: int, zone: int, new_number: in
     body[ofs + 1] = (new_number >> 8) & 0xFF
 
 
+_ZONE_REVERSE_OFS = 21   # "Zone MS Start Offset" (bits 3-0) and "Zone MS Reverse" (bit 7)
+
+
+def set_program_zone_uuid(body: bytearray, osc: int, zone: int, uuid16: bytes) -> None:
+    ofs = _OSC_ZONE_BASE[osc] - _program_shift(body) + zone * _ZONE_STRIDE + 1
+    body[ofs:ofs + 16] = uuid16
+
+
+def program_zone_reversed(body: bytes, osc: int, zone: int) -> bool:
+    return bool(body[_OSC_ZONE_BASE[osc] - _program_shift(body) + zone * _ZONE_STRIDE + _ZONE_REVERSE_OFS] & 0x80)
+
+
+def set_program_zone_reverse(body: bytearray, osc: int, zone: int, on: bool) -> None:
+    ofs = _OSC_ZONE_BASE[osc] - _program_shift(body) + zone * _ZONE_STRIDE + _ZONE_REVERSE_OFS
+    body[ofs] = (body[ofs] | 0x80) if on else (body[ofs] & 0x7F)
+
+
 # ── Bank digest (0x38) parsing ───────────────────────────────────────────────
 
 

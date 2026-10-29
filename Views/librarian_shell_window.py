@@ -1326,6 +1326,7 @@ class LibrarianShellWindow(QDialog):
         self._pcg_dep_cache: Dict[Tuple[int, int, int], Optional[Tuple[str, bytes]]] = {}
         self._pcg_conv_cache: Dict[tuple, Optional[bytes]] = {}
         self._pcg_conv_refused: Dict[Tuple[int, int, int], str] = {}
+        self._pcg_conv_replaced: List[Tuple[str, List[str]]] = []   # (object name, zones that now play the default piano)
         self._convert_tables: Optional[ConvertTables] = None
         self._exs_index: Optional[ExsOptionIndex] = None
         self._busy = False
@@ -2379,6 +2380,7 @@ class LibrarianShellWindow(QDialog):
         self._pcg_dep_cache = {}
         self._pcg_conv_cache = {}
         self._pcg_conv_refused = {}
+        self._pcg_conv_replaced = []
         groups = _group_pcg(objects)
         for obj_type in _ROOT_ORDER:
             by_bank = groups.get(obj_type, {})
@@ -3971,6 +3973,13 @@ class LibrarianShellWindow(QDialog):
                 reason = "; ".join(result.refusals[:2])
                 self._pcg_conv_refused[addr] = reason[:90]
                 self._log(f"Not converted to the {target.title()} format: {e.name or '(unnamed)'} - {reason}")
+            else:
+                name = e.name or "(unnamed)"
+                for w in result.warnings:
+                    if "default piano" in w or "may differ slightly" in w or "mixes reversed" in w:
+                        self._log(f"Converted to the {target.title()} format: {name} - {w}")
+                if result.substitutions:
+                    self._pcg_conv_replaced.append((name, result.substitutions))
             self._pcg_conv_cache[key] = result.body
         return self._pcg_conv_cache[key]
 
