@@ -462,7 +462,8 @@ class RestoreResult:
 
 
 def restore_from_backup(service, backup_path: str,
-                        progress: Callable[[str], None] = lambda m: None) -> RestoreResult:
+                        progress: Callable[[str], None] = lambda m: None,
+                        still_valid: Optional[Callable[[], bool]] = None) -> RestoreResult:
     """Replays a push's .syx backup (Nautilus codec) and re-Stores every bank it touches, putting the previous
     contents of the target slots back. The file is parsed completely before the first write. A bank whose writes
     were not all acknowledged is not Stored. Not wired to any menu yet.
@@ -473,6 +474,9 @@ def restore_from_backup(service, backup_path: str,
             raw = f.read()
     except OSError as ex:
         return RestoreResult(False, [f"Cannot read the backup: {ex}"])
+    problem = _connection_problem(service, still_valid)
+    if problem:   # the backup is Nautilus-encoded; a reconnect may have reset the service to the Kronos codec
+        return RestoreResult(False, [f"Not restored: {problem}; nothing was written."])
     ops = []
     parts = raw.split(b"\xf7")
     if parts[-1]:
@@ -488,6 +492,11 @@ def restore_from_backup(service, backup_path: str,
         return RestoreResult(False, ["The backup is empty; nothing was written."])
     bad_banks: Set[Tuple[int, int]] = set()
     for op in ops:
+        problem = _connection_problem(service, still_valid)
+        if problem:
+            bad_banks.add((op.obj, op.bank))
+            msgs.append(f"Not restored {bank_label(op.obj, op.bank)} slot {op.index}: {problem}.")
+            continue
         progress(f"Restoring {bank_label(op.obj, op.bank)} slot {op.index}")
         code = service.write_object(op)
         if code != 0:
@@ -534,6 +543,10 @@ def _placements(items: List[ConvertItem], dest: Dict[int, Tuple[int, int]]) -> D
 def _convert(item: ConvertItem, template: bytes, tables: ConvertTables, options: karma.ArpOptions,
              placed: Optional[Dict[Tuple[int, int], Tuple[int, int]]] = None):
     t = tables
+    if item.native and item.obj_type == OBJ_PROGRAM:
+        # Already a Nautilus body: only the slot's current size (HD-1 vs EXi) must match, never converted.
+        return ConversionResult(item.body) if len(item.body) == len(template) else ConversionResult(
+            None, [], [f"A Program must be {len(template)} bytes here, not {len(item.body)}."])
     if item.obj_type == OBJ_PROGRAM:
         return convert_program(item.body, program_kind_of(item), t.rom_map, t.exs, t.ge_catalog, template,
                                options, t.ge_patterns)

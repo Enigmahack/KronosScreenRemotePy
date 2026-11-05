@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, List, Optional, Tuple
+from typing import Optional, Tuple
 
 from Conversion.data import (ARP_ENCODING_FIXED, KarmaGeCatalog, KarmaGePatternLibrary)
 

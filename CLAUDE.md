@@ -608,7 +608,7 @@ line here only after the live check. Back up any slot before writing (the conver
     (a) a REV sample, (b) a REV sample and a normal one in the same oscillator, (c) a Kronos EXs1 sample, (d) EXs22, (e) a
     sound with no equivalent, and listen. Confirms that the Zone MS Reverse bit reverses, whether it is per zone or per
     oscillator (the warning says "check"), that the ROM-reference rewrite for EXs1 sounds right, that the bank id written
-    for EXs22 loads, and that ROM multisample 0 plays as the default piano. The reverse flag (word +0x3C bit 0x200) is
+    for EXs22 loads, and that the default piano (Nautilus ROM multisample #2 "Acoustic Piano 1 mf-L" = Kronos #0; Nautilus #0 is a placeholder, not a piano) plays. The reverse flag (word +0x3C bit 0x200) is
     inferred from 294 of 294 REV zones, not hardware-checked. Nautilus `Bank330` (37 multisamples) has not been
     MD5-checked against the unit and is not hashed yet.
 

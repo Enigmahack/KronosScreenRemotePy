@@ -251,7 +251,7 @@ if ref.body:
     back[:2552] = ref.body[:2552]
     back[2558:] = ref.body[2552:]
     z = next(iter_program_sample_zone_refs(bytes(back)))
-    check("default-piano-is-rom-ms-0", z[3] == 0 and z[2][:15] == KORG_MS_PREFIX and z[2][15] >> 1 == 0)
+    check("default-piano-is-rom-ms-2-on-nautilus", z[3] == 2 and z[2][:15] == KORG_MS_PREFIX and z[2][15] >> 1 == 0)
 
 # ---- combi
 kc = bytearray((i * 13 + 5) & 0xFF for i in range(7810))

@@ -3959,7 +3959,10 @@ class LibrarianShellWindow(QDialog):
             return body
         addr = (e.obj_type, e.bank.obj_bank if e.bank is not None else 0, e.index)
         key = (id(pcg), target) + addr
-        if key not in self._pcg_conv_cache:
+        # The cache is cleared whenever self._pcg changes. A transient PcgFile (a PCG search) is not kept alive, and a
+        # later one could be allocated at the same address, so its conversions are never cached.
+        cacheable = pcg is self._pcg
+        if not cacheable or key not in self._pcg_conv_cache:
             if e.obj_type not in AUTO_CONVERTIBLE:
                 # Set Lists hold user-bank references in the source family's numbering and are not converted.
                 result = ConversionResult(None, [], [f"{_ROOT_LABEL.get(e.obj_type, 'this kind of object')} are not "
@@ -3980,6 +3983,8 @@ class LibrarianShellWindow(QDialog):
                         self._log(f"Converted to the {target.title()} format: {name} - {w}")
                 if result.substitutions:
                     self._pcg_conv_replaced.append((name, result.substitutions))
+            if not cacheable:
+                return result.body
             self._pcg_conv_cache[key] = result.body
         return self._pcg_conv_cache[key]
 
@@ -4136,7 +4141,7 @@ class LibrarianShellWindow(QDialog):
                 body = self._local_resolve_content(loc.obj_type, loc.bank, loc.number)
                 entry = self._index.get(loc.obj_type, loc.bank, loc.number)
                 name = entry.display_name if entry is not None else ""
-                is_exi = body is not None and len(body) == 4960
+                is_exi = body is not None and loc.obj_type == OBJ_PROGRAM and wire_body_is_exi(len(body))
             if body is not None:
                 tbank = kronos_timbre_bank_for_obj(loc.bank) if loc.obj_type == OBJ_PROGRAM else None
                 items.append(ConvertItem(loc.obj_type, name, body, is_exi,

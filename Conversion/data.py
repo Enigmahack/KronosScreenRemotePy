@@ -39,7 +39,15 @@ class SampleTarget:
         return self.uuid[:15] + bytes([(self.uuid[15] & 0xFE) | flag])
 
 
-DEFAULT_PIANO = SampleTarget(0)   # ROM multisample 0 on either instrument: an acoustic piano
+# "Acoustic Piano 1 mf-L". The two ROM numberings are offset (NautilusSampleEvidence.json: Kronos #0 = Nautilus #2), and
+# Nautilus #0 is the placeholder its own Wave Sequences leave on unused steps, not a piano.
+DEFAULT_PIANO = SampleTarget(0)             # on the Kronos
+DEFAULT_PIANO_NAUTILUS = SampleTarget(2)    # on the Nautilus
+
+
+def default_piano(rom_map) -> SampleTarget:
+    """The fallback sample for a zone with no equivalent on the instrument `rom_map` converts to."""
+    return DEFAULT_PIANO if getattr(rom_map, "target_name", "Nautilus") == "Kronos" else DEFAULT_PIANO_NAUTILUS
 
 
 def _section_kind(section: str) -> str:

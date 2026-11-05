@@ -10,16 +10,6 @@ from Objects.object_body import iter_drum_kit_sample_refs
 from Tools.exs_option_index import ExsOptionIndex
 
 
-def _convert(body: bytes, size: int, label: str, remap, rom_map, exs: ExsOptionIndex,
-             source: str = "Kronos") -> ConversionResult:
-    if len(body) != size:
-        return ConversionResult(None, [], [f"{source} {label} body is {len(body)} bytes, expected {size}."])
-    remapped, unmapped = remap(body, rom_map, exs)
-    if unmapped:
-        return ConversionResult(None, [], [f"{u.where}: {u.reason}" for u in unmapped])
-    return ConversionResult(remapped)
-
-
 def convert_drum_kit(body: bytes, rom_map, exs: ExsOptionIndex, source: str = "Kronos") -> ConversionResult:
     """A zone whose sample has no equivalent on the other instrument is switched off and reported; a kit that would
     be left with no sound at all is refused."""

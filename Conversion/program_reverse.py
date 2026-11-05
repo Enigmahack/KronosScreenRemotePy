@@ -64,8 +64,6 @@ def convert_program_to_kronos(body: bytes, kind: ProgramKind, rom_map: RomWavefo
         if substitutions:
             warnings.append(substitution_warning("Kronos", substitutions))
         out = bytearray(remapped)
-    if refusals:
-        return ConversionResult(None, warnings, refusals)
     if nautilus_init is None or body[PROGRAM_SHARED_HEAD_END:NAUTILUS.tail_start] != \
             nautilus_init[PROGRAM_SHARED_HEAD_END:NAUTILUS.tail_start]:
         warnings.append("Nautilus-only settings (RT Controller, Scenes, Step Sequencer) were not carried over.")

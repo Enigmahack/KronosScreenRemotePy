@@ -12,9 +12,9 @@ from __future__ import annotations
 
 import enum
 from dataclasses import dataclass
-from typing import Callable, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
-from Conversion.data import DEFAULT_PIANO, ROM_DRUMSAMPLES, ROM_MULTISAMPLES, RomWaveformMap, SampleTarget
+from Conversion.data import default_piano, ROM_DRUMSAMPLES, ROM_MULTISAMPLES, RomWaveformMap
 from Data.librarian_sysex import (program_oscillator_mode, program_zone_reversed, set_program_zone_number,
                                   set_program_zone_reverse, set_program_zone_uuid)
 from Objects.object_body import (iter_drum_kit_sample_refs, iter_wave_seq_sample_refs, set_drum_kit_sample_id,
@@ -90,18 +90,24 @@ def remap_program_hd1(body: bytes, rom_map: RomWaveformMap, exs: ExsOptionIndex,
             set_program_zone_number(out, osc, zone, target.index)
             if target.reverse:
                 set_program_zone_reverse(out, osc, zone, True)
-            if target.partial:
+            if target.partial and not (osc == 1 and osc2_unused):
                 partial.append(f"osc {osc + 1} zone {zone + 1}")
         elif outcome is _Outcome.UNMAPPED and not (osc == 1 and osc2_unused):
             unmapped.append(UnmappedRef(f"Oscillator {osc + 1} zone {zone + 1}", reason))
             if substitute:
-                set_program_zone_uuid(out, osc, zone, DEFAULT_PIANO.ref_bytes(uuid))
-                set_program_zone_number(out, osc, zone, DEFAULT_PIANO.index)
+                piano = default_piano(rom_map)
+                set_program_zone_uuid(out, osc, zone, piano.ref_bytes(uuid))
+                set_program_zone_number(out, osc, zone, piano.index)
                 set_program_zone_reverse(out, osc, zone, False)
                 continue
         if outcome is not _Outcome.UNMAPPED and not (osc == 1 and osc2_unused):
             (reversed_zones if program_zone_reversed(bytes(out), osc, zone) else normal_zones)[osc].append(zone + 1)
     if notes is not None:
+        if program_oscillator_mode(body) in (4, 5):
+            # Drums / Wave Sequence oscillator modes hold object numbers in their zones, not sample references, and
+            # the two instruments' kit and sequence sets differ; they are carried over as they are.
+            notes.append("This Program's oscillator uses a Drum Kit or Wave Sequence by number; the number was kept, "
+                         "so check that the same-numbered object on the instrument is the one you want.")
         if partial:
             notes.append("Only part of these multisamples exists on the " + getattr(rom_map, "target_name", "Nautilus")
                          + ", so the sample zones may differ slightly: " + ", ".join(partial) + ".")
@@ -160,8 +166,9 @@ def remap_wave_seq(body: bytes, rom_map: RomWaveformMap, exs: ExsOptionIndex, su
         elif outcome is _Outcome.UNMAPPED:
             unmapped.append(UnmappedRef(f"Step {step + 1}", reason))
             if substitute:
-                set_wave_seq_step_uuid(out, step, DEFAULT_PIANO.ref_bytes(uuid))
-                set_wave_seq_step_select(out, step, DEFAULT_PIANO.index)
+                piano = default_piano(rom_map)
+                set_wave_seq_step_uuid(out, step, piano.ref_bytes(uuid))
+                set_wave_seq_step_select(out, step, piano.index)
     if notes is not None and partial:
         notes.append("Only part of the multisample used by step(s) " + ", ".join(partial) + " exists on the "
                      + getattr(rom_map, "target_name", "Nautilus") + ", so those steps may sound slightly different.")

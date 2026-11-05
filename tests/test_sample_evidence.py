@@ -86,7 +86,7 @@ check("EXs22 zone points at the Nautilus EXs bank", z[3] == 0 and z[2] == BANK30
 notes = []
 out, unmapped = remap_program_hd1(program([(0, 0, exs_ref(6), 3), (0, 1, rom(), 9999)]), rmap, exs, substitute=True,
                                   notes=notes)
-check("no equivalent: default piano, both zones listed", len(unmapped) == 2 and all(r[3] == 0 and r[2] == rom() for r in refs(out)))
+check("no equivalent: default piano, both zones listed", len(unmapped) == 2 and all(r[3] == 2 and r[2] == rom() for r in refs(out)))
 out, unmapped = remap_program_hd1(program([(0, 0, exs_ref(6), 3)]), rmap, exs)
 check("without substitution the zone stays and is reported", len(unmapped) == 1 and refs(out)[0][3] == 3)
 
@@ -134,8 +134,8 @@ def wave_seq(steps):
 r = convert_wave_seq(wave_seq([(rom(), 447), (exs_ref(11), 95), (rom(), 197)]), rmap, exs)
 steps = list(iter_wave_seq_sample_refs(r.body)) if r.body else []
 check("wave sequence with an unmatched step converts", r.body is not None and not r.refusals and len(steps) >= 3)
-check("matched steps remapped, the unmatched one plays ROM ms 0",
-      steps and steps[0][2] == 635 and steps[2][2] == 318 and steps[1][2] == 0 and steps[1][1] == rom())
+check("matched steps remapped, the unmatched one plays ROM ms 2",
+      steps and steps[0][2] == 635 and steps[2][2] == 318 and steps[1][2] == 2 and steps[1][1] == rom())
 check("the user is told which step and why", len(r.substitutions) == 1 and r.substitutions[0].startswith("Step 2")
       and any("Step 2" in w and "substituted by a piano sound" in w and "may not match perfectly" in w for w in r.warnings))
 r = convert_wave_seq(wave_seq([(rom(), 197)]), rmap, exs)

@@ -10,7 +10,7 @@ Timbre Program references are re-pointed from a Nautilus factory Program to the 
 of ProgramRefMap); other references keep their slot numbers. Not verified on a Kronos: no Kronos was available."""
 from __future__ import annotations
 
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional
 
 from Conversion.combi import _ASSIGN_END, _ASSIGN_START, _TIMBRE_BASE, _TIMBRE_COUNT, _TIMBRE_STRIDE
 from Conversion.data import ProgramRefMap, kronos_program_label, nautilus_program_label, nautilus_user_to_kronos_bank
