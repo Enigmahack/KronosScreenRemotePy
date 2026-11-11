@@ -59,6 +59,23 @@ for i, (pk, rp) in enumerate(zip(packed, real)):
 assert M.eg_level(99) == 99 and M.eg_level(98) == 91 and M.eg_level(0) == 0
 assert M.frequency(0, 1, 0, 7) == (1, 0, 0, 0) and M.frequency(0, 0, 0, 7) == (0, 500, 0, 0)
 assert abs(M.frequency(1, 2, 60, 7)[2] * 100 + M.frequency(1, 2, 60, 7)[3] - 39810) <= 1
+# EG times are an approximation (probe-bank fit): on operators at output >= 95 without rate scaling, require a minimum share
+# within 2 of the real value so a regression in the fit shows up; they are not pinned exactly.
+_MIN = {"Attack": 0.78, "Decay": 0.85, "Slope": 0.78, "Release": 0.15}
+_ST = {"Attack": ("eg_r1", "eg_l4", "eg_l1"), "Decay": ("eg_r2", "eg_l1", "eg_l2"), "Slope": ("eg_r3", "eg_l2", "eg_l3"),
+       "Release": ("eg_r4", "eg_l3", "eg_l4")}
+for fld, (rk, ka, kb) in _ST.items():
+    n = ok = 0
+    for pk, rp in zip(packed, real):
+        out, p = M.convert_voice(pk), D.unpack(pk)
+        for op in range(6):
+            if p[f"op{op}_output_level"] < 95 or p[f"op{op}_rate_scale"]:
+                continue
+            e = M.EG_STRIDE * op
+            n += 1
+            ok += abs(F.get(out, f"[EG1] {fld} Time", e) - F.get(rp, f"[EG1] {fld} Time", e)) <= 2
+    if n and ok / n < _MIN[fld]:
+        fails.append((0, f"{fld} time fit {ok}/{n}"))
 print(f"{len(packed)} voices: {len(fails)} mismatches in the fitted fields")
 for f in fails[:20]:
     print("  ", f)

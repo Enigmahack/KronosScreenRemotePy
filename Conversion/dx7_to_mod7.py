@@ -39,7 +39,7 @@ CARRIERS = {1: (1, 3), 2: (1, 3), 3: (1, 4), 4: (1, 4), 5: (1, 3, 5), 6: (1, 3, 
             19: (1, 4, 5), 20: (1, 2, 4), 21: (1, 2, 4, 5), 22: (1, 3, 4, 5), 23: (1, 2, 4, 5), 24: (1, 2, 3, 4, 5),
             25: (1, 2, 3, 4, 5), 26: (1, 2, 4), 27: (1, 2, 4), 28: (1, 3, 6), 29: (1, 2, 3, 5), 30: (1, 2, 3, 6),
             31: (1, 2, 3, 4, 5), 32: (1, 2, 3, 4, 5, 6)}
-UNMAPPED = ("EG times and curves (and the rate-scaling Time Mod.Intensity, written only when a stage time is >= 7)", "OSC Feedback Level", "amp mod sens", "LFO", "pitch EG", "key scaling ramps")
+UNMAPPED = ("EG time output-level dependence", "OSC Feedback Level", "amp mod sens", "LFO", "pitch EG", "key scaling ramps")
 
 
 class Mod7Fields:
@@ -123,6 +123,52 @@ def frequency(mode: int, coarse: int, fine: int, detune: int) -> Tuple[int, int,
     return 0, 0, n // 100, n % 100
 
 
+# Falling-level time: piecewise-linear in u = log2(level drop) - log2(DX7 EG speed(rate)); the table is the mean MOD-7 time per
+# unit of u from the ATK + DEC probe banks (96 settings each, output 99, no rate scaling); worst error 1.1, std 0.5 on them.
+_FALL_TIME = ((-13.56, 5.0), (-12.13, 5.0), (-11.43, 5.5), (-10.53, 8.2), (-9.45, 11.0), (-8.49, 15.8), (-7.51, 22.7),
+              (-6.37, 31.8), (-5.59, 39.0), (-4.45, 50.2), (-3.37, 60.3), (-2.41, 70.0), (-1.43, 80.3), (-0.55, 86.7),
+              (0.55, 91.6), (1.57, 95.0), (2.45, 97.2), (3.5, 99.0))
+# Rising (or equal) level: depends on the rate only (DEC probe, 0 -> 99).
+_RISE_TIME = ((0, 96), (5, 94), (10, 91), (20, 83), (25, 74), (30, 66), (40, 51), (45, 44), (50, 35), (60, 22), (65, 16),
+              (70, 13), (80, 7), (85, 6), (90, 3), (99, 1))
+# Release Time (DX7 R4) follows the rate alone and its curve byte is always 10 (172 clean real-voice operators); rate -> time.
+_RELEASE_TIME = ((0, 99), (8, 98), (11, 97), (14, 96), (21, 93), (23, 92), (25, 90), (28, 88), (30, 85), (32, 85), (34, 82),
+                 (35, 80), (37, 78), (39, 75), (41, 72), (42, 70), (43, 69), (44, 68), (45, 66), (46, 63), (47, 60), (48, 59),
+                 (50, 56), (57, 46), (61, 40), (63, 37), (64, 35), (65, 34), (67, 32), (71, 25), (82, 14), (87, 11), (90, 10),
+                 (98, 5), (99, 3))
+RATE_SCALE_INTENSITY = (0, -4, -9, -14, -18, -22, -27, -32)
+# DX7 stage -> (MOD-7 time field, rate key, level before, level after). Slope Time takes R3 and Release Time takes R4 (the real voices fit this; the probe-bank labelling said the opposite).
+_STAGES = (("Attack", "eg_r1", "eg_l4", "eg_l1"), ("Decay", "eg_r2", "eg_l1", "eg_l2"),
+           ("Slope", "eg_r3", "eg_l2", "eg_l3"), ("Release", "eg_r4", "eg_l3", "eg_l4"))
+
+
+def _interp(table, x: float) -> float:
+    if x <= table[0][0]:
+        return table[0][1]
+    for (x0, y0), (x1, y1) in zip(table, table[1:]):
+        if x <= x1:
+            return y0 + (y1 - y0) * (x - x0) / (x1 - x0)
+    return table[-1][1]
+
+
+def release_time(rate: int) -> Tuple[int, int]:
+    return int(_interp(_RELEASE_TIME, rate) + 0.5), 10
+
+
+def eg_time(rate: int, before: int, after: int) -> Tuple[int, int]:
+    """DX7 stage (rate 0-99, level before, level after) -> (MOD-7 time 0-99, EG curve byte). Fitted on the probe banks;
+    HW-VERIFY: the Release-Time (R3) probe table differs a little from this one, and output levels below 99 and
+    rate scaling shift the real values."""
+    a, b = _internal_level(min(before, 99)), _internal_level(min(after, 99))
+    if b < a:
+        q = (rate * 41) >> 6
+        u = math.log2(a - b) - (math.log2(4 + (q & 3)) + (q >> 2))
+        return int(_interp(_FALL_TIME, u) + 0.5), int((before - after) / 10 + 0.5)
+    if b == a:
+        return 0, 0                                                    # nothing to travel (seen on the real voices)
+    return int(_interp(_RISE_TIME, rate) + 0.5), 0
+
+
 def _signed(v: int, bits: int) -> int:
     return v & ((1 << bits) - 1)
 
@@ -142,6 +188,13 @@ def convert_voice(packed: bytes) -> bytes:
         g = lambda k: p[f"op{op}_{k}"]                                # noqa: E731
         e, o = EG_STRIDE * op, OSC_STRIDE * op
         f.set(b, "[EG1] Time Mod.Source", 30, e)                       # key follower: carries the DX7 rate scaling
+        for fld, rk, ka, kb in _STAGES:
+            t, curve = release_time(g(rk)) if fld == "Release" else eg_time(g(rk), g(ka), g(kb))
+            f.set(b, f"[EG1] {fld} Time", t, e)
+            f.set(b, f"[EG1] {fld} Time EG Curve", curve, e)
+            if t >= 7:                                                 # rate scaling acts through the key follower
+                f.set(b, f"[EG1] Time Mod.Intensity To {fld} Time",
+                      _signed(RATE_SCALE_INTENSITY[g("rate_scale")], f.width(f"[EG1] Time Mod.Intensity To {fld} Time")), e)
         f.set(b, "[OSC1] Phase Sync", 0 if p["osc_sync"] else 2, o)     # DX7 oscillator key sync on -> 0, off -> 2
         f.set(b, "[EG1] Start Level", eg_level(g("eg_l4")), e)
         f.set(b, "[EG1] Attack Level", eg_level(g("eg_l1")), e)
