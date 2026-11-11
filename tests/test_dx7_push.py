@@ -63,6 +63,20 @@ try:
 except dx7_voice.Dx7Error:
     pass
 
+# DX7II files: the voice dump followed by a 1128-byte supplement message (F0 43 0n 06 08 60 + 32 x 35 bytes + sum + F7)
+supp = bytes([0xF0, 0x43, 0x00, 0x06, 0x08, 0x60]) + bytes(1120) + bytes([0, 0xF7])
+check("dx7ii-second-message-ignored", dx7_push.read_dx7_syx(bank + supp) == dx7_push.read_dx7_syx(bank))
+ch5 = bytearray(bank); ch5[2] = 0x05
+check("any-channel", len(dx7_push.read_dx7_syx(bytes(ch5))) == 32)
+hb = bytearray(bank); hb[10] |= 0x80      # high bit on a data byte: masked, checksum computed on the masked bytes
+check("high-bit-masked", dx7_push.read_dx7_syx(bytes(hb)) == dx7_push.read_dx7_syx(bank))
+bad = bytearray(bank); bad[4102] ^= 0x01
+try:
+    dx7_push.read_dx7_syx(bytes(bad))
+    check("bad-checksum-raises", False)
+except dx7_voice.Dx7Error as e:
+    check("bad-checksum-message", "checksum" in str(e))
+
 items = dx7_push.dx7_items(dx7_push.read_dx7_syx(bank))
 check("32-items", len(items) == 32 and all(i.native and i.is_exi for i in items))
 check("item-names", items[3].name == "VOICE 03")

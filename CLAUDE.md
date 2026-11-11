@@ -590,7 +590,12 @@ MOD-7 section, the LFO bytes, transpose and the LFO-sign short are byte-identica
 differ, all in the unused HD-1 oscillator area below 2902 (offsets 90..1291, 2567..2850: same values on 62 of 64, zeros on 2, and
 different from the earlier Q/R and P/Q loads, so they depend on the unit's state, not on the voice). Then `--write` put the converted ROM1A/ROM1B into bank Q (0x4A) slots 0-63 (backups in librarian_backups/20261111_1811*.syx and
 ..._q031.syx; one slot, Q031, was refused once because a read returned an HD-1-sized body and was written on retry): the owner
-compared P (native) with Q (converted) by ear and heard no difference. The push path is `Conversion/dx7_push.py`
+compared P (native) with Q (converted) by ear and heard no difference. The 42 corpus files of 5232 bytes ("DX7II") are a normal 4104-byte voice dump plus a 1128-byte second message
+`F0 43 0n 06 08 60` (32 x 35 bytes of DX7II supplement data per voice); the instrument's own `CDX7ProgramBankDump::ReadAndValidate`
+reads only the first 4104 bytes, so the supplement is ignored on purpose and `read_dx7_syx` does the same (it also mirrors
+the firmware's leniency: any MIDI channel, size bytes unchecked, data bytes masked with 0x7F, checksum over the masked bytes).
+Of the 1,218 corpus files, 1,211 read as 32 voices, one 4104-byte file is rejected for its bad checksum (the firmware refuses it
+too) and six are not 32-voice dumps. The push path is `Conversion/dx7_push.py`
 (`tests/test_dx7_push.py`).
 
 ### Third-party packs (2026-11-11)
