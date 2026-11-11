@@ -40,9 +40,12 @@ The new sample mapping reaches them (better ROM matches, EXs banks, bank-id rewr
 - [ ] Show the "replace these sounds by hand" list in the Librarian. Today it is only logged per object and kept in
       `LibrarianShellWindow._pcg_conv_replaced`; the manual Convert dialog shows warnings but not as a list.
 - [ ] Default piano is ROM multisample 0, the left half of a stereo piano, so it is mono. Consider multisample 0 + 1 or a mono piano.
-- [ ] Nautilus Bank330 (37 multisamples) was not checked against the unit's MD5, so it is not hashed or compared. Do it when
-      the Nautilus is back, then regenerate the evidence (`Nautilus Research/scripts`: `hash_all_banks.py`, `fingerprint_banks.py`,
-      `match_trimmed.py`, `map_banks.py`, `build_conversion_evidence.py`).
+- [x] Nautilus Bank330 (2026-11-11): its 3 files match the unit's md5sum (`/korg/rw/PCM/Bank330`, read-only over SSH), marker
+      written, hashed (546 blocks, 0 unreadable) and fingerprinted. It is the Nautilus counterpart of the Kronos third-party bank
+      206: 85 new trim matches, and Kronos Bank206 now has 175 of 540 blocks on the Nautilus (9 multisamples exact, 3 partial,
+      22 none; before: nothing). `NautilusSampleEvidence.json` is UNCHANGED because `build_conversion_evidence.py` skips banks >= 200
+      (third-party). Open: decide how a Program references a third-party bank (by raw UUID?) and whether to emit Bank206 -> Bank330
+      entries; the regenerated scratch map shows what they would be.
 - [ ] Kronos "...REV" flag (+0x3C bit 0x200) and the Program Zone MS Reverse bit are inferred, not hardware-checked. Other bits of
       that word are unexplained.
 - [ ] The Kronos has no match for banks 06, 07, 17, 109, 206-214, 217, 218, 23, 40-42. Confirm none of those are on the Nautilus under
