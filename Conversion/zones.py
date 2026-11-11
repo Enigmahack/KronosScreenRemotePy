@@ -64,9 +64,10 @@ def _resolve(uuid: bytes, number: int, rom_map: RomWaveformMap, exs: ExsOptionIn
                                              f"{target_name} equivalent")
         return _Outcome.PASS, None, None
     # EXs127+ and every third-party pack are named by their raw bank id, not by the legacy KORG/MS number.
-    # HW-VERIFY: Nautilus Programs are confirmed to store the Bank.info id big-endian (Bank301-313 in PRELOAD.PCG); that a
-    # Kronos Program stores Bank206's id the same way is the documented convention but no Kronos Program in the corpus uses
-    # a third-party pack. Pull a Program that uses EXs206 from the Kronos and compare its zone id with 8e7ab882-4abf-....
+    # Nautilus Programs are confirmed to store the Bank.info id big-endian (Bank301-313 in PRELOAD.PCG). A real Kronos Program
+    # ("AF Lead") stores EXs206's id the same way (byte 15 = 0x02) but in Wave Sequence zones (MS Type 2); a pack MULTISAMPLE
+    # zone (type 1) on a Kronos has not been seen.
+    # HW-VERIFY: pull a Kronos Program whose zone is a Multisample (type 1) of a third-party pack and compare its id.
     number_of_bank = exs.number_for_uuid_hex(c.raw_uuid_hex)
     if number_of_bank is not None:
         t = rom_map.lookup(section, number_of_bank, number)
