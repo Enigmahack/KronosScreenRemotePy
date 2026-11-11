@@ -569,20 +569,22 @@ forward twin with bit 0x200 set in the sample record word at +0x3C; it maps to t
 Zone MS Reverse bit (bit 7 of zone byte 21) is set. Drum Kits and Wave Sequences get the new mappings but still switch off
 (Drum Kit) or refuse (Wave Sequence) a sample with no equivalent.
 
-### DX7 -> MOD-7 import (2026-11-11, work in progress; code `Conversion/dx7_to_mod7.py`)
-Fitted from the 64 voices the Nautilus built from ROM1A/ROM1B (`Z:/DX7 EXAMPLES/NautilusLoaded/`) and validated on 228 distinct voice/Program pairs (the owner also loaded many real DX7 banks into Nautilus banks P and Q; `tests/live_dump_programs.py` reads them back read-only to `Z:/DX7 EXAMPLES/Probes/Loaded/`, `tests/dx7_pairs.py` pairs them with the corpus; more rules: levels < 20 via the DX7 table, values > 99 -> 0, detune clamped to 14, fixed Hz quantised before detune); `python tests/test_dx7_mod7.py`
-pins every field that reproduces them exactly, `python tests/dx7_mod7_harness.py` lists what does not. The MOD-7 section starts at
-Program body byte 2902 and is bit-packed (`Resources/Conversion/Mod7Fields.json`, from `Prog_EXi.txt`). EXACT: name, transpose,
-algorithm (DX 1-32 -> 55..78, equivalent algorithms merged; DX 13, 20, 21, 24, 26, 27 are inferred, the rest seen), EG levels `round(99*2^((x-99)/8))`, velocity-sens table,
-frequency (ratio and fixed mode), carrier/modulator class bits (standard DX7 carrier sets), OSC Volume `100*2^((x-99)/16)` divided by
-sqrt(carrier count) for carriers, key-sync -> Phase Sync, rate scaling -> `Time Mod.Source` 30 with `Time Mod.Intensity` table
-0,-4,-9,-14,-18,-22,-27,-32 written only when the stage time is >= 7. NOT matched: the four EG times and their curve bytes (time falls
-with rate; rate scaling acts like +2.5 rate per step, output level like +0.08 rate per step below 99, and the level drop matters, so
-the 64 real voices, whose inputs move together, cannot separate them), pitch EG (EG9), LFO, keyboard-track ranges and ramps,
-feedback, and a few flags. PROBE RESULT (the four controlled banks are loaded in Nautilus bank R, read back to `Z:/DX7 EXAMPLES/Probes/ProbeLoaded/bank_4B.bin`; `python tests/dx7_probe_analysis.py ATK|DEC|SLP|REL`): the DX7 rate -> MOD-7 field mapping is R1 -> Attack Time, R2 -> Decay Time, **R3 -> Release Time, R4 -> Slope Time** (the earlier real-voice analysis paired R4 with Release and was noisy for that reason; redo it with this mapping). Time curve byte = round((from-to)/10) for a falling level, 0 for rising/equal (output 99, no rate scaling; real voices at lower output level give smaller values, not yet explained). Time is monotone in u = log2(drop) - log2(speed(q)) with q = (rate*41)>>6, speed = (4 + (q&3)) << (q>>2) and drop = internal DX7 level difference (zero violations on the attack sweep) but y(u) jitters by 1-2, so the closed form for the 0-99 time value is still open (saturates at 99 and 5; rising levels reach 1). NEXT: find y(u) (try the DX7 level/time maths with the Nautilus's seconds scale, using the output-level and rate-scale sweeps in the probe banks too), then write times, curves and the rate-scaling intensity into `convert_voice`. OLD NEXT: load the four controlled banks from `python -m Conversion.dx7_probe_bank <dir>` (already written to
-`Z:/DX7 EXAMPLES/Probes/PROBE-ATK|DEC|SLP|REL.SYX`: 32 voices x 6 independent operators, algorithm 32) into Nautilus EXi banks, read
-the Programs back over SysEx, and fit the time and curve bytes against `probe_plan(stage)`. `Data/dx7_voice.pack` / `build_bank`
-write DX7 voices (round-trips all 74,752 corpus voices, `tests/test_dx7_pack.py`). The converter is unverified on any instrument.
+### DX7 -> MOD-7 import (2026-11-11, `Conversion/dx7_to_mod7.py`)
+A port of the instrument's own import: `CFileDX7Syx::ImportProgram/ImportOperator/ImportCommonParams/FixAmpEG/
+ConvertKeyboardLevelScaling` in the EVA application (`Z:/Decomp/EVA_Decomp/eva_export/functions/`, Eva 3.2.2; it is EVA, not OA.ko,
+that holds the DX7 import - OA.ko is the audio engine). Tables (`DX7ConvertionTables`: EG knob durations, rate-scale and
+rate-to-duration for rise and decay, pitch EG levels/times, LFO, feedback, algorithm) were read from the Eva binary into
+`Resources/Conversion/Dx7EgTables.json` / `Dx7CommonTables.json`. This replaced the earlier fits from loaded Programs and explains
+them: EG levels are scaled by the operator output level before the time calculation, rate scaling is added to the rates, Slope Time
+takes DX7 R3 and Release Time R4 (the probe-bank labelling was wrong), Release Time is computed from the mid level of the four
+levels, a redundant last stage copies Decay into Release and sets the reset flags, and the Amplifier EG Release Time comes from
+the carriers' release times (99 when a carrier does not end silent). The firmware's parameter id is the field index in
+`Mod7Fields.json`; the LFO / transpose bytes of the CMOSSProg struct sit 6 bytes lower in the Program body.
+Checked on 228 distinct voice/Program pairs (ROM1A/B and the P/Q bank dumps, `tests/dx7_pairs.py`): 220 byte-exact over everything
+written; the other 8 are bank-P voices with repeated names (E.PIANO 1, HARPSICH 1, ...), probably paired with the wrong corpus
+voice. Bytes below 2902 that vary between the real Programs (HD-1 oscillator area, offsets 90..1291) are stale data, not derived
+from the voice, and are left alone. `python tests/test_dx7_mod7.py` pins this; `tests/dx7_mod7_harness.py` lists field mismatches.
+Not verified on any instrument: load a converted bank on the Nautilus and compare sounds with the native import.
 
 ### Third-party packs (2026-11-11)
 A Program, Drum Kit or Wave Sequence stores a sample bank as a 16-byte id: EXs1-126 use the legacy `KORG ..MS ` form (byte 15 =
