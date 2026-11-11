@@ -124,10 +124,20 @@ def _bar(value: int, total: int, color: str = _CPU_LINE) -> QProgressBar:
 
 
 class _BarRow(QWidget):
-    """Label + progress bar + value label on one line."""
+    """Label + stretch progress bar + fixed value label on one line.
+
+    Layout order is: label (pinned left, fixed width), progress bar as the
+    stretchable item (stretch factor 1) that absorbs all remaining space,
+    then the value label (fixed, content-sized) pinned to the right edge.
+    The bar is the only element that changes size when the window is widened;
+    the label and value label stay static. The value label uses a Fixed
+    size policy (min == max == content width, set in _fit_val_width) so it
+    never grows, which is what keeps the bar as the sole expanding element
+    while the value text stays flush right.
+    """
 
     def __init__(self, label: str, color: str = _CPU_LINE, parent=None,
-                 label_width: int = 60, value_width: int = 38):
+                 label_width: int = 60):
         super().__init__(parent)
         h = QHBoxLayout(self)
         h.setContentsMargins(0, 0, 0, 0)
@@ -150,15 +160,22 @@ class _BarRow(QWidget):
         h.addWidget(self._bar, 1)
 
         self._val = QLabel("0%")
-        self._val.setFixedWidth(value_width)
         self._val.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self._val.setStyleSheet(f"color: {_TEXT_NORM}; font-size: 11px;")
         h.addWidget(self._val)
+
+    def _fit_val_width(self):
+        """Size the value label to its content."""
+        w = self._val.fontMetrics().horizontalAdvance(self._val.text()) + 8
+        self._val.setMaximumWidth(w)
+        self._val.setMinimumWidth(w)
+        self._val.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
 
     def set_pct(self, pct: float):
         v = int(pct)
         self._bar.setValue(v)
         self._val.setText(f"{v}%")
+        self._fit_val_width()
 
     def set_used_of(self, used_mb: int, total_mb: int):
         if total_mb <= 0:
@@ -168,8 +185,10 @@ class _BarRow(QWidget):
             return
         self._bar.setRange(0, total_mb)
         self._bar.setValue(used_mb)
+        free_mb = total_mb - used_mb
         pct = used_mb * 100 / total_mb
-        self._val.setText(f"{pct:.0f}%")
+        self._val.setText(f"{free_mb // 1024}/{total_mb // 1024} GB, {pct:.0f}% full")
+        self._fit_val_width()
 
 
 def _stat_label(text: str) -> QLabel:
@@ -243,23 +262,16 @@ class PerformanceWindow(QDialog):
 
         root.addWidget(cpu_group)
 
-        # ── Memory ────────────────────────────────────────────────────────────
+        # ── Memory + Storage ──────────────────────────────────────────────────
         mem_group = QGroupBox("Memory")
         mem_group.setStyleSheet(cpu_group.styleSheet())
         mem_vbox = QVBoxLayout(mem_group)
-        self._mem_bar = _BarRow("Kernel Memory", color="#AACC88",
-                                label_width=90, value_width=80)
+        mem_vbox.setSpacing(3)
+        self._mem_bar = _BarRow("Kernel", color="#AACC88")
         mem_vbox.addWidget(self._mem_bar)
-        root.addWidget(mem_group)
-
-        # ── Storage ───────────────────────────────────────────────────────────
-        disk_group = QGroupBox("Storage")
-        disk_group.setStyleSheet(cpu_group.styleSheet())
-        disk_vbox = QVBoxLayout(disk_group)
-        disk_vbox.setSpacing(3)
 
         self._rw_bar  = _BarRow("SSD1",  color="#DDAA55")
-        disk_vbox.addWidget(self._rw_bar)
+        mem_vbox.addWidget(self._rw_bar)
 
         self._rw2_widget = QWidget()
         rw2_vbox = QVBoxLayout(self._rw2_widget)
@@ -267,7 +279,7 @@ class PerformanceWindow(QDialog):
         self._rw2_bar = _BarRow("SSD2", color="#DDAA55")
         rw2_vbox.addWidget(self._rw2_bar)
         self._rw2_widget.setVisible(False)
-        disk_vbox.addWidget(self._rw2_widget)
+        mem_vbox.addWidget(self._rw2_widget)
 
         self._usb_widgets: list[QWidget] = []
         self._usb_bars:    list[_BarRow] = []
@@ -278,11 +290,11 @@ class PerformanceWindow(QDialog):
             bar = _BarRow(f"USB{i}", color="#88DDDD")
             vb.addWidget(bar)
             w.setVisible(False)
-            disk_vbox.addWidget(w)
+            mem_vbox.addWidget(w)
             self._usb_widgets.append(w)
             self._usb_bars.append(bar)
 
-        root.addWidget(disk_group)
+        root.addWidget(mem_group)
 
         # ── Stats table ───────────────────────────────────────────────────────
         stats_group = QGroupBox("System")
