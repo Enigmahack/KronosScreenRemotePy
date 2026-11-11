@@ -5,13 +5,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from Data import dx7_voice as D
 from Conversion import dx7_to_mod7 as M
 base = os.environ.get("KRONOS_DX7_EXAMPLES", "Z:/DX7 EXAMPLES/")
-packed = []
-for f in ("ROM1A", "ROM1B"):
-    packed += D.parse_bank(open(base + f"SysexFormat/{f}.SYX", "rb").read())
-real = []
-for f in ("ROM1A_loaded_in_bank_Q", "ROM1B_loaded_in_bank_R"):
-    b = open(base + f"NautilusLoaded/{f}.bin", "rb").read()
-    real += [b[i * 4954:(i + 1) * 4954] for i in range(32)]
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import dx7_pairs
+_pairs = dx7_pairs.all_pairs()
+packed = [x[0] for x in _pairs]
+real = [x[1] for x in _pairs]
 F = M._fields()
 vary = [o for o in range(4954) if len({p[o] for p in real}) > 1]
 outs = [M.convert_voice(pk) for pk in packed]

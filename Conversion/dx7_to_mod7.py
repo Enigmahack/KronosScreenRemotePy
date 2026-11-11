@@ -81,33 +81,45 @@ def _template() -> bytes:
     return (_RES / "Mod7DxTemplate.bin").read_bytes()
 
 
+_LOW_LEVEL = (0, 5, 9, 13, 17, 20, 23, 25, 27, 29, 31, 33, 35, 37, 39, 41, 42, 43, 45, 46)   # DX7 internal level for 0-19
+
+
+def _internal_level(x: int) -> int:
+    """DX7 level 0-99 -> its internal 0-127 scale (x + 28 from 20 up, a small table below). 127 is full scale."""
+    return _LOW_LEVEL[x] if x < 20 else x + 28
+
+
 def eg_level(x: int) -> int:
-    """DX7 EG level 0-99 -> MOD-7 EG level 0-99: round(99 * 2^((x-99)/8)). Exact on all 65 distinct pairs seen."""
-    return int(99 * 2.0 ** (-(99 - x) / 8) + 0.5)
+    """DX7 EG level 0-99 -> MOD-7 EG level 0-99: round(99 * 2^((L-127)/8)) on the internal level L. Exact on all 65 distinct
+    pairs of the first 64 voices and the ~170 loaded later; a value above 99 (corrupt DX7 data) becomes 0 on the unit."""
+    if x > 99:
+        return 0
+    return int(99 * 2.0 ** (-(127 - _internal_level(x)) / 8) + 0.5)
 
 
 def osc_volume(output_level: int, carriers: int, is_carrier: bool) -> int:
     """DX7 operator output level -> MOD-7 OSC Volume: 100 * 2^((x-99)/16), a carrier divided by sqrt(carrier count) so that
-    the mix keeps its level. Exact on all 384 operators of the 64 loaded voices."""
-    if output_level == 0:
+    the mix keeps its level; levels below 20 go through the DX7 table. Exact on all operators of the loaded voices."""
+    if output_level == 0 or output_level > 99:
         return 0
-    m = 100 * 2.0 ** (-(99 - output_level) / 16)
+    m = 100 * 2.0 ** (-(127 - _internal_level(output_level)) / 16)
     return int((m / math.sqrt(carriers) if is_carrier else m) + 0.5)
 
 
 def frequency(mode: int, coarse: int, fine: int, detune: int) -> Tuple[int, int, int, int]:
     """-> (ratio coarse, ratio fine, offset coarse, offset fine) as signed field values.
-    Ratio mode: coarse (0 = 0.5) * (1 + fine/100) * 2^((detune-7)/1200), rounded to 0.001, split into integer part and
-    thousandths. Fixed mode (thinly evidenced: 2 samples): Hz = 10^(coarse % 4 + fine/100), detune applied as in ratio mode (only approximately: 2 voices with detune != 7 are
-    off by ~0.04 Hz), whole Hz + hundredths (rounded to the hundredth below 1000 Hz, to the Hz above)."""
+    Detune is 0-14 (a stored 15 acts as 14), one step = 1 cent. Ratio mode: coarse (0 = 0.5) * (1 + fine/100) * detune,
+    rounded to 0.001 and split into integer part and thousandths. Fixed mode: Hz = 10^(coarse % 4 + fine/100), first
+    quantised (whole Hz from 1000, 0.1 Hz from 100, else unchanged), then detuned, then rounded to 0.01 Hz and split into whole
+    Hz and hundredths. Checked on ~60 distinct fixed-frequency settings; may be 0.01 Hz out."""
+    cents = (min(detune, 14) - 7) / 1200.0
     if mode == 0:
-        r = (0.5 if coarse == 0 else coarse) * (1 + fine / 100.0) * 2.0 ** ((detune - 7) / 1200.0)
+        r = (0.5 if coarse == 0 else coarse) * (1 + fine / 100.0) * 2.0 ** cents
         n = int(r * 1000 + 0.5)
         return n // 1000, n % 1000, 0, 0
-    hz = 10.0 ** ((coarse % 4) + fine / 100.0) * 2.0 ** ((detune - 7) / 1200.0)
-    if hz >= 1000:                                                  # seen: 2089 and 6607 carry no hundredths
-        return 0, 0, int(hz + 0.5), 0
-    n = int(hz * 100 + 0.5)
+    hz = 10.0 ** ((coarse % 4) + fine / 100.0)
+    hz = float(int(hz + 0.5)) if hz >= 1000 else (int(hz * 10 + 0.5) / 10.0 if hz >= 100 else hz)
+    n = int(hz * 2.0 ** cents * 100 + 0.5)
     return 0, 0, n // 100, n % 100
 
 
@@ -145,5 +157,5 @@ def convert_voice(packed: bytes) -> bytes:
         f.set(b, f"[Macro] OSC{op + 1} Class", 0 if is_carrier else 1)
         f.set(b, "[OSC1] Volume", osc_volume(g("output_level"), len(carriers), is_carrier), o)
         f.set(b, "[OSC1] Volume Velocity Sens", VEL_SENS[g("key_vel_sens")], o)
-        f.set(b, "[OSC1 Keyboard Track] Center Key", g("bp") + 21, o)
+        f.set(b, "[OSC1 Keyboard Track] Center Key", min(g("bp") + 21, 120), o)   # 127 (invalid) gives 120
     return bytes(b)

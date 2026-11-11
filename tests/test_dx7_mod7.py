@@ -9,17 +9,16 @@ from Conversion import dx7_to_mod7 as M
 from Data import dx7_voice as D
 
 base = os.environ.get("KRONOS_DX7_EXAMPLES", "Z:/DX7 EXAMPLES/")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import dx7_pairs
+
 try:
-    packed = []
-    for f in ("ROM1A", "ROM1B"):
-        packed += D.parse_bank(open(base + f"SysexFormat/{f}.SYX", "rb").read())
-    real = []
-    for f in ("ROM1A_loaded_in_bank_Q", "ROM1B_loaded_in_bank_R"):
-        b = open(base + f"NautilusLoaded/{f}.bin", "rb").read()
-        real += [b[i * 4954:(i + 1) * 4954] for i in range(32)]
+    _pairs = dx7_pairs.all_pairs()
 except OSError:
     print("SKIP: DX7 fixtures not found (set KRONOS_DX7_EXAMPLES)")
     sys.exit(0)
+packed = [x[0] for x in _pairs]
+real = [x[1] for x in _pairs]
 
 F = M._fields()
 fails = []
@@ -54,7 +53,7 @@ for i, (pk, rp) in enumerate(zip(packed, real)):
     for op in range(6):
         if p[f"op{op}_osc_mode"] == 1:
             hz = lambda b: F.get(b, "[OSC1] Frequency Offset (Coarse)", M.OSC_STRIDE * op) * 100 + F.get(b, "[OSC1] Frequency Offset (Fine)", M.OSC_STRIDE * op)  # noqa: E731
-            tol = 1 if p[f"op{op}_detune"] == 7 else 5          # detune in fixed mode is only approximate
+            tol = 1                                        # 0.01 Hz rounding
             if abs(hz(out) - hz(rp)) > tol:
                 fails.append((i, f"op{op} fixed frequency {hz(out)} vs {hz(rp)}"))
 assert M.eg_level(99) == 99 and M.eg_level(98) == 91 and M.eg_level(0) == 0
