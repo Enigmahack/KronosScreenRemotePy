@@ -161,11 +161,11 @@ def plan_arp_slots(items: List[ConvertItem], tables: ConvertTables, arp_start: O
     return sorted(arp.by_ge.values())
 
 
-def _connection_problem(service, still_valid: Optional[Callable[[], bool]]) -> Optional[str]:
+def _connection_problem(service, still_valid: Optional[Callable[[], bool]], nautilus_only: bool = True) -> Optional[str]:
     """Why it is no longer safe to send this push's messages to `service`, or None. A reconnect may be to a different
     instrument (SysExService.stop() resets the codec to Kronos), so nothing is sent once the link is not the same
     live Nautilus connection the user confirmed."""
-    if getattr(service, "is_nautilus", True) is False:
+    if nautilus_only and getattr(service, "is_nautilus", True) is False:
         return "the connection is no longer a Nautilus"
     if getattr(service, "can_dump", True) is False:
         return "the SysEx link is down"
@@ -405,7 +405,7 @@ def _push(service, items: List[ConvertItem], dest: Dict[int, Tuple[int, int]], t
     reports.arp_used = sorted(s for s in arp_ops if s not in arp_failed)
 
 
-def _verify_backup(path: str, backups) -> Optional[str]:
+def _verify_backup(path: str, backups, codec=nsx) -> Optional[str]:
     """None when the file re-parses (Nautilus codec) to exactly the pre-images, in order; else why not. The backup
     is the only way back from a bad conversion, so no write happens on an unverified one."""
     try:
@@ -418,7 +418,7 @@ def _verify_backup(path: str, backups) -> Optional[str]:
         return "it ends mid-record"
     got = []
     for chunk in parts[:-1]:
-        d = nsx.parse_object_dump(chunk + b"\xf7")
+        d = codec.parse_object_dump(chunk + b"\xf7")
         if d is None:
             return "it holds an unreadable record"
         got.append((d.obj, d.bank, d.index, d.body))
@@ -474,7 +474,7 @@ def restore_from_backup(service, backup_path: str,
             raw = f.read()
     except OSError as ex:
         return RestoreResult(False, [f"Cannot read the backup: {ex}"])
-    problem = _connection_problem(service, still_valid)
+    problem = _connection_problem(service, still_valid, nautilus_only=False)
     if problem:   # the backup is Nautilus-encoded; a reconnect may have reset the service to the Kronos codec
         return RestoreResult(False, [f"Not restored: {problem}; nothing was written."])
     ops = []
@@ -484,7 +484,7 @@ def restore_from_backup(service, backup_path: str,
     for chunk in parts:
         if not chunk:
             continue
-        d = nsx.parse_object_dump(chunk + b"\xf7")
+        d = getattr(service, "_codec", nsx).parse_object_dump(chunk + b"\xf7")
         if d is None:
             return RestoreResult(False, ["The backup holds an unreadable record; nothing was written."])
         ops.append(SimpleNamespace(obj=d.obj, bank=d.bank, index=d.index, version=d.version, body=d.body))
@@ -492,7 +492,7 @@ def restore_from_backup(service, backup_path: str,
         return RestoreResult(False, ["The backup is empty; nothing was written."])
     bad_banks: Set[Tuple[int, int]] = set()
     for op in ops:
-        problem = _connection_problem(service, still_valid)
+        problem = _connection_problem(service, still_valid, nautilus_only=False)
         if problem:
             bad_banks.add((op.obj, op.bank))
             msgs.append(f"Not restored {bank_label(op.obj, op.bank)} slot {op.index}: {problem}.")

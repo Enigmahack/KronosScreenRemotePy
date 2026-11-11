@@ -98,10 +98,9 @@ def _upload_one(ftp: _FtpWorker, local_path: str, remote_path: str,
 
 
 def _promote(ftp: _FtpWorker, part: str, remote_path: str, aside: str) -> None:
-    # HW-VERIFY: a Nautilus accepts RNTO over an existing file (probed 2026-10-22; it also rejects MLSD).
-    # A Kronos has not been probed: the C# push deletes the old file before renaming, which hints it may refuse.
-    # If it does, the swap-aside branch below is the normal path there and needs an end-to-end run, including
-    # the .old cleanup.
+    # Both instruments accept RNTO over an existing file and reject MLSD (Nautilus 2026-10-22, Kronos 2026-11-11).
+    # The swap-aside branch below is therefore only a fallback; it still needs an end-to-end run, including the
+    # .old cleanup, should a server ever refuse.
     try:
         ftp.rename(part, remote_path)  # already guards top-level-volume + path-length
         return

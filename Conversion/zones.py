@@ -21,7 +21,8 @@ from Objects.object_body import (iter_drum_kit_sample_refs, iter_wave_seq_sample
                                  set_drum_kit_zone_off, set_drum_kit_zone_uuid, set_wave_seq_step_select,
                                  set_wave_seq_step_uuid)
 from Tools.exs_option_index import ExsOptionIndex
-from Tools.sample_reference_walker import RefClass, classify, iter_program_sample_zone_refs
+from Tools.sample_reference_walker import (RefClass, ZONES_PER_OSC, classify, iter_program_sample_zone_refs, kronos_layout_view)
+from Tools.sample_reference_walker import _OSC1_ZONE_BASE as OSC1_ZONE_BASE, _OSC2_ZONE_BASE as OSC2_ZONE_BASE, _ZONE_STRIDE as ZONE_STRIDE
 
 
 class _Outcome(enum.Enum):
@@ -117,6 +118,10 @@ def remap_program_hd1(body: bytes, rom_map: RomWaveformMap, exs: ExsOptionIndex,
             # the two instruments' kit and sequence sets differ; they are carried over as they are.
             notes.append("This Program's oscillator uses a Drum Kit or Wave Sequence by number; the number was kept, "
                          "so check that the same-numbered object on the instrument is the one you want.")
+        ws = _wave_sequence_pack_zones(body)
+        if ws:
+            notes.append("These zones play a Wave Sequence from a sample pack, which is not converted (the pack's own "
+                         "Wave Sequences exist only where the pack is installed): " + ", ".join(ws) + ".")
         if partial:
             notes.append("Only part of these multisamples exists on the " + getattr(rom_map, "target_name", "Nautilus")
                          + ", so the sample zones may differ slightly: " + ", ".join(partial) + ".")
@@ -126,6 +131,25 @@ def remap_program_hd1(body: bytes, rom_map: RomWaveformMap, exs: ExsOptionIndex,
                              f"with normal ones (zones {', '.join(map(str, normal_zones[osc]))}). The reverse setting is "
                              "stored per zone, but check that the layers still sound right on the instrument.")
     return bytes(out), unmapped
+
+
+def _wave_sequence_pack_zones(body: bytes) -> List[str]:
+    """Zones whose MS Type is Wave Sequence (2) and whose 16-byte id names an EXs or third-party bank, e.g. the Kronos
+    Program "AF Lead" (EXs206's id, stored big-endian with byte 15 = 0x02, read live 2026-11-11)."""
+    if program_oscillator_mode(body) in (4, 5):
+        return []
+    view = kronos_layout_view(body)
+    found = []
+    for osc, base in enumerate((OSC1_ZONE_BASE, OSC2_ZONE_BASE)):
+        if osc == 1 and program_oscillator_mode(body) == 0:
+            continue
+        for zone in range(ZONES_PER_OSC):
+            off = base + zone * ZONE_STRIDE
+            if off + 17 > len(view) or (view[off] & 0x03) != 2:
+                continue
+            if classify(bytes(view[off + 1:off + 17])).kind in (RefClass.EXS, RefClass.RAW_UUID):
+                found.append(f"oscillator {osc + 1} zone {zone + 1}")
+    return found
 
 
 def program_zones_not_audio_identical(body: bytes, rom_map: RomWaveformMap) -> List[Tuple[int, int, int]]:

@@ -618,8 +618,8 @@ Everything here needs the real Kronos. Each item says what to check; remove the 
 line here only after the live check. Back up any slot before writing (the convert flow does it; restore with
 `Conversion.push.restore_from_backup`).
 
-1. `Core/sample_ftp.py:101` - rename behaviour: does a Kronos accept RNTO over an existing file, and does it
-   list with MLSD? (The Nautilus accepts RNTO-over-existing and rejects MLSD, 2026-10-22.)
+1. DONE 2026-11-11 (`Core/sample_ftp.py:101`): the Kronos FTP (login kronos/kronos from settings.json, not nautilus) accepts RNTO over an existing
+   file (250) and answers MLSD with `500 Unknown command` - same as the Nautilus. FEAT lists EPRT EPSV MDTM PASV REST SIZE TVFS UTF8.
 2. `Data/kmp_multisample.py:126` - copy a test .KMP with no RLP2/RLP3 to the unit and see whether the Kronos
    loads it, and what the Sample Editor then shows.
 3. `Core/sysex_service.py:725` - write/store replies are matched by function only (object DUMP replies are now matched by obj+bank+slot, 2026-11-11: `SysExDumpCollector.collect(expect_bank=, expect_index=)`, after a live Nautilus read took an HD-1-sized stray Program dump for an EXi slot; `tests/test_dump_match.py`). With a second client (or front-panel
@@ -628,17 +628,20 @@ line here only after the live check. Back up any slot before writing (the conver
    MIDI has CC transmit on first.
 5. Sample Editor hardware audition check (play a pulled collection on the unit) and the side-by-side visual pass
    against the C# app.
-6. A real Drum Kit and Wave Sequence write to the Kronos (only a Nautilus write is verified).
+6. DONE 2026-11-11 (bytes only, not by ear): Nautilus Drum Kits 0-5 and Wave Sequences 0-5 converted and written to Kronos U-GG slots 0-5, Stored,
+   re-read byte-identical (`tests/live_kronos_push.py --kit-src/--seq-src`), then restored from the backups with `restore_from_backup`.
 6b. Load a converted .SNG (Nautilus -> Kronos from `Convert a .SNG file...`, and the reverse on the Nautilus) from disk on the instrument and check songs, tracks and Timbre Sets; also that a Kronos accepts `Conversion/combi_reverse` output.
 6c. More .SNG examples (owner to supply), especially songs with audio tracks, from both instruments: needed to decode `RGN1` per-region numbers, the 10-byte `ATE1` audio records, the 36-byte `BMT2` block, the header tail values, and to confirm which `SONGnnn` an audio path refers to.
-7. Song Timbre Sets on the Kronos: bank id, slot count, body size (docs imply 7810), version byte, whether
-   obj 0x02 answers a digest (the Nautilus answers only 0x18), and capture a few real 0x02 dumps as .syx
-   fixtures for `tests/` (no Kronos Song fixture exists anywhere in the workspace).
+7. Song Timbre Sets on the Kronos: DONE 2026-11-11 (`tests/live_song_probe.py`): obj 0x02 bank 0, 200 slots (0-199), body 7810 bytes, version 3,
+   factory names `NEW SONG nnn`; the digest (0x37) gets NO answer for obj 2 (banks 0, 1, 0x40), like the Nautilus. Three Nautilus PRELOAD.SNG songs
+   converted and written to songs 196-198, Stored, re-read byte-identical, restored (`tests/live_kronos_song_push.py`). Still open: capture real
+   (non-Init) Kronos 0x02 dumps as fixtures.
 8. `Conversion/push.py` Store: on the Nautilus a Store commits the whole bank, including another slot's unstored
    SysEx write (reboot test 2026-10-22: pre-Store writes survived, a post-Store write reverted). Repeat on the
    Kronos (write B then A, Store, write C, reboot, read all three).
-9. Nautilus -> Kronos conversion on entry (`Conversion/auto.py`, `program_reverse.py`, `combi_reverse.py`, reverse ROM map;
-   NOT verified on a Kronos): open a Nautilus .pcg while connected to the Kronos, place a Program (EXi and HD-1), a Combi
+9. Nautilus -> Kronos conversion on entry (`Conversion/auto.py`, `program_reverse.py`, `combi_reverse.py`, reverse ROM map). 2026-11-11: the
+   Kronos ACCEPTS the converted bodies (2 + 6 HD-1 Programs into U-GG, 3 EXi into 0x4B:125-127, 3 Combis into U-G, all Stored and re-read
+   byte-identical, `tests/live_kronos_push.py`); NOT yet verified by ear: open a Nautilus .pcg while connected to the Kronos, place a Program (EXi and HD-1), a Combi
    whose Timbres use user-bank Programs, a Drum Kit and a Wave Sequence, push, and check they sound right and the Combi
    plays its own Programs. The Kronos-only S/PDIF, Drum Track and KARMA block comes from `KronosInitProgram.bin`.
 10. The Combi Timbre bank byte: Kronos user banks start at 18 (U-A), Nautilus at 17 (G) - checked only against the
@@ -655,9 +658,12 @@ line here only after the live check. Back up any slot before writing (the conver
     inferred from 294 of 294 REV zones, not hardware-checked. Nautilus `Bank330` (37 multisamples) has not been
     MD5-checked against the unit and is not hashed yet.
 
-13. Third-party pack ids (`Conversion/zones.py` HW-VERIFY): pull a Program that uses EXs206 (A2D 10 Selections) from the Kronos and
-    confirm its zone stores `8e7ab882-4abf-4317-b095-874bc9627802` big-endian (flag bit 0 of byte 15); then push a Nautilus Program
-    that uses Bank330's Pulse/Sine waves to the Kronos and check it plays.
+13. Third-party pack ids (`Conversion/zones.py` HW-VERIFY). FIRST HALF CONFIRMED 2026-11-11 (`tests/live_find_bytes.py`, scan of all 2,560 Kronos
+    Programs): only Kronos Program U-AA? bank 0x49 slot 7 "AF Lead" holds EXs206's id, stored `8e7ab882-4abf-4317-b095-874bc9627802` big-endian with
+    byte 15 = 0x02, but in three zones whose MS Type byte is 2 = WAVE SEQUENCE (0 Off, 1 Multisample, 2 Wave Sequence; Prog_HD-1.txt), numbers 189/190,
+    not Multisample zones. So the id form is confirmed for pack Wave Sequences; a pack MULTISAMPLE zone (type 1) has still not been seen. Both apps'
+    `iter_program_sample_zone_refs` read type 1 only, so these zones were skipped silently; the Kronos->Nautilus Program conversion now NOTES them
+    (`zones._wave_sequence_pack_zones`). Still open: push a Nautilus Program that uses Bank330's Pulse/Sine waves to the Kronos and check it plays.
 
 **Older, still-relevant items:**
 

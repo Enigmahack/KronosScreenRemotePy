@@ -344,6 +344,21 @@ if os.path.exists(REAL_NAUT):
     check("real-nautilus-read", real and not real.checksum_warnings and not real.rejected_banks and len(progs) > 100
           and all(o.name for o in progs[:5]))
 
+# ---- a zone whose MS Type is Wave Sequence (2) and whose id is a sample pack: seen on a real Kronos Program
+# ("AF Lead", EXs206 id big-endian, byte 15 = 0x02); it is not converted, so the result says so
+from Tools.sample_reference_walker import _OSC1_ZONE_BASE
+_ws = bytearray(3706)
+_ws[2558] = 1                                   # oscillator mode: Double
+_ws[_OSC1_ZONE_BASE] = 2
+_ws[_OSC1_ZONE_BASE + 1:_OSC1_ZONE_BASE + 17] = bytes.fromhex("8e7ab8824abf4317b095874bc9627802")
+_notes = []
+remap_program_hd1(bytes(_ws), RomWaveformMap.from_catalog(), ExsOptionIndex.from_catalog(), substitute=True, notes=_notes)
+check("wave-seq-pack-zone-noted", any("Wave Sequence from a sample pack" in n and "oscillator 1 zone 1" in n for n in _notes))
+_ws[_OSC1_ZONE_BASE + 1:_OSC1_ZONE_BASE + 17] = bytes(16)
+_notes = []
+remap_program_hd1(bytes(_ws), RomWaveformMap.from_catalog(), ExsOptionIndex.from_catalog(), substitute=True, notes=_notes)
+check("wave-seq-internal-zone-not-noted", not any("sample pack" in n for n in _notes))
+
 # ---- bundled data loads
 check("data-rom-map", len(RomWaveformMap.from_catalog()) > 1000)
 check("data-ref-map", len(ProgramRefMap.from_catalog()) > 800)
