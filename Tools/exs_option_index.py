@@ -60,6 +60,8 @@ class ExsOptionIndex:
     def __init__(self) -> None:
         self._by_number: Dict[int, str] = {}
         self._by_uuid_hex: Dict[str, str] = {}
+        self._number_by_uuid_hex: Dict[str, int] = {}
+        self._uuid_by_number: Dict[int, bytes] = {}
         self.from_override_file = False
 
     def __len__(self) -> int:
@@ -73,6 +75,14 @@ class ExsOptionIndex:
     def name_for_uuid_hex(self, hex_key: str) -> Optional[str]:
         """`hex_key` must be masked like sample_reference_walker.dedup_key (byte 15 bit 0 cleared)."""
         return self._by_uuid_hex.get(hex_key.upper())
+
+    def number_for_uuid_hex(self, hex_key: str) -> Optional[int]:
+        """The EXs number of the product a raw bank id names (a third-party pack, or EXs127+), else None."""
+        return self._number_by_uuid_hex.get(hex_key.upper())
+
+    def uuid_for_exs_number(self, number: int) -> Optional[bytes]:
+        """The 16-byte bank id (flag bit 0 cleared) a Program stores for EXs<number>, when that bank has no legacy form."""
+        return self._uuid_by_number.get(number)
 
     @staticmethod
     def override_path() -> pathlib.Path:
@@ -107,6 +117,8 @@ class ExsOptionIndex:
                 masked = bytearray(raw)
                 masked[15] &= 0xFE   # mono/stereo flag — same mask as dedup_key
                 index._by_uuid_hex[masked.hex().upper()] = name
+                index._number_by_uuid_hex[masked.hex().upper()] = number
+                index._uuid_by_number[number] = bytes(masked)
         return index
 
     @staticmethod

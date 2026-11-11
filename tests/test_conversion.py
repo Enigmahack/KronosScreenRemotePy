@@ -104,6 +104,24 @@ raw = hd1_zone(0, 3, unk)
 out, un = remap_program_hd1(raw, rmap, no_exs)
 check("remap-raw-uuid-unresolved-passthrough", out == raw and not un)
 
+# Third-party packs (here EXs206 "A2D 10 Selections") have no legacy KORG/MS form: a Program names them by raw bank id.
+real_map, real_exs = RomWaveformMap.from_catalog(), ExsOptionIndex.from_catalog()
+b206 = raw_uuid_bytes("8e7ab882-4abf-4317-b095-874bc9627802")
+b330 = raw_uuid_bytes("83b788aa-f5b9-4ef2-bc74-35fa9fa28aaa")      # Nautilus EXs330 "A2D King of Polysynths"
+notes = []
+out, un = remap_program_hd1(hd1_zone(0, 5, b206[:15] + bytes([b206[15] | 1])), real_map, real_exs, notes=notes)
+z = next(iter_program_sample_zone_refs(out))
+check("third-party-forward-remaps", not un and z[2][:15] == b330[:15] and z[2][15] & 1 == 1 and z[3] == 17)
+out, un = remap_program_hd1(hd1_zone(0, 9, b206), real_map, real_exs, notes=notes)
+z = next(iter_program_sample_zone_refs(out))
+check("third-party-forward-partial", not un and z[3] == 21 and any("Only part" in n for n in notes))
+_, un = remap_program_hd1(hd1_zone(0, 30, b206), real_map, real_exs)
+check("third-party-forward-no-equivalent-refuses", len(un) == 1 and "A2D 10 Selections" in un[0].reason)
+back, un = remap_program_hd1(hd1_zone(0, 17, b330[:15] + bytes([b330[15] | 1])), real_map.reversed(), real_exs)
+z = next(iter_program_sample_zone_refs(back))
+check("third-party-reverse-uses-raw-id", not un and z[2][:15] == b206[:15] and z[2][15] & 1 == 1 and z[3] == 5)
+check("third-party-reverse-no-legacy-overflow", all(len(t.uuid) == 16 for t in real_map.reversed()._by_uuid.values()))
+
 dk_map = rom(("ROM_DRUMSAMPLES", 5, 99, None))
 out, un = remap_drum_kit(drum_kit(0, 5), dk_map, no_exs)
 check("drumkit-remap-hit", next(iter_drum_kit_sample_refs(out))[3] == 99 and not un)

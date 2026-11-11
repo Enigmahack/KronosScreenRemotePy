@@ -44,8 +44,12 @@ The new sample mapping reaches them (better ROM matches, EXs banks, bank-id rewr
       written, hashed (546 blocks, 0 unreadable) and fingerprinted. It is the Nautilus counterpart of the Kronos third-party bank
       206: 85 new trim matches, and Kronos Bank206 now has 175 of 540 blocks on the Nautilus (9 multisamples exact, 3 partial,
       22 none; before: nothing). `NautilusSampleEvidence.json` is UNCHANGED because `build_conversion_evidence.py` skips banks >= 200
-      (third-party). Open: decide how a Program references a third-party bank (by raw UUID?) and whether to emit Bank206 -> Bank330
-      entries; the regenerated scratch map shows what they would be.
+      (third-party). DONE 2026-11-11 (see CLAUDE.md "Third-party packs"): the builder no longer skips them, 12 Bank206 -> Bank330
+      entries are in the evidence, and the converter resolves raw bank ids in both directions. Unverified: a Kronos Program's own
+      stored id for Bank206 (checklist 13).
+- [ ] Third-party packs the Kronos has but the Nautilus does not (206-214, 217, 218 other than 206's 12 multisamples; 22 of 34
+      EXs206 multisamples have no Nautilus audio) still refuse / fall back to the default piano. Hash and compare any other
+      Nautilus third-party bank the owner installs (the only one seen so far is Bank330 "A2D King of Polysynths").
 - [ ] Kronos "...REV" flag (+0x3C bit 0x200) and the Program Zone MS Reverse bit are inferred, not hardware-checked. Other bits of
       that word are unexplained.
 - [ ] The Kronos has no match for banks 06, 07, 17, 109, 206-214, 217, 218, 23, 40-42. Confirm none of those are on the Nautilus under

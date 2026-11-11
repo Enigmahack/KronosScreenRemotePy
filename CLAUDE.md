@@ -569,6 +569,20 @@ forward twin with bit 0x200 set in the sample record word at +0x3C; it maps to t
 Zone MS Reverse bit (bit 7 of zone byte 21) is set. Drum Kits and Wave Sequences get the new mappings but still switch off
 (Drum Kit) or refuse (Wave Sequence) a sample with no equivalent.
 
+### Third-party packs (2026-11-11)
+A Program, Drum Kit or Wave Sequence stores a sample bank as a 16-byte id: EXs1-126 use the legacy `KORG ..MS ` form (byte 15 =
+`(n+1)<<1`, which cannot hold 127+), while EXs127+ and every third-party pack are named by the pack's own id, the `Bank.info` / option
+file `uuid` in its text (RFC) byte order, bit 0 of byte 15 = mono/stereo flag. Confirmed on the Nautilus: the factory `PRELOAD.PCG`
+references Bank301-313 by exactly their `Bank.info` ids. `Tools/exs_option_index.ExsOptionIndex` now also answers
+`number_for_uuid_hex` / `uuid_for_exs_number`; `zones._resolve` turns a raw id into its EXs number and uses the same evidence lookup;
+`data._kronos_bank_ref` builds the Kronos-side id for the reverse map (legacy form up to 126, else the catalog id; a bank the
+catalog does not know is skipped, never guessed - the old `(n+1)<<1` would have overflowed a byte for 206). Nautilus Bank330
+(`83b788aa-...`, EXs330 "A2D King of Polysynths") is a superset of the Kronos EXs206 "A2D 10 Selections" (`8e7ab882-...`): 12 of its
+34 multisamples have Nautilus audio (9 exact, 3 partial), the other 22 fall back to the default piano. `NautilusSampleEvidence.json`
+was regenerated with `Nautilus Research/scripts/build_conversion_evidence.py`, whose `>= 200` filter was removed (that folder is not
+under git; header comment updated). Tests: the `third-party-*` checks in `tests/test_conversion.py`. NOT verified on a Kronos
+(checklist 13).
+
 ## Kronos live checklist (run when the Kronos is next online; Kronos 192.168.100.15)
 
 Everything here needs the real Kronos. Each item says what to check; remove the matching `# HW-VERIFY:` note or
@@ -611,6 +625,10 @@ line here only after the live check. Back up any slot before writing (the conver
     for EXs22 loads, and that the default piano (Nautilus ROM multisample #2 "Acoustic Piano 1 mf-L" = Kronos #0; Nautilus #0 is a placeholder, not a piano) plays. The reverse flag (word +0x3C bit 0x200) is
     inferred from 294 of 294 REV zones, not hardware-checked. Nautilus `Bank330` (37 multisamples) has not been
     MD5-checked against the unit and is not hashed yet.
+
+13. Third-party pack ids (`Conversion/zones.py` HW-VERIFY): pull a Program that uses EXs206 (A2D 10 Selections) from the Kronos and
+    confirm its zone stores `8e7ab882-4abf-4317-b095-874bc9627802` big-endian (flag bit 0 of byte 15); then push a Nautilus Program
+    that uses Bank330's Pulse/Sine waves to the Kronos and check it plays.
 
 **Older, still-relevant items:**
 
