@@ -588,8 +588,9 @@ Live check 2026-11-11 (Nautilus 192.168.100.27, read-only): ROM1A / ROM1B loaded
 `Conversion.dx7_push` output (`tests/live_dx7_push.py <host> <syx> --compare-bank 0x49 --compare-slot 0|32`): names, the whole
 MOD-7 section, the LFO bytes, transpose and the LFO-sign short are byte-identical on all 64 Programs. Only 22 bytes per Program
 differ, all in the unused HD-1 oscillator area below 2902 (offsets 90..1291, 2567..2850: same values on 62 of 64, zeros on 2, and
-different from the earlier Q/R and P/Q loads, so they depend on the unit's state, not on the voice). Still to do: write a converted
-bank to the unit (`--write`) and compare by ear with the native import. The push path is `Conversion/dx7_push.py`
+different from the earlier Q/R and P/Q loads, so they depend on the unit's state, not on the voice). Then `--write` put the converted ROM1A/ROM1B into bank Q (0x4A) slots 0-63 (backups in librarian_backups/20261111_1811*.syx and
+..._q031.syx; one slot, Q031, was refused once because a read returned an HD-1-sized body and was written on retry): the owner
+compared P (native) with Q (converted) by ear and heard no difference. The push path is `Conversion/dx7_push.py`
 (`tests/test_dx7_push.py`).
 
 ### Third-party packs (2026-11-11)
