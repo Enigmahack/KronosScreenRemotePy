@@ -25,13 +25,13 @@ OSC_STRIDE = 45
 EG_STRIDE = 23
 VEL_SENS = (0, 18, 35, 47, 58, 67, 75, 82)          # DX7 key velocity sens 0-7 -> OSC Volume Velocity Sens (exact, 8 of 8)
 # DX7 algorithm number 1-32 -> MOD-7 "[OSC] Algorithm" value. DX algorithms that differ only in where the feedback loop sits
-# share one MOD-7 value. 22 of the 32 were seen in the 64 loaded voices and all agree with this table; the other ten
-# (DX 1, 9, 11, 13, 20, 21, 24, 26, 27, 28) are inferred from it: the seen values fill 55..78 with no gap once equivalent
-# algorithms are merged. HW-VERIFY: load a DX7 bank that uses those ten and compare.
+# share one MOD-7 value. 26 of the 32 were seen in the 228 loaded voices and all agree with this table; the other six
+# (DX 13, 20, 21, 24, 26, 27) are inferred from it: the seen values fill 55..78 with no gap once equivalent algorithms are
+# merged. HW-VERIFY: load a DX7 bank that uses those six and compare.
 _ALG_GROUPS = ((1, 2), (3,), (4,), (5,), (6,), (7, 8, 9), (10, 11), (12, 13), (14, 15), (16, 17), (18,), (19,), (20,), (21,),
                (22,), (23,), (24,), (25,), (26, 27), (28,), (29,), (30,), (31,), (32,))
 ALGORITHM: Dict[int, int] = {dx - 1: 55 + i for i, grp in enumerate(_ALG_GROUPS) for dx in grp}      # key: 0-based as stored
-ALGORITHM_SEEN = frozenset({1, 2, 3, 4, 5, 6, 7, 9, 11, 13, 14, 15, 16, 17, 18, 21, 22, 24, 28, 29, 30, 31})
+ALGORITHM_SEEN = frozenset(a - 1 for a in range(1, 33) if a not in (13, 20, 21, 24, 26, 27))     # 0-based, as stored
 # DX7 carriers per algorithm number (operator numbers 1-6). Checked against the Program's own Macro OSCn Class bits for the
 # 22 algorithms seen (all agree).
 CARRIERS = {1: (1, 3), 2: (1, 3), 3: (1, 4), 4: (1, 4), 5: (1, 3, 5), 6: (1, 3, 5), 7: (1, 3), 8: (1, 3), 9: (1, 3),

@@ -570,10 +570,10 @@ Zone MS Reverse bit (bit 7 of zone byte 21) is set. Drum Kits and Wave Sequences
 (Drum Kit) or refuse (Wave Sequence) a sample with no equivalent.
 
 ### DX7 -> MOD-7 import (2026-11-11, work in progress; code `Conversion/dx7_to_mod7.py`)
-Fitted from the 64 voices the Nautilus built from ROM1A/ROM1B (`Z:/DX7 EXAMPLES/NautilusLoaded/`); `python tests/test_dx7_mod7.py`
+Fitted from the 64 voices the Nautilus built from ROM1A/ROM1B (`Z:/DX7 EXAMPLES/NautilusLoaded/`) and validated on 228 distinct voice/Program pairs (the owner also loaded many real DX7 banks into Nautilus banks P and Q; `tests/live_dump_programs.py` reads them back read-only to `Z:/DX7 EXAMPLES/Probes/Loaded/`, `tests/dx7_pairs.py` pairs them with the corpus; more rules: levels < 20 via the DX7 table, values > 99 -> 0, detune clamped to 14, fixed Hz quantised before detune); `python tests/test_dx7_mod7.py`
 pins every field that reproduces them exactly, `python tests/dx7_mod7_harness.py` lists what does not. The MOD-7 section starts at
 Program body byte 2902 and is bit-packed (`Resources/Conversion/Mod7Fields.json`, from `Prog_EXi.txt`). EXACT: name, transpose,
-algorithm (DX 1-32 -> 55..78, equivalent algorithms merged; ten are inferred), EG levels `round(99*2^((x-99)/8))`, velocity-sens table,
+algorithm (DX 1-32 -> 55..78, equivalent algorithms merged; DX 13, 20, 21, 24, 26, 27 are inferred, the rest seen), EG levels `round(99*2^((x-99)/8))`, velocity-sens table,
 frequency (ratio and fixed mode), carrier/modulator class bits (standard DX7 carrier sets), OSC Volume `100*2^((x-99)/16)` divided by
 sqrt(carrier count) for carriers, key-sync -> Phase Sync, rate scaling -> `Time Mod.Source` 30 with `Time Mod.Intensity` table
 0,-4,-9,-14,-18,-22,-27,-32 written only when the stage time is >= 7. NOT matched: the four EG times and their curve bytes (time falls
