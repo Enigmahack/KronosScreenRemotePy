@@ -12,6 +12,7 @@ OSC(i+1) / EG(i+1) (OSC blocks are 45 bytes apart, EG blocks 23).
 from __future__ import annotations
 
 import json
+import math
 from functools import lru_cache
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -23,11 +24,22 @@ PROGRAM_SIZE = 4954
 OSC_STRIDE = 45
 EG_STRIDE = 23
 VEL_SENS = (0, 18, 35, 47, 58, 67, 75, 82)          # DX7 key velocity sens 0-7 -> OSC Volume Velocity Sens (exact, 8 of 8)
-# DX7 algorithm (0-based) -> MOD-7 "[OSC] Algorithm" value. Seen in the 64 loaded voices; the rest are None.
-ALGORITHM: Dict[int, int] = {1: 55, 2: 56, 3: 57, 4: 58, 5: 59, 6: 60, 7: 60, 9: 61, 11: 62, 13: 63, 14: 63, 15: 64, 16: 64,
-                             17: 65, 18: 66, 21: 69, 22: 70, 24: 72, 28: 75, 29: 76, 30: 77, 31: 78}
-UNMAPPED = ("EG times", "OSC Volume", "OSC Feedback Level", "amp mod sens", "LFO", "pitch EG", "key scaling ramps",
-            "algorithms not seen in the 64 voices (0, 8, 10, 12, 19, 20, 23, 25-27)")
+# DX7 algorithm number 1-32 -> MOD-7 "[OSC] Algorithm" value. DX algorithms that differ only in where the feedback loop sits
+# share one MOD-7 value. 22 of the 32 were seen in the 64 loaded voices and all agree with this table; the other ten
+# (DX 1, 9, 11, 13, 20, 21, 24, 26, 27, 28) are inferred from it: the seen values fill 55..78 with no gap once equivalent
+# algorithms are merged. HW-VERIFY: load a DX7 bank that uses those ten and compare.
+_ALG_GROUPS = ((1, 2), (3,), (4,), (5,), (6,), (7, 8, 9), (10, 11), (12, 13), (14, 15), (16, 17), (18,), (19,), (20,), (21,),
+               (22,), (23,), (24,), (25,), (26, 27), (28,), (29,), (30,), (31,), (32,))
+ALGORITHM: Dict[int, int] = {dx - 1: 55 + i for i, grp in enumerate(_ALG_GROUPS) for dx in grp}      # key: 0-based as stored
+ALGORITHM_SEEN = frozenset({1, 2, 3, 4, 5, 6, 7, 9, 11, 13, 14, 15, 16, 17, 18, 21, 22, 24, 28, 29, 30, 31})
+# DX7 carriers per algorithm number (operator numbers 1-6). Checked against the Program's own Macro OSCn Class bits for the
+# 22 algorithms seen (all agree).
+CARRIERS = {1: (1, 3), 2: (1, 3), 3: (1, 4), 4: (1, 4), 5: (1, 3, 5), 6: (1, 3, 5), 7: (1, 3), 8: (1, 3), 9: (1, 3),
+            10: (1, 4), 11: (1, 4), 12: (1, 3), 13: (1, 3), 14: (1, 3), 15: (1, 3), 16: (1,), 17: (1,), 18: (1,),
+            19: (1, 4, 5), 20: (1, 2, 4), 21: (1, 2, 4, 5), 22: (1, 3, 4, 5), 23: (1, 2, 4, 5), 24: (1, 2, 3, 4, 5),
+            25: (1, 2, 3, 4, 5), 26: (1, 2, 4), 27: (1, 2, 4), 28: (1, 3, 6), 29: (1, 2, 3, 5), 30: (1, 2, 3, 6),
+            31: (1, 2, 3, 4, 5), 32: (1, 2, 3, 4, 5, 6)}
+UNMAPPED = ("EG times and curves (and the rate-scaling Time Mod.Intensity, written only when a stage time is >= 7)", "OSC Feedback Level", "amp mod sens", "LFO", "pitch EG", "key scaling ramps")
 
 
 class Mod7Fields:
@@ -74,6 +86,15 @@ def eg_level(x: int) -> int:
     return int(99 * 2.0 ** (-(99 - x) / 8) + 0.5)
 
 
+def osc_volume(output_level: int, carriers: int, is_carrier: bool) -> int:
+    """DX7 operator output level -> MOD-7 OSC Volume: 100 * 2^((x-99)/16), a carrier divided by sqrt(carrier count) so that
+    the mix keeps its level. Exact on all 384 operators of the 64 loaded voices."""
+    if output_level == 0:
+        return 0
+    m = 100 * 2.0 ** (-(99 - output_level) / 16)
+    return int((m / math.sqrt(carriers) if is_carrier else m) + 0.5)
+
+
 def frequency(mode: int, coarse: int, fine: int, detune: int) -> Tuple[int, int, int, int]:
     """-> (ratio coarse, ratio fine, offset coarse, offset fine) as signed field values.
     Ratio mode: coarse (0 = 0.5) * (1 + fine/100) * 2^((detune-7)/1200), rounded to 0.001, split into integer part and
@@ -101,13 +122,15 @@ def convert_voice(packed: bytes) -> bytes:
     b = bytearray(_template())
     name = dx7_voice.name_of(packed).encode("latin-1")     # trailing spaces dropped, NUL padded (24-byte name field)
     b[0:24] = name[:24].ljust(24, bytes(1))
-    a = ALGORITHM.get(p["algorithm"])
-    if a is not None:
-        f.set(b, "[OSC] Algorithm", a)
+    dx_alg = p["algorithm"] + 1
+    f.set(b, "[OSC] Algorithm", ALGORITHM[p["algorithm"]])
+    carriers = CARRIERS[dx_alg]
     b[2852] = (p["transpose"] - 24) & 0xFF
     for op in range(6):
         g = lambda k: p[f"op{op}_{k}"]                                # noqa: E731
         e, o = EG_STRIDE * op, OSC_STRIDE * op
+        f.set(b, "[EG1] Time Mod.Source", 30, e)                       # key follower: carries the DX7 rate scaling
+        f.set(b, "[OSC1] Phase Sync", 0 if p["osc_sync"] else 2, o)     # DX7 oscillator key sync on -> 0, off -> 2
         f.set(b, "[EG1] Start Level", eg_level(g("eg_l4")), e)
         f.set(b, "[EG1] Attack Level", eg_level(g("eg_l1")), e)
         f.set(b, "[EG1] Break Level", eg_level(g("eg_l2")), e)
@@ -118,6 +141,9 @@ def convert_voice(packed: bytes) -> bytes:
         f.set(b, "[OSC1] Frequency Ratio (Fine)", _signed(rf, 11), o)
         f.set(b, "[OSC1] Frequency Offset (Coarse)", _signed(oc, 15), o)
         f.set(b, "[OSC1] Frequency Offset (Fine)", _signed(of, 8), o)
+        is_carrier = (6 - op) in carriers                              # stored index 0 is DX operator 6
+        f.set(b, f"[Macro] OSC{op + 1} Class", 0 if is_carrier else 1)
+        f.set(b, "[OSC1] Volume", osc_volume(g("output_level"), len(carriers), is_carrier), o)
         f.set(b, "[OSC1] Volume Velocity Sens", VEL_SENS[g("key_vel_sens")], o)
         f.set(b, "[OSC1 Keyboard Track] Center Key", g("bp") + 21, o)
     return bytes(b)

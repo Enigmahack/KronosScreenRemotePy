@@ -23,7 +23,7 @@ except OSError:
 
 F = M._fields()
 fails = []
-KNOWN_ALG = set(M.ALGORITHM)
+KNOWN_ALG = set(M.ALGORITHM)   # every algorithm; the ten unseen ones are inferred, see ALGORITHM_SEEN
 for i, (pk, rp) in enumerate(zip(packed, real)):
     out = M.convert_voice(pk)
     p = D.unpack(pk)
@@ -35,6 +35,10 @@ for i, (pk, rp) in enumerate(zip(packed, real)):
         fails.append((i, "algorithm"))
     for op in range(6):
         e, o = M.EG_STRIDE * op, M.OSC_STRIDE * op
+        if F.get(out, "[OSC1] Volume", o) != F.get(rp, "[OSC1] Volume", o):
+            fails.append((i, f"op{op} volume"))
+        if F.get(out, f"[Macro] OSC{op + 1} Class") != F.get(rp, f"[Macro] OSC{op + 1} Class"):
+            fails.append((i, f"op{op} class"))
         for nm in ("[EG1] Start Level", "[EG1] Attack Level", "[EG1] Break Level", "[EG1] Sustain Level",
                    "[EG1] Release Level"):
             if F.get(out, nm, e) != F.get(rp, nm, e):

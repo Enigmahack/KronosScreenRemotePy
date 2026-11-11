@@ -569,6 +569,21 @@ forward twin with bit 0x200 set in the sample record word at +0x3C; it maps to t
 Zone MS Reverse bit (bit 7 of zone byte 21) is set. Drum Kits and Wave Sequences get the new mappings but still switch off
 (Drum Kit) or refuse (Wave Sequence) a sample with no equivalent.
 
+### DX7 -> MOD-7 import (2026-11-11, work in progress; code `Conversion/dx7_to_mod7.py`)
+Fitted from the 64 voices the Nautilus built from ROM1A/ROM1B (`Z:/DX7 EXAMPLES/NautilusLoaded/`); `python tests/test_dx7_mod7.py`
+pins every field that reproduces them exactly, `python tests/dx7_mod7_harness.py` lists what does not. The MOD-7 section starts at
+Program body byte 2902 and is bit-packed (`Resources/Conversion/Mod7Fields.json`, from `Prog_EXi.txt`). EXACT: name, transpose,
+algorithm (DX 1-32 -> 55..78, equivalent algorithms merged; ten are inferred), EG levels `round(99*2^((x-99)/8))`, velocity-sens table,
+frequency (ratio and fixed mode), carrier/modulator class bits (standard DX7 carrier sets), OSC Volume `100*2^((x-99)/16)` divided by
+sqrt(carrier count) for carriers, key-sync -> Phase Sync, rate scaling -> `Time Mod.Source` 30 with `Time Mod.Intensity` table
+0,-4,-9,-14,-18,-22,-27,-32 written only when the stage time is >= 7. NOT matched: the four EG times and their curve bytes (time falls
+with rate; rate scaling acts like +2.5 rate per step, output level like +0.08 rate per step below 99, and the level drop matters, so
+the 64 real voices, whose inputs move together, cannot separate them), pitch EG (EG9), LFO, keyboard-track ranges and ramps,
+feedback, and a few flags. NEXT: load the four controlled banks from `python -m Conversion.dx7_probe_bank <dir>` (already written to
+`Z:/DX7 EXAMPLES/Probes/PROBE-ATK|DEC|SLP|REL.SYX`: 32 voices x 6 independent operators, algorithm 32) into Nautilus EXi banks, read
+the Programs back over SysEx, and fit the time and curve bytes against `probe_plan(stage)`. `Data/dx7_voice.pack` / `build_bank`
+write DX7 voices (round-trips all 74,752 corpus voices, `tests/test_dx7_pack.py`). The converter is unverified on any instrument.
+
 ### Third-party packs (2026-11-11)
 A Program, Drum Kit or Wave Sequence stores a sample bank as a 16-byte id: EXs1-126 use the legacy `KORG ..MS ` form (byte 15 =
 `(n+1)<<1`, which cannot hold 127+), while EXs127+ and every third-party pack are named by the pack's own id, the `Bank.info` / option
