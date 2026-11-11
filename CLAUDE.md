@@ -566,8 +566,8 @@ mono/stereo flag. A zone with no equivalent plays ROM multisample 0 (Acoustic Pi
 `ConversionResult.substitutions` lists those zones, and the Librarian logs them. A multisample with only some zones on the
 other instrument is used with a "may differ slightly" warning. A Kronos "...REV" multisample is the same PCM block as its
 forward twin with bit 0x200 set in the sample record word at +0x3C; it maps to the forward sample and the zone's
-Zone MS Reverse bit (bit 7 of zone byte 21) is set. Drum Kits and Wave Sequences get the new mappings but still switch off
-(Drum Kit) or refuse (Wave Sequence) a sample with no equivalent.
+Zone MS Reverse bit (bit 7 of zone byte 21) is set. Drum Kits and Wave Sequences get the new mappings; a Drum Kit zone with no equivalent is switched off
+(a kit with none left is refused), a Wave Sequence step with none plays the default piano with a warning (`Conversion/media.py`).
 
 ### DX7 -> MOD-7 import (2026-11-11, `Conversion/dx7_to_mod7.py`)
 A port of the instrument's own import: `CFileDX7Syx::ImportProgram/ImportOperator/ImportCommonParams/FixAmpEG/

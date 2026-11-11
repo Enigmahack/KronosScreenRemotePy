@@ -23,7 +23,7 @@ The new sample mapping reaches them (better ROM matches, EXs banks, bank-id rewr
 
 - [ ] A Drum Kit zone with no equivalent is switched off; a kit where every zone has none is refused. Decide whether a kit zone
       should get a fallback sample instead (the default piano makes no sense on a drum note) or stay silent and be listed.
-- [ ] A Wave Sequence with one unmatched step is refused outright. Decide: skip the step, replace it, or keep refusing.
+- [x] A Wave Sequence step with no equivalent plays the default piano with a warning (media.convert_wave_seq); a step that cannot be a piano (drum-like) is the open question.
 - [ ] `remap_drum_kit` / `remap_wave_seq` take no `notes`, so a partial multisample in a Wave Sequence step gets no
       "may differ slightly" warning and a Drum Kit never reports one.
 - [ ] Reverse: a Wave Sequence step that points at a Kronos REV multisample maps to the forward sample but nothing sets a
