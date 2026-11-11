@@ -172,6 +172,17 @@ class RomWaveformMap:
         return m
 
 
+def _kronos_bank_ref(n: int) -> Optional[bytes]:
+    """The 16-byte bank id a Kronos Program stores for EXs<n>: the legacy KORG/MS form for EXs1-126 (byte 15 holds
+    (n + 1) << 1, which only fits a byte up to 126), else the pack's own raw id from the EXs catalog (EXs127+ and every
+    third-party pack). None when the catalog does not know the bank."""
+    if n <= 126:
+        return KORG_MS_PREFIX + bytes([(n + 1) << 1])
+    from Tools.exs_option_index import ExsOptionIndex
+    raw = ExsOptionIndex.from_catalog().uuid_for_exs_number(n)
+    return None if raw is None else bytes(raw)
+
+
 class ReverseRomWaveformMap:
     """Nautilus ROM sample -> Kronos ROM sample, for the same lookups RomWaveformMap offers. Where several Kronos
     samples map to one Nautilus sample, one with identical audio wins, then the lowest index."""
@@ -187,11 +198,15 @@ class ReverseRomWaveformMap:
         self._best = best
         self._fwd = forward
         self._by_uuid: Dict[Tuple[str, str, int], SampleTarget] = {}
+        bank_ref: Dict[int, Optional[bytes]] = {}
         for (kind, n, kronos_index), t in forward._ext.items():
             if t.uuid is not None:
+                if n not in bank_ref:
+                    bank_ref[n] = _kronos_bank_ref(n)
+                if bank_ref[n] is None:
+                    continue                  # a bank with no reference form we can write: never guess one
                 key = (kind, bytes([*t.uuid[:15], t.uuid[15] & 0xFE]).hex().upper(), t.index)
-                self._by_uuid.setdefault(key, SampleTarget(kronos_index, KORG_MS_PREFIX + bytes([(n + 1) << 1]),
-                                                           t.partial))
+                self._by_uuid.setdefault(key, SampleTarget(kronos_index, bank_ref[n], t.partial))
 
     def lookup(self, section: str, bank: int, nautilus_index: int) -> Optional[SampleTarget]:
         hit = self._best.get((section, nautilus_index)) if bank == 0 else None
