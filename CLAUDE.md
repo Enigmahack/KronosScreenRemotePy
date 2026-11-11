@@ -622,7 +622,7 @@ line here only after the live check. Back up any slot before writing (the conver
    list with MLSD? (The Nautilus accepts RNTO-over-existing and rejects MLSD, 2026-10-22.)
 2. `Data/kmp_multisample.py:126` - copy a test .KMP with no RLP2/RLP3 to the unit and see whether the Kronos
    loads it, and what the Sample Editor then shows.
-3. `Core/sysex_service.py:725` - replies are matched by function only. With a second client (or front-panel
+3. `Core/sysex_service.py:725` - write/store replies are matched by function only (object DUMP replies are now matched by obj+bank+slot, 2026-11-11: `SysExDumpCollector.collect(expect_bank=, expect_index=)`, after a live Nautilus read took an HD-1-sized stray Program dump for an EXi slot; `tests/test_dump_match.py`). With a second client (or front-panel
    activity) during a dump, does a stray 0x24 get taken for the wanted reply?
 4. Hardware VALUE-slider CC: `tests/live_midi.py <host> --listen 30` while moving the slider; check GLOBAL >
    MIDI has CC transmit on first.

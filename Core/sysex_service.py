@@ -698,7 +698,8 @@ class SysExService(QObject):
         if dump is None or not self.can_dump:
             return None
         req = dump.object_dump_request(obj, bank, index)
-        msgs = dump.collect(req, obj, expected_count=1, no_response_ms=no_response_ms)
+        msgs = dump.collect(req, obj, expected_count=1, no_response_ms=no_response_ms,
+                            expect_bank=bank, expect_index=index)
         return msgs[0] if msgs else None
 
     def dump_object_parsed(self, obj: int, bank: int, index: int,

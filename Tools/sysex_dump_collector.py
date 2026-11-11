@@ -49,7 +49,12 @@ class SysExDumpCollector:
 
     def collect(self, request_hex: str, expect_obj: int, expected_count: Optional[int],
                 idle_ms: int = 600, no_response_ms: int = 4000,
-                stall_ms: int = 4000, overall_ms: int = 60000) -> List[bytes]:
+                stall_ms: int = 4000, overall_ms: int = 60000,
+                expect_bank: Optional[int] = None, expect_index: Optional[int] = None) -> List[bytes]:
+        """Send `request_hex` and gather the object dumps of type `expect_obj` that come back. With `expect_bank` /
+        `expect_index` only a dump of exactly that bank / slot counts: a stray or late dump of the same object type (another
+        bank, another slot, e.g. an answer to an earlier or somebody else's request) is ignored instead of being taken
+        for the reply (seen live: an HD-1-sized Program accepted for an EXi slot)."""
         with self._gate:
             results: List[bytes] = []
             results_lock = threading.Lock()
@@ -61,6 +66,8 @@ class SysExDumpCollector:
             def on_msg(m: bytes):
                 dump0 = self._codec.parse_object_dump(m)
                 if dump0 is not None and dump0.obj == expect_obj:
+                    if (expect_bank is not None and dump0.bank != expect_bank) or                             (expect_index is not None and dump0.index != expect_index):
+                        return
                     with results_lock:
                         results.append(m)
                     now = time.monotonic()
