@@ -28,8 +28,15 @@ The new sample mapping reaches them (better ROM matches, EXs banks, bank-id rewr
       "may differ slightly" warning and a Drum Kit never reports one.
 - [ ] Reverse: a Wave Sequence step that points at a Kronos REV multisample maps to the forward sample but nothing sets a
       reverse flag (the Program zone has a Reverse bit; check whether a Wave Sequence step or a Drum Kit zone has one).
-- [ ] Drum Kits reference drumsamples; 3,189 Kronos drumsamples have no Nautilus match (mostly Kronos-only banks). List which
-      factory kits lose notes, and how many.
+- [x] Drum Kits reference drumsamples; 3,189 Kronos drumsamples have no Nautilus match (mostly Kronos-only banks). MEASURED 2026-11-11 on the
+      units' own INT + GM kits (49 non-Init kits each; script in the session scratchpad, rerun with `tests/live_*` dumps of obj 4 bank 0 / 0x10):
+      Kronos -> Nautilus: 2,341 of 10,021 zones (23%) switched off, 1 kit refused (Hip Hop Kit: 40 zones, none mapped). The Kronos "(Mono)" kits lose
+      ~55%, Cuban Perc (Mono) 79%, the GM kits (STANDARD..ORCHESTRA) 34-46%, the stereo factory kits only 0-4 zones. Nautilus -> Kronos: 5,888 of
+      10,328 zones (57%) switched off, none refused; every factory kit loses 20-80% (RockAmbi/JazzAmbi 70-80%), the GM kits 24-46%, SFX 0.
+      Wave Sequences (150 INT each): 9 of 9,516 steps substituted Kronos -> Nautilus, 70 of 9,457 Nautilus -> Kronos.
+      OPEN, owner decision: a kit that keeps 20-80% of its zones is a weak result for a conversion tool. Options: (a) a name/category nearest
+      match among the target ROM drumsamples (needs the target's full drumsample name list, not only the matched ones), (b) fallback to the
+      GM-kit sample of the same note, (c) keep silent + listed (today).
 - [ ] Drum Kits and Wave Sequences are the same size on both instruments, so a wrong-family one cannot be detected at push.
       Look for another marker (bank-id form in the references, ROM index range) or carry the family with the object.
 - [ ] The "Every sample in this kit has no equivalent" refusal and the silent-notes warning: check them against real kits.
