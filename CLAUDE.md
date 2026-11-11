@@ -584,7 +584,13 @@ Checked on 228 distinct voice/Program pairs (ROM1A/B and the P/Q bank dumps, `te
 written; the other 8 are bank-P voices with repeated names (E.PIANO 1, HARPSICH 1, ...), probably paired with the wrong corpus
 voice. Bytes below 2902 that vary between the real Programs (HD-1 oscillator area, offsets 90..1291) are stale data, not derived
 from the voice, and are left alone. `python tests/test_dx7_mod7.py` pins this; `tests/dx7_mod7_harness.py` lists field mismatches.
-Not verified on any instrument: load a converted bank on the Nautilus and compare sounds with the native import.
+Live check 2026-11-11 (Nautilus 192.168.100.27, read-only): ROM1A / ROM1B loaded natively into bank P (0x49) slots 0-63 versus
+`Conversion.dx7_push` output (`tests/live_dx7_push.py <host> <syx> --compare-bank 0x49 --compare-slot 0|32`): names, the whole
+MOD-7 section, the LFO bytes, transpose and the LFO-sign short are byte-identical on all 64 Programs. Only 22 bytes per Program
+differ, all in the unused HD-1 oscillator area below 2902 (offsets 90..1291, 2567..2850: same values on 62 of 64, zeros on 2, and
+different from the earlier Q/R and P/Q loads, so they depend on the unit's state, not on the voice). Still to do: write a converted
+bank to the unit (`--write`) and compare by ear with the native import. The push path is `Conversion/dx7_push.py`
+(`tests/test_dx7_push.py`).
 
 ### Third-party packs (2026-11-11)
 A Program, Drum Kit or Wave Sequence stores a sample bank as a 16-byte id: EXs1-126 use the legacy `KORG ..MS ` form (byte 15 =
