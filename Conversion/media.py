@@ -20,10 +20,13 @@ def convert_drum_kit(body: bytes, rom_map, exs: ExsOptionIndex, source: str = "K
     remapped, unmapped = remap_drum_kit(body, rom_map, exs, switch_off_unmapped=True, approx=approx)
     similar = []
     if approx:
-        tiers = {t: sum(1 for _, x, _ in approx if x == t) for t in ("close", "approx", "category", "nearest")}
-        similar.append(f"{len(approx)} zone(s) use the closest-sounding {target} drum sample, not the same recording "
-                       f"({tiers['close']} very close, {tiers['approx']} similar, {tiers['category']} only the same kind of "
-                       f"sound, {tiers['nearest']} only the nearest sound of any kind): check them by ear.")
+        tiers = {t: sum(1 for _, x, _ in approx if x == t) for t in ("exact", "close", "approx", "category", "nearest", "merged")}
+        used = len(approx) - tiers["merged"]
+        similar.append(f"{used} zone(s) use a {target} drum sample chosen by its audio ({tiers['exact']} identical to the mono/stereo "
+                       f"counterpart, {tiers['close']} very close, {tiers['approx']} similar, {tiers['category']} only the same kind of "
+                       f"sound, {tiers['nearest']} only the nearest sound of any kind): check them by ear."
+                       + (f" {tiers['merged']} zone(s) holding the right half of a stereo pair were dropped, the left half "
+                          "zone plays the mono sum." if tiers["merged"] else ""))
     if not unmapped:
         return ConversionResult(remapped, similar)
     before = {n for n, _, _, _ in iter_drum_kit_sample_refs(body)}
@@ -48,7 +51,13 @@ def convert_wave_seq(body: bytes, rom_map, exs: ExsOptionIndex, source: str = "K
     if len(body) != WAVE_SEQ_SIZE:
         return ConversionResult(None, [], [f"{source} Wave Sequence body is {len(body)} bytes, expected {WAVE_SEQ_SIZE}."])
     warnings: list = []
-    remapped, unmapped = remap_wave_seq(body, rom_map, exs, substitute=True, notes=warnings)
+    approx: list = []
+    remapped, unmapped = remap_wave_seq(body, rom_map, exs, substitute=True, notes=warnings, approx=approx)
+    if approx:
+        tiers = {t: sum(1 for _, x, _ in approx if x == t) for t in ("close", "approx", "category", "nearest")}
+        warnings.append(f"{len(approx)} step(s) use the {target} multisample that sounds closest (chosen by its audio: {tiers['close']} very "
+                        f"close, {tiers['approx']} similar, {tiers['category']} same kind of sound, {tiers['nearest']} nearest of any kind): "
+                        "steps " + ", ".join(w.split()[1] for w, _, _ in approx[:12]) + (f" and {len(approx) - 12} more" if len(approx) > 12 else "") + ".")
     steps = [u.where for u in unmapped]
     if steps:
         warnings.append(f"The waveform for {', '.join(steps[:12])}{' and ' + str(len(steps) - 12) + ' more' if len(steps) > 12 else ''}"

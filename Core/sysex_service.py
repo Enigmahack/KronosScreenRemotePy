@@ -90,6 +90,10 @@ class DumpGate:
             return self._depth > 0
 
 
+# Body sizes (bytes) an object type can have on a Kronos / Nautilus: Program HD-1 / EXi, Combi, Song Timbre Set, Drum Kit,
+# Wave Sequence, Nautilus Arp Pattern. Types not listed are not size-checked.
+_KNOWN_BODY_SIZES = {0: {3706, 4960, 3700, 4954}, 1: {7810, 5640}, 2: {7810, 5640}, 4: {38424}, 5: {2216}, 0x19: {556}}
+
 _NO_REPLY = object()  # sentinel: distinct from any real reply value (0, False, b"", ...)
 
 
@@ -704,8 +708,15 @@ class SysExService(QObject):
 
     def dump_object_parsed(self, obj: int, bank: int, index: int,
                            **kw) -> Optional[ObjectDump]:
-        raw = self.dump_object(obj, bank, index, **kw)
-        return self._codec.parse_object_dump(raw) if raw else None
+        # A dump whose body is not a size this object type can have lost bytes on the way (a Kronos Drum Kit once
+        # arrived as 8166 bytes instead of 38424, with its F7 intact): ask again, then give up rather than return it.
+        sizes = _KNOWN_BODY_SIZES.get(obj)
+        for _ in range(3):
+            raw = self.dump_object(obj, bank, index, **kw)
+            parsed = self._codec.parse_object_dump(raw) if raw else None
+            if parsed is None or sizes is None or len(parsed.body) in sizes:
+                return parsed
+        return None
 
     @contextlib.contextmanager
     def hold_dump_gate(self):

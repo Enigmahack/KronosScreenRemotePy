@@ -42,8 +42,15 @@ The new sample mapping reaches them (better ROM matches, EXs banks, bank-id rewr
       uses it; the warning counts the zones per tier. Result on the factory kits: Kronos -> Nautilus 23% -> 0.4% zones switched off; Nautilus ->
       Kronos 57% -> 7% (the rest: EXs-bank samples / no usable audio). Also fixed: Kronos ROM drum sample #0 is a real sample (second velocity layer
       of the BD-01 kick), only a Nautilus source's #0 is the 'no sample' filler. UNVERIFIED BY EAR; Wave Sequences still use the exact map only.
-      Not done: EXs-bank drum samples of the source (no similarity data), stereo L/R sibling handling (a Kronos mono sample may land on a Nautilus
-      '-L' half), re-running the fingerprint for third-party banks.
+      STEREO PAIRS (2026-11-11): the Nautilus stores a stereo drum sample as adjacent "X-L"/"X-R" drum samples (1,090 pairs); the Kronos keeps the
+      MONO SUM ((L+R)>>1) as one sample: 173 Kronos drum samples are byte-identical to the sum of a pair (exact, no fuzzy matching). Kronos -> Nautilus
+      therefore points the zone at the pair's "-L" sample and sets the zone's stereo flag (byte 15 bit 0), the way the factory kits reference a stereo
+      sample (755 flagged "-L"-only references in the Nautilus factory kits); Nautilus -> Kronos looks a half up by its pair's sum and drops the "-R"
+      zone when the "-L" zone is in the same note (a second copy would double it). HW-VERIFY: that flag=1 on the "-L" id plays the whole pair
+      (inferred from the factory kits, not heard).
+      WAVE SEQUENCES: the same fingerprint search on multisamples (one representative zone each) fills steps with no twin: piano substitutions fell
+      from 9 to 1 (Kronos -> Nautilus) and from 70 to 7 (Nautilus -> Kronos) over the 150 INT sequences.
+      Not done: EXs-bank drum samples of the source (no similarity data), re-running the fingerprint for third-party banks.
 - [ ] Drum Kits and Wave Sequences are the same size on both instruments, so a wrong-family one cannot be detected at push.
       Look for another marker (bank-id form in the references, ROM index range) or carry the family with the object.
 - [ ] The "Every sample in this kit has no equivalent" refusal and the silent-notes warning: check them against real kits.

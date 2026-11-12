@@ -30,10 +30,11 @@ class SampleTarget:
     uuid: Optional[bytes] = None
     partial: bool = False
     reverse: bool = False
+    stereo: Optional[bool] = None   # drum samples: force the mono/stereo flag (a Nautilus stereo pair is entered as its "-L" sample, flagged stereo)
 
     def ref_bytes(self, source_uuid: bytes) -> bytes:
-        """The 16-byte bank reference to write; the source's mono/stereo flag (byte 15 bit 0) is kept."""
-        flag = source_uuid[15] & 1
+        """The 16-byte bank reference to write; the source's mono/stereo flag (byte 15 bit 0) is kept unless `stereo` is set."""
+        flag = source_uuid[15] & 1 if self.stereo is None else int(self.stereo)
         if self.uuid is None:
             return KORG_MS_PREFIX + bytes([flag])
         return self.uuid[:15] + bytes([(self.uuid[15] & 0xFE) | flag])
@@ -101,7 +102,7 @@ class RomWaveformMap:
         self._source: Dict[Tuple[str, int], Optional[str]] = {}
         self._manual: set = set()
         self._nautilus_banks: set = set()   # bank ids (upper-case hex, flag bit cleared) of every Nautilus EXs bank
-        self._similar: Dict[str, Dict[int, Tuple[int, float, str]]] = {}   # DrumSampleSimilarity.json, both directions
+        self._similar: Dict[str, Dict[int, tuple]] = {}   # DrumSampleSimilarity.json, both directions
 
     def lookup(self, section: str, bank: int, kronos_index: int) -> Optional[SampleTarget]:
         """`bank` 0 is the Kronos ROM, N >= 1 is its EXs<N>."""
@@ -111,9 +112,14 @@ class RomWaveformMap:
             return None if idx is None else SampleTarget(idx, None, key in self._partial, key in self._reverse)
         return self._ext.get((section, bank, kronos_index))
 
-    def similar_drumsample(self, kronos_index: int) -> Optional[Tuple[SampleTarget, float, str]]:
+    def similar_drumsample(self, kronos_index: int) -> Optional[Tuple[SampleTarget, float, str, bool]]:
         """Closest-sounding Nautilus ROM drum sample for a Kronos one with no exact twin: (target, distance, tier)."""
         hit = self._similar.get("kronos_to_nautilus", {}).get(kronos_index)
+        return None if hit is None else (SampleTarget(hit[0], stereo=True if hit[3] else None), hit[1], hit[2], False)
+
+    def similar_multisample(self, kronos_index: int) -> Optional[Tuple[SampleTarget, float, str]]:
+        """Closest-sounding Nautilus ROM multisample for a Kronos one with no twin (Wave Sequence steps): (target, distance, tier)."""
+        hit = self._similar.get("kronos_to_nautilus_ms", {}).get(kronos_index)
         return None if hit is None else (SampleTarget(hit[0]), hit[1], hit[2])
 
     def reversed(self) -> "ReverseRomWaveformMap":
@@ -174,8 +180,8 @@ class RomWaveformMap:
         m.merge_evidence(_read_json("nautilus_sample_evidence.json", "NautilusSampleEvidence.json"))
         sim = _read_json("drum_sample_similarity.json", "DrumSampleSimilarity.json")
         if isinstance(sim, dict):
-            m._similar = {d: {int(k): (v[0], v[1], v[2]) for k, v in sim.get(d, {}).items()}
-                          for d in ("kronos_to_nautilus", "nautilus_to_kronos")}
+            m._similar = {d: {int(k): tuple(v) for k, v in sim.get(d, {}).items()}
+                          for d in ("kronos_to_nautilus", "nautilus_to_kronos", "kronos_to_nautilus_ms", "nautilus_to_kronos_ms")}
         for b in _read_json("nautilus_exs_banks.json", "NautilusExsBanks.json") or []:
             raw = bytes.fromhex(b["uuid"].replace("-", ""))
             m._nautilus_banks.add(bytes([*raw[:15], raw[15] & 0xFE]).hex().upper())
@@ -224,6 +230,11 @@ class ReverseRomWaveformMap:
 
     def similar_drumsample(self, nautilus_index: int) -> Optional[Tuple[SampleTarget, float, str]]:
         hit = self._fwd._similar.get("nautilus_to_kronos", {}).get(nautilus_index)
+        # a Nautilus pair half becomes a mono Kronos sample; `right`: this is the pair's right half (see remap_drum_kit)
+        return None if hit is None else (SampleTarget(hit[0], stereo=False), hit[1], hit[2], bool(hit[3]))
+
+    def similar_multisample(self, nautilus_index: int) -> Optional[Tuple[SampleTarget, float, str]]:
+        hit = self._fwd._similar.get("nautilus_to_kronos_ms", {}).get(nautilus_index)
         return None if hit is None else (SampleTarget(hit[0]), hit[1], hit[2])
 
     def lookup_uuid(self, section: str, uuid_hex: str, nautilus_index: int) -> Optional[SampleTarget]:

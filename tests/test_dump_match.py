@@ -8,7 +8,7 @@ import Data.nautilus_sysex as nsx
 from Core.sysex_service import SysExService
 from Tools.sysex_dump_collector import SysExDumpCollector
 
-OBJ_PROGRAM = 0x01
+OBJ_PROGRAM = 0x00
 fails = []
 
 
@@ -69,6 +69,11 @@ d = service([stray_bank]).dump_object_parsed(OBJ_PROGRAM, 0x4A, 31, no_response_
 check("only-a-stray-gives-none", d is None)
 d = service([right]).dump_object_parsed(OBJ_PROGRAM, 0x4A, 31, no_response_ms=2000)
 check("plain-reply-still-works", d is not None and d.body[0] == 0x11)
+
+# a dump whose body is not a size a Program can have (bytes lost on the way) is never returned
+short = dump(0x4A, 31, 1500, 0x44)
+d = service([short]).dump_object_parsed(OBJ_PROGRAM, 0x4A, 31, no_response_ms=1000)
+check("short-body-is-rejected", d is None)
 
 print("FAIL: " + ", ".join(fails) if fails else "ALL PASS")
 sys.exit(1 if fails else 0)

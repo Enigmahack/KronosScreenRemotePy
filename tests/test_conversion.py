@@ -154,12 +154,28 @@ check("drumkit-switch-off-reported", r.body is not None and "1 zone(s) switched 
       and "Note 1 zone 1" in r.warnings[0] and "Notes now silent: 1" in r.warnings[1])
 r = convert_drum_kit(drum_kit(0, 9999), dk_map, no_exs)
 check("drumkit-all-unmapped-refused", r.body is None and "nothing would play" in r.refusals[0])
-# A ROM drum sample with no exact twin gets the closest-sounding one (DrumSampleSimilarity.json: Kronos #1 -> Nautilus #208, close)
+# A ROM drum sample with no exact twin gets the closest-sounding one (DrumSampleSimilarity.json). Kronos #1 "BD-01-amb ff" is the
+# mono sum of the Nautilus pair #207/#208 ("-L"/"-R"): the zone points at the "-L" sample and is flagged stereo.
 _real = RomWaveformMap.from_catalog()
 _r = convert_drum_kit(drum_kit(0, 1), _real, no_exs)
-_refs = {(n, z): s for n, z, _, s in iter_drum_kit_sample_refs(_r.body)} if _r.body else {}
-check("drumkit-similar-sample-used", _real.try_map("ROM_DRUMSAMPLES", 1) is None and 208 in _refs.values()
-      and any("closest-sounding" in w and "1 very close" in w for w in _r.warnings) and not any("switched off" in w for w in _r.warnings))
+_refs = [(s, u) for _, _, u, s in iter_drum_kit_sample_refs(_r.body)] if _r.body else []
+check("drumkit-similar-sample-used", _real.try_map("ROM_DRUMSAMPLES", 1) is None and [s for s, _ in _refs] == [207]
+      and _refs[0][1][15] & 1 == 1
+      and any("chosen by its audio" in w and "1 identical" in w for w in _r.warnings) and not any("switched off" in w for w in _r.warnings))
+# the other way: both halves of the pair map to the one mono sample, the right half's zone is dropped when the left is in the note
+from Conversion.media import convert_drum_kit_to_kronos
+_kit = add_dk_zone(add_dk_zone(drum_kit(0, 207), 0, 1, 208), 0, 2, 5000)
+_rr = convert_drum_kit_to_kronos(_kit, _real, no_exs)
+_zs = [(z, s) for n, z, _, s in iter_drum_kit_sample_refs(_rr.body)] if _rr.body else []
+check("drumkit-pair-halves-merge-to-one-mono-zone", (0, 1) in _zs and all(z != 1 for z, _ in _zs) and any("right half" in w for w in _rr.warnings))
+# Wave Sequence steps with no multisample twin use the closest-sounding one instead of the default piano
+_ms = {d: next(int(k) for k, v in _real._similar[d].items() if _real.try_map("ROM_MULTISAMPLES", int(k)) is None)
+       for d in ("kronos_to_nautilus_ms",)}
+_k = _ms["kronos_to_nautilus_ms"]
+_rw = convert_wave_seq(wave_seq(0, _k), _real, no_exs)
+_st = [s for st, _, s in iter_wave_seq_sample_refs(_rw.body) if st == 0] if _rw.body else []
+check("waveseq-similar-multisample-used", _st == [_real._similar["kronos_to_nautilus_ms"][_k][0]]
+      and any("sounds closest" in w for w in _rw.warnings) and not _rw.substitutions)
 # On the Kronos ROM drum sample #0 is a real sample ("BD-01-amb f"), on the Nautilus it is the "no sample" filler of unused zones.
 check("drumkit-kronos-sample-0-is-real", any("Note 2 zone 1" in w for w in convert_drum_kit(add_dk_zone(drum_kit(0, 5), 2, 0, 0), dk_map, no_exs).warnings))
 from Conversion.media import convert_drum_kit_to_kronos

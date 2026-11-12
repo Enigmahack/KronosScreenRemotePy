@@ -170,6 +170,7 @@ def remap_drum_kit(body: bytes, rom_map: RomWaveformMap, exs: ExsOptionIndex,
     with no twin first gets the closest-sounding one (DrumSampleSimilarity.json) when `approx` is given: it receives
     (where, tier, distance) for each such zone and the zone is not listed as unmapped."""
     out, unmapped = bytearray(body), []
+    note_samples = {(n, s) for n, _, u, s in iter_drum_kit_sample_refs(body) if classify(u).kind is RefClass.ROM}
     for note, zone, uuid, sample_id in iter_drum_kit_sample_refs(body):
         # ROM drum sample #0 is "no sample": the Nautilus's own factory kits switch zones on at #0 for unused
         # notes, and it has no entry in the ROM map because there is nothing to map.
@@ -184,7 +185,12 @@ def remap_drum_kit(body: bytes, rom_map: RomWaveformMap, exs: ExsOptionIndex,
             sim = (rom_map.similar_drumsample(sample_id)
                    if approx is not None and classify(uuid).kind is RefClass.ROM and hasattr(rom_map, "similar_drumsample") else None)
             if sim is not None:
-                target, dist, tier = sim
+                target, dist, tier, right_half = sim
+                if right_half and (note, sample_id - 1) in note_samples:
+                    # the pair's left half is in this note too and maps to the same mono sample: a second copy would double it
+                    set_drum_kit_zone_off(out, note, zone)
+                    approx.append((f"Note {note} zone {zone + 1}", "merged", dist))
+                    continue
                 set_drum_kit_zone_uuid(out, note, zone, target.ref_bytes(uuid))
                 set_drum_kit_sample_id(out, note, zone, target.index)
                 approx.append((f"Note {note} zone {zone + 1}", tier, dist))
@@ -196,8 +202,11 @@ def remap_drum_kit(body: bytes, rom_map: RomWaveformMap, exs: ExsOptionIndex,
 
 
 def remap_wave_seq(body: bytes, rom_map: RomWaveformMap, exs: ExsOptionIndex, substitute: bool = False,
-                   notes: Optional[List[str]] = None) -> Tuple[bytes, List[UnmappedRef]]:
-    """With `substitute`, a step whose sample has no equivalent plays the default piano (still returned in the list)."""
+                   notes: Optional[List[str]] = None,
+                   approx: Optional[List[Tuple[str, str, float]]] = None) -> Tuple[bytes, List[UnmappedRef]]:
+    """With `substitute`, a step whose sample has no equivalent plays the closest-sounding ROM multisample by audio when
+    `approx` is given and one is known (it receives (where, tier, distance); the step is not listed as unmapped), else the
+    default piano (still returned in the list)."""
     out, unmapped, partial = bytearray(body), [], []
     for step, uuid, select in iter_wave_seq_sample_refs(body):
         # The Nautilus's own Wave Sequences leave their unused steps on ROM sample #0, which has no Kronos twin.
@@ -210,6 +219,14 @@ def remap_wave_seq(body: bytes, rom_map: RomWaveformMap, exs: ExsOptionIndex, su
             if new.partial:
                 partial.append(str(step + 1))
         elif outcome is _Outcome.UNMAPPED:
+            sim = (rom_map.similar_multisample(select) if substitute and approx is not None
+                   and classify(uuid).kind is RefClass.ROM and hasattr(rom_map, "similar_multisample") else None)
+            if sim is not None:
+                target, dist, tier = sim
+                set_wave_seq_step_uuid(out, step, target.ref_bytes(uuid))
+                set_wave_seq_step_select(out, step, target.index)
+                approx.append((f"Step {step + 1}", tier, dist))
+                continue
             unmapped.append(UnmappedRef(f"Step {step + 1}", reason))
             if substitute:
                 piano = default_piano(rom_map)

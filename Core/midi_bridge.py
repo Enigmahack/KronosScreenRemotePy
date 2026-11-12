@@ -171,6 +171,7 @@ class MidiBridgeClient(QThread):
         self._stop = False
         self._sock: Optional[socket.socket] = None
         self._sock_lock = threading.Lock()
+        self._send_lock = threading.Lock()   # one message at a time: a second sender's F0 between two chunks aborts the first (unit: "MIDI receive error")
 
         self._raw_listeners: List[Callable[[bytes], None]] = []
         self._activity_listeners: List[Callable[[], None]] = []
@@ -215,8 +216,9 @@ class MidiBridgeClient(QThread):
         if sock is None:
             return False
         try:
-            for i in range(0, len(data), 4096):
-                sock.sendall(data[i:i + 4096])
+            with self._send_lock:
+                for i in range(0, len(data), 4096):
+                    sock.sendall(data[i:i + 4096])
             # Queued cross-thread signal → safe to emit from the caller's thread.
             self.message_sent.emit(len(data))
             return True
