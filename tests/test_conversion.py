@@ -154,7 +154,17 @@ check("drumkit-switch-off-reported", r.body is not None and "1 zone(s) switched 
       and "Note 1 zone 1" in r.warnings[0] and "Notes now silent: 1" in r.warnings[1])
 r = convert_drum_kit(drum_kit(0, 9999), dk_map, no_exs)
 check("drumkit-all-unmapped-refused", r.body is None and "nothing would play" in r.refusals[0])
-check("drumkit-rom-sample-0-is-no-sample", convert_drum_kit(add_dk_zone(drum_kit(0, 5), 2, 0, 0), dk_map, no_exs).warnings == [])
+# A ROM drum sample with no exact twin gets the closest-sounding one (DrumSampleSimilarity.json: Kronos #1 -> Nautilus #208, close)
+_real = RomWaveformMap.from_catalog()
+_r = convert_drum_kit(drum_kit(0, 1), _real, no_exs)
+_refs = {(n, z): s for n, z, _, s in iter_drum_kit_sample_refs(_r.body)} if _r.body else {}
+check("drumkit-similar-sample-used", _real.try_map("ROM_DRUMSAMPLES", 1) is None and 208 in _refs.values()
+      and any("closest-sounding" in w and "1 very close" in w for w in _r.warnings) and not any("switched off" in w for w in _r.warnings))
+# On the Kronos ROM drum sample #0 is a real sample ("BD-01-amb f"), on the Nautilus it is the "no sample" filler of unused zones.
+check("drumkit-kronos-sample-0-is-real", any("Note 2 zone 1" in w for w in convert_drum_kit(add_dk_zone(drum_kit(0, 5), 2, 0, 0), dk_map, no_exs).warnings))
+from Conversion.media import convert_drum_kit_to_kronos
+_r = convert_drum_kit_to_kronos(add_dk_zone(drum_kit(0, 5), 2, 0, 0), dk_map, no_exs)
+check("drumkit-nautilus-sample-0-is-no-sample", not any("Note 2" in w for w in _r.warnings))
 
 # ---- KARMA stripper
 filled = bytes((i * 17 + 3) & 0xFF for i in range(WIRE_SIZE_HD1))

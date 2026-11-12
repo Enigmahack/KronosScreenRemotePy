@@ -101,6 +101,7 @@ class RomWaveformMap:
         self._source: Dict[Tuple[str, int], Optional[str]] = {}
         self._manual: set = set()
         self._nautilus_banks: set = set()   # bank ids (upper-case hex, flag bit cleared) of every Nautilus EXs bank
+        self._similar: Dict[str, Dict[int, Tuple[int, float, str]]] = {}   # DrumSampleSimilarity.json, both directions
 
     def lookup(self, section: str, bank: int, kronos_index: int) -> Optional[SampleTarget]:
         """`bank` 0 is the Kronos ROM, N >= 1 is its EXs<N>."""
@@ -109,6 +110,11 @@ class RomWaveformMap:
             idx = self._map.get(key)
             return None if idx is None else SampleTarget(idx, None, key in self._partial, key in self._reverse)
         return self._ext.get((section, bank, kronos_index))
+
+    def similar_drumsample(self, kronos_index: int) -> Optional[Tuple[SampleTarget, float, str]]:
+        """Closest-sounding Nautilus ROM drum sample for a Kronos one with no exact twin: (target, distance, tier)."""
+        hit = self._similar.get("kronos_to_nautilus", {}).get(kronos_index)
+        return None if hit is None else (SampleTarget(hit[0]), hit[1], hit[2])
 
     def reversed(self) -> "ReverseRomWaveformMap":
         if getattr(self, "_reversed", None) is None:
@@ -166,6 +172,10 @@ class RomWaveformMap:
     def from_catalog(cls) -> "RomWaveformMap":
         m = cls.from_entries(_read_json("nautilus_rom_waveform_map.json", "NautilusRomWaveformMap.json"))
         m.merge_evidence(_read_json("nautilus_sample_evidence.json", "NautilusSampleEvidence.json"))
+        sim = _read_json("drum_sample_similarity.json", "DrumSampleSimilarity.json")
+        if isinstance(sim, dict):
+            m._similar = {d: {int(k): (v[0], v[1], v[2]) for k, v in sim.get(d, {}).items()}
+                          for d in ("kronos_to_nautilus", "nautilus_to_kronos")}
         for b in _read_json("nautilus_exs_banks.json", "NautilusExsBanks.json") or []:
             raw = bytes.fromhex(b["uuid"].replace("-", ""))
             m._nautilus_banks.add(bytes([*raw[:15], raw[15] & 0xFE]).hex().upper())
@@ -211,6 +221,10 @@ class ReverseRomWaveformMap:
     def lookup(self, section: str, bank: int, nautilus_index: int) -> Optional[SampleTarget]:
         hit = self._best.get((section, nautilus_index)) if bank == 0 else None
         return None if hit is None else SampleTarget(hit[1], None, (section, hit[1]) in self._fwd._partial)
+
+    def similar_drumsample(self, nautilus_index: int) -> Optional[Tuple[SampleTarget, float, str]]:
+        hit = self._fwd._similar.get("nautilus_to_kronos", {}).get(nautilus_index)
+        return None if hit is None else (SampleTarget(hit[0]), hit[1], hit[2])
 
     def lookup_uuid(self, section: str, uuid_hex: str, nautilus_index: int) -> Optional[SampleTarget]:
         """A Nautilus EXs bank (by its upper-case bank id with the flag bit cleared) -> the Kronos EXs bank holding the same audio."""

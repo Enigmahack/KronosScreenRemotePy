@@ -16,9 +16,16 @@ def convert_drum_kit(body: bytes, rom_map, exs: ExsOptionIndex, source: str = "K
     target = getattr(rom_map, "target_name", "Nautilus")
     if len(body) != DRUM_KIT_SIZE:
         return ConversionResult(None, [], [f"{source} Drum Kit body is {len(body)} bytes, expected {DRUM_KIT_SIZE}."])
-    remapped, unmapped = remap_drum_kit(body, rom_map, exs, switch_off_unmapped=True)
+    approx: list = []
+    remapped, unmapped = remap_drum_kit(body, rom_map, exs, switch_off_unmapped=True, approx=approx)
+    similar = []
+    if approx:
+        tiers = {t: sum(1 for _, x, _ in approx if x == t) for t in ("close", "approx", "category", "nearest")}
+        similar.append(f"{len(approx)} zone(s) use the closest-sounding {target} drum sample, not the same recording "
+                       f"({tiers['close']} very close, {tiers['approx']} similar, {tiers['category']} only the same kind of "
+                       f"sound, {tiers['nearest']} only the nearest sound of any kind): check them by ear.")
     if not unmapped:
-        return ConversionResult(remapped)
+        return ConversionResult(remapped, similar)
     before = {n for n, _, _, _ in iter_drum_kit_sample_refs(body)}
     after = {n for n, _, _, _ in iter_drum_kit_sample_refs(remapped)}
     if not after:
@@ -26,7 +33,7 @@ def convert_drum_kit(body: bytes, rom_map, exs: ExsOptionIndex, source: str = "K
                                            "so nothing would play."])
     shown = [f"{u.where}: {u.reason}" for u in unmapped[:5]]
     more = f" and {len(unmapped) - 5} more" if len(unmapped) > 5 else ""
-    warnings = [f"{len(unmapped)} zone(s) switched off because their sample has no {target} equivalent - "
+    warnings = similar + [f"{len(unmapped)} zone(s) switched off because their sample has no {target} equivalent - "
                 + "; ".join(shown) + more + "."]
     silent = sorted(before - after)
     if silent:

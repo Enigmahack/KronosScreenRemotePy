@@ -164,19 +164,31 @@ def program_zones_not_audio_identical(body: bytes, rom_map: RomWaveformMap) -> L
 
 
 def remap_drum_kit(body: bytes, rom_map: RomWaveformMap, exs: ExsOptionIndex,
-                   switch_off_unmapped: bool = False) -> Tuple[bytes, List[UnmappedRef]]:
-    """With `switch_off_unmapped` a zone whose sample has no Nautilus equivalent is turned off (and still listed)."""
+                   switch_off_unmapped: bool = False,
+                   approx: Optional[List[Tuple[str, str, float]]] = None) -> Tuple[bytes, List[UnmappedRef]]:
+    """With `switch_off_unmapped` a zone whose sample has no exact equivalent is turned off (and still listed). A ROM sample
+    with no twin first gets the closest-sounding one (DrumSampleSimilarity.json) when `approx` is given: it receives
+    (where, tier, distance) for each such zone and the zone is not listed as unmapped."""
     out, unmapped = bytearray(body), []
     for note, zone, uuid, sample_id in iter_drum_kit_sample_refs(body):
         # ROM drum sample #0 is "no sample": the Nautilus's own factory kits switch zones on at #0 for unused
         # notes, and it has no entry in the ROM map because there is nothing to map.
-        if sample_id == 0 and classify(uuid).kind is RefClass.ROM:
+        # On the KRONOS #0 is a real sample ("BD-01-amb f": the second velocity layer of its kick), so only a Nautilus source skips it.
+        if sample_id == 0 and classify(uuid).kind is RefClass.ROM and getattr(rom_map, "target_name", "") == "Kronos":
             continue
         outcome, new, reason = _resolve(uuid, sample_id, rom_map, exs, ROM_DRUMSAMPLES)
         if outcome is _Outcome.REMAPPED:
             set_drum_kit_zone_uuid(out, note, zone, new.ref_bytes(uuid))
             set_drum_kit_sample_id(out, note, zone, new.index)
         elif outcome is _Outcome.UNMAPPED:
+            sim = (rom_map.similar_drumsample(sample_id)
+                   if approx is not None and classify(uuid).kind is RefClass.ROM and hasattr(rom_map, "similar_drumsample") else None)
+            if sim is not None:
+                target, dist, tier = sim
+                set_drum_kit_zone_uuid(out, note, zone, target.ref_bytes(uuid))
+                set_drum_kit_sample_id(out, note, zone, target.index)
+                approx.append((f"Note {note} zone {zone + 1}", tier, dist))
+                continue
             unmapped.append(UnmappedRef(f"Note {note} zone {zone + 1}", reason))
             if switch_off_unmapped:
                 set_drum_kit_zone_off(out, note, zone)

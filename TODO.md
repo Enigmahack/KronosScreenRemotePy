@@ -34,9 +34,16 @@ The new sample mapping reaches them (better ROM matches, EXs banks, bank-id rewr
       ~55%, Cuban Perc (Mono) 79%, the GM kits (STANDARD..ORCHESTRA) 34-46%, the stereo factory kits only 0-4 zones. Nautilus -> Kronos: 5,888 of
       10,328 zones (57%) switched off, none refused; every factory kit loses 20-80% (RockAmbi/JazzAmbi 70-80%), the GM kits 24-46%, SFX 0.
       Wave Sequences (150 INT each): 9 of 9,516 steps substituted Kronos -> Nautilus, 70 of 9,457 Nautilus -> Kronos.
-      OPEN, owner decision: a kit that keeps 20-80% of its zones is a weak result for a conversion tool. Options: (a) a name/category nearest
-      match among the target ROM drumsamples (needs the target's full drumsample name list, not only the matched ones), (b) fallback to the
-      GM-kit sample of the same note, (c) keep silent + listed (today).
+      DONE 2026-11-11 (owner chose nearest match, by AUDIO): `research/build_drum_similarity.py` decrypts every Bank00 drum sample of both
+      instruments (Nautilus Research/Assets/ROM_PCM), fingerprints them (log band energies of four time windows, decay, length) and writes
+      `Resources/Conversion/DrumSampleSimilarity.json` for every sample with no exact twin. Check: for the 720 samples with an exact twin the
+      nearest neighbour is that twin 706 times; below distance 5 the nearest sample has the same name category in 99%. Tiers close (<3) /
+      approx (<5) / category (nearest of the same name category) / nearest (any; the target has none of that kind). `remap_drum_kit(approx=)`
+      uses it; the warning counts the zones per tier. Result on the factory kits: Kronos -> Nautilus 23% -> 0.4% zones switched off; Nautilus ->
+      Kronos 57% -> 7% (the rest: EXs-bank samples / no usable audio). Also fixed: Kronos ROM drum sample #0 is a real sample (second velocity layer
+      of the BD-01 kick), only a Nautilus source's #0 is the 'no sample' filler. UNVERIFIED BY EAR; Wave Sequences still use the exact map only.
+      Not done: EXs-bank drum samples of the source (no similarity data), stereo L/R sibling handling (a Kronos mono sample may land on a Nautilus
+      '-L' half), re-running the fingerprint for third-party banks.
 - [ ] Drum Kits and Wave Sequences are the same size on both instruments, so a wrong-family one cannot be detected at push.
       Look for another marker (bank-id form in the references, ROM index range) or carry the family with the object.
 - [ ] The "Every sample in this kit has no equivalent" refusal and the silent-notes warning: check them against real kits.

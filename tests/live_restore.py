@@ -15,6 +15,7 @@ while time.time() - t < 12 and not svc.can_dump:
     app.processEvents(); time.sleep(0.05)
 assert svc.can_dump; svc.set_device_family("--nautilus" in sys.argv)
 for f in args[1:]:
-    r = restore_from_backup(svc, f, progress=lambda m: None)
+    with svc.hold_dump_gate():
+        r = restore_from_backup(svc, f, progress=lambda m: None)
     print(f, r.ok, r.messages)
 svc.stop()
