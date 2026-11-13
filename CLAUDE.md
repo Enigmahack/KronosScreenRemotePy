@@ -81,6 +81,47 @@ Anything only a real instrument can confirm is marked `# HW-VERIFY:` in the sour
 digest lists the open ones every run, `grep -rn HW-VERIFY` shows them. Remove a note only after a live check.
 Pre-commit runs tier 0: enable with `git config core.hooksPath pipeline/hooks`.
 
+## Architecture invariants (current state - keep these true)
+
+- **The GUI thread never waits on I/O.** Network, FTP, SysEx, disk writes and heavy DSP run on worker threads and report
+  back through signals (`MainWindow._run_bg`-style helpers, `Views/sample_remote_source.run_blocking` for a modal busy
+  dialog on a nested event loop, `SampleEditorModel.run_heavy`). Closing/stopping must not join a worker: retire the
+  thread (`Core.midi_bridge.retire_thread`, `_RETIRED`) and let it finish; never drop the last Python reference to a
+  running `QThread` (the process aborts). Start/stop flags are set in `start()`, never first thing in `run()`.
+  `StreamReceiver` coalesces frames: at most one is ever queued for the GUI.
+- **Settings persistence.** Application code calls `Models.storage.save_settings_async()` and fences with
+  `flush_settings()`; the blocking `save_settings` is the primitive inside `Models/storage.py` and the exit path only.
+  `tests/test_settings_save_routing.py` enforces this. All newest-wins background file writes (settings, SysEx name and
+  bank caches) go through `Core/latest_wins_writer.LatestWinsWriter`. Pass the live `AppSettings` object into windows;
+  never re-load a private copy (saving it would overwrite newer values).
+- **FTP (`Tools/file_manager._FtpWorker`, shared by File Manager, Librarian, Sample Editor, sample push).** One RLock
+  serializes every call. Uploads stage to `<name>.<8hex>.part` then rename over the target; downloads stage locally.
+  Every rename/move/upload checks `file_exists` first because both instruments rename over an existing file silently.
+  Measured server facts (Kronos and Nautilus run the same vsftpd): MLSD is refused (500, the app falls back to LIST);
+  LIST of a missing folder is an EMPTY success, not 550; names are case-sensitive (`a.txt` and `A.TXT` coexist);
+  plain LIST hides dotfiles, so existence checks and `delete_dir` list with `include_hidden=True` (`LIST -a`).
+  `tests/ftp_fake.py` is the one shared fake and implements exactly those facts; `tests/ftp_contract.py` checks them
+  against the fake, or against a live unit with `KRONOS_FTP_CONTRACT=host,user,pass,basefolder`. New FTP tests use the
+  fake; do not write a more forgiving one. Under Git Bash set `MSYS_NO_PATHCONV=1` or leading-slash arguments are rewritten.
+- **Sample push (`Core/sample_ftp.py`).** Children before parents: every `.KSF`, then each `.KMP`, then the `.KSC`; a
+  parent is skipped (and reported) when a child it needs did not arrive. Entry and zone names are validated
+  (`unsafe_name_reason`, `path_guard.ensure_under`) before anything is sent, on push and pull.
+- **Conversion push (`Conversion/push.py`).** Programs, Drum Kits and Wave Sequences are written and Stored first. A Combi
+  or Song Timbre Set is written only if every Program it points at in the same run was committed (written and its
+  bank Stored); otherwise it is skipped with a warning naming the Program.
+- **Librarian sync.** `index.incomplete_banks` is `{bank_key: {slot: consecutive_failures}}`. A pull advances a bank's
+  baseline for the slots that answered and records those that did not; later pulls re-fetch only the unread slots
+  (the record forces this whatever the digest says). After `UNREADABLE_AFTER` (3) failed pulls a slot is "unreadable":
+  quiet, retried on a digest change or the Re-check action. Edits/deletes/placements on an unread slot are held back
+  (`plan.incomplete`); edits to other slots of the bank push normally. Entries flagged Conflicted are never pushed
+  unless force-destructive-write is on. Backups get unique names. Writing into an unread slot needs force plus an
+  explicit confirm, and still fails if the slot cannot be backed up.
+- **Test fakes mirror the real instruments.** If a test passes only because a fake is more forgiving than the
+  hardware, fix the fake (and the contract), not the test.
+- **Line endings.** Most tracked files are CRLF. Preserve each file's endings when editing (a script that replaces a
+  multi-line string must use the file's own `
+`), or the edit silently does not apply and diffs fill with noise.
+
 ## Environment quirks
 
 - The checked-in `.venv/` is **a macOS venv** (`pyvenv.cfg`: Homebrew Python
