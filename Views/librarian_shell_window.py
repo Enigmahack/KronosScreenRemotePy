@@ -4051,7 +4051,6 @@ class LibrarianShellWindow(QDialog):
         cacheable = pcg is self._pcg
         if not cacheable or key not in self._pcg_conv_cache:
             if e.obj_type not in AUTO_CONVERTIBLE:
-                # Set Lists hold user-bank references in the source family's numbering and are not converted.
                 result = ConversionResult(None, [], [f"{_ROOT_LABEL.get(e.obj_type, 'this kind of object')} are not "
                                                      "converted between instruments"])
             else:

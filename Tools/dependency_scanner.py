@@ -31,7 +31,7 @@ from Data.librarian_model import ObjLoc, _READONLY_PROGRAM_BANKS
 from Data.librarian_sysex import (
     OBJ_COMBI, OBJ_DRUM_KIT, OBJ_PROGRAM, OBJ_SET_LIST, OBJ_WAVE_SEQ,
     PROGRAM_HD1_NAUTILUS_SIZE, PROGRAM_HD1_WIRE_SIZE, ZONES_PER_OSC,
-    func33_to_obj_bank, iter_combi_timbre_refs, iter_program_zone_refs, iter_setlist_slot_refs,
+    func33_to_obj_bank, iter_combi_timbre_refs, iter_program_zone_refs, iter_setlist_slot_refs, setlist_slot_base,
     program_drum_track_on, program_drum_track_ref, program_oscillator_mode,
 )
 import Data.object_types as object_types
@@ -58,7 +58,7 @@ def _setlist_slot_is_blank(body: bytes, slot: int) -> bool:
     otherwise look like a real (and near-always already-satisfied,
     misleadingly so) dependency on Program/Combi bank 0 slot 0. Mirrors
     SetListSlot.IsEmpty via SetListBody.FromRawBody in the C# source."""
-    base = _SLOT_BASE + slot * _SLOT_SIZE
+    base = setlist_slot_base(body, slot)
     name = bytes(body[base:base + _NAME_LEN])
     return not name.strip(b"\x00 \t")
 

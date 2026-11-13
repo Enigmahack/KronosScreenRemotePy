@@ -205,7 +205,7 @@ check("window-raw-bypass", len(w._pcg_resolve_content(*addr_p, raw=True)) == 496
 check("window-conversion-cached", len(w._pcg_conv_cache) == 2)
 w._service = Fake(False)
 check("window-no-conversion-same-family", len(w._pcg_resolve_content(*addr_p)) == 4960)
-# a Set List cannot be converted: it is refused (not passed through) and the row says why
+# a Set List is converted too (69416 <-> 69544 bytes)
 w._service = Fake(True)
 w._pcg = kpcg
 sl_blob = pf._KORG_HEADER + pf._make_bank_chunk(b"SBK1", 1, pf.SETLIST_ITEM_SIZE, 0, [bytes(pf.SETLIST_ITEM_SIZE)])
@@ -213,7 +213,8 @@ slp = open_pcg(sl_blob)
 w._pcg = slp
 w._refresh_pcg_tree()
 sl_addr = next(a for a in w._pcg_by_addr if a[0] == pf.OBJ_SET_LIST)
-check("setlist-refused-cross-family", w._pcg_resolve_content(*sl_addr) is None and sl_addr in w._pcg_conv_refused)
+check("setlist-converted-cross-family", len(w._pcg_resolve_content(*sl_addr) or b"") == 69544
+      and sl_addr not in w._pcg_conv_refused)
 w._service = Fake(False)
 check("setlist-passes-same-family", w._pcg_resolve_content(*sl_addr) is not None)
 w._service = Fake(True)

@@ -16,10 +16,12 @@ from Conversion.program import convert_program
 from Conversion.program_reverse import convert_program_to_kronos
 from Conversion.push import ConvertTables
 from Conversion.result import ConversionResult
-from Data.librarian_sysex import OBJ_COMBI, OBJ_DRUM_KIT, OBJ_PROGRAM, OBJ_SONG_TIMBRE, OBJ_WAVE_SEQ
+from Conversion.setlist import convert_setlist
+from Data.librarian_sysex import (OBJ_COMBI, OBJ_DRUM_KIT, OBJ_PROGRAM, OBJ_SET_LIST, OBJ_SONG_TIMBRE,
+                                  OBJ_WAVE_SEQ)
 from Data.pcg_file import FAMILY_KRONOS, FAMILY_NAUTILUS
 
-CONVERTIBLE = (OBJ_PROGRAM, OBJ_COMBI, OBJ_SONG_TIMBRE, OBJ_DRUM_KIT, OBJ_WAVE_SEQ)
+CONVERTIBLE = (OBJ_PROGRAM, OBJ_COMBI, OBJ_SONG_TIMBRE, OBJ_DRUM_KIT, OBJ_WAVE_SEQ, OBJ_SET_LIST)
 
 
 def convert_object(obj_type: int, body: bytes, is_exi: bool, src_family: str, dst_family: str,
@@ -27,7 +29,7 @@ def convert_object(obj_type: int, body: bytes, is_exi: bool, src_family: str, ds
                    program_name: Optional[Callable[[int, int], Optional[str]]] = None) -> ConversionResult:
     """`body` is a wire body (a Program may also be a PCG slot). Same family: returned as is.
 
-    `program_name(Timbre bank byte, slot)` names the Program a Combi Timbre points at in the source set (None when the
+    `program_name(Timbre bank byte, slot)` names the Program a Combi Timbre (or Set List slot) points at in the source set (None when the
     set does not hold it). A Timbre is re-pointed to the other instrument's factory Program only while that name still
     matches the factory Program; a user's own Program of the same slot keeps its place in the same wire bank."""
     if src_family == dst_family:
@@ -48,6 +50,8 @@ def convert_object(obj_type: int, body: bytes, is_exi: bool, src_family: str, ds
             return convert_combi(body, tables.ge_catalog, init_combi_template(True), karma.ArpOptions(),
                                  tables.ge_patterns, ref_map=tables.ref_map, kronos_program_name=program_name)
         return convert_combi_to_kronos(body, init_combi_template(False), tables.ref_map, program_name)
+    if obj_type == OBJ_SET_LIST:
+        return convert_setlist(body, to_nautilus, tables.ref_map, program_name)
     if obj_type == OBJ_DRUM_KIT:
         return (convert_drum_kit if to_nautilus else convert_drum_kit_to_kronos)(body, tables.rom_map, tables.exs)
     if obj_type == OBJ_WAVE_SEQ:

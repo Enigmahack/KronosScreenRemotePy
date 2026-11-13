@@ -183,9 +183,9 @@ def setlist_body_is_init(body: bytes) -> bool:
 def _setlist_slot_name(body: bytes, slot: int) -> str:
     """24-byte name field of one set-list slot (mirrors SetListSlot.IsEmpty)."""
     try:
-        from Tools.setlist_data import _SLOT_BASE, _SLOT_SIZE, _NAME_LEN
-        base = _SLOT_BASE + slot * _SLOT_SIZE
-        return ksx._ascii_trim(body, base, _NAME_LEN)
+        from Data.librarian_sysex import setlist_slot_base
+        from Tools.setlist_data import _NAME_LEN
+        return ksx._ascii_trim(body, setlist_slot_base(body, slot), _NAME_LEN)
     except Exception:
         return ""
 
@@ -293,6 +293,16 @@ class SetListSlotInfo:
         return self.name.strip() == ""
 
 
+def _slot_base(body: bytes, slot_index: int) -> int:
+    """First byte of a slot; a Nautilus body (69544) has a 543-byte slot."""
+    return SLOT_BASE + slot_index * (SLOT_SIZE + 1 if len(body) == 69544 else SLOT_SIZE)
+
+
+def _comment_ofs(body: bytes) -> int:
+    """Offset of the comment inside a slot: +30 on the Kronos, +31 on the Nautilus (Dynamics sits at +30)."""
+    return 31 if len(body) == 69544 else 30
+
+
 def parse_setlist_slot(body: bytes, slot_index: int) -> Optional[SetListSlotInfo]:
     """Port of the per-slot field walk inside SetListBody.FromRawBody's loop.
 
@@ -302,7 +312,7 @@ def parse_setlist_slot(body: bytes, slot_index: int) -> Optional[SetListSlotInfo
     raising). Comments are truncated to whatever bytes remain, exactly like
     the C# `comLen = Math.Min(CommentLen, bin.Length - (b + 30))`.
     """
-    b = SLOT_BASE + slot_index * SLOT_SIZE
+    b = _slot_base(body, slot_index)
     if b + 30 > len(body):
         return None
 
@@ -314,8 +324,9 @@ def parse_setlist_slot(body: bytes, slot_index: int) -> Optional[SetListSlotInfo
     index = body[b + 26]
     hold_time = body[b + 27]
     volume = body[b + 28]
-    com_len = min(COMMENT_LEN, len(body) - (b + 30))
-    comments = ksx._ascii_trim(body, b + 30, com_len) if com_len > 0 else ""
+    com_ofs = _comment_ofs(body)
+    com_len = min(COMMENT_LEN, len(body) - (b + com_ofs))
+    comments = ksx._ascii_trim(body, b + com_ofs, com_len) if com_len > 0 else ""
 
     return SetListSlotInfo(slot_index, slot_name, slot_type, bank, index,
                             color, hold_time, volume, comments)
@@ -332,7 +343,7 @@ def write_setlist_slot_name(body: bytes, slot_index: int, name: str) -> bytes:
     """Port of SetListBody.WriteSlotName: slot name field (24 bytes at the
     slot's own +0), space-padded/truncated like Librarian.PadAscii."""
     b = bytearray(body)
-    base = SLOT_BASE + slot_index * SLOT_SIZE
+    base = _slot_base(body, slot_index)
     padded = _pad_ascii(name, NAME_LEN)
     n = min(NAME_LEN, max(0, len(b) - base))
     if n > 0:
@@ -345,7 +356,7 @@ def write_setlist_slot_color(body: bytes, slot_index: int, color: int) -> bytes:
     (bits 1-0) and font-LSB (bits 7-6) -- mask, don't overwrite those bits,
     same discipline as the C# side's own comment about LibRefs.SetSetListSlotRef."""
     b = bytearray(body)
-    ofs = SLOT_BASE + slot_index * SLOT_SIZE + 24
+    ofs = _slot_base(body, slot_index) + 24
     if ofs < len(b):
         b[ofs] = (b[ofs] & ~0b0011_1100) | ((color & 0x0F) << 2)
     return bytes(b)
@@ -356,7 +367,7 @@ def write_setlist_slot_comments(body: bytes, slot_index: int, comments: str) -> 
     COMMENT_LEN=512 ASCII bytes -- same 512-byte-max the reader already
     respects via `com_len = min(COMMENT_LEN, len(body) - (b + 30))`."""
     b = bytearray(body)
-    ofs = SLOT_BASE + slot_index * SLOT_SIZE + 30
+    ofs = _slot_base(body, slot_index) + _comment_ofs(body)
     padded = _pad_ascii(comments, COMMENT_LEN)
     n = min(COMMENT_LEN, max(0, len(b) - ofs))
     if n > 0:

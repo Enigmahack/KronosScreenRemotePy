@@ -83,12 +83,14 @@ COMBI_WIRE_SIZE_KRONOS, COMBI_WIRE_SIZE_NAUTILUS = 7810, 5640
 
 
 def body_family(obj_type: int, body_len: int) -> Optional[str]:
-    """Which instrument family a Program or Combi wire body belongs to, from its length (None when it can't say:
-    other object types are the same size on both)."""
+    """Which instrument family a Program, Combi or Set List wire body belongs to, from its length (None when it can't
+    say: Drum Kits and Wave Sequences are the same size on both)."""
     if obj_type == OBJ_PROGRAM:
         return program_body_family(body_len)
     if obj_type == OBJ_COMBI:
         return {COMBI_WIRE_SIZE_KRONOS: FAMILY_KRONOS, COMBI_WIRE_SIZE_NAUTILUS: FAMILY_NAUTILUS}.get(body_len)
+    if obj_type == OBJ_SET_LIST:
+        return {SETLIST_ITEM_SIZE: FAMILY_KRONOS, 69544: FAMILY_NAUTILUS}.get(body_len)
     return None
 
 

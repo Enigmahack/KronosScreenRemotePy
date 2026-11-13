@@ -590,8 +590,14 @@ bank whose slot holds factory content is re-pointed to the other instrument's fa
 `KronosToNautilusProgramRefs.json` counts Kronos user banks from 17 (U-A) although a Kronos Combi Timbre byte counts from 18;
 `ProgramRefMap.from_entries` shifts them on load (checked: Kronos names match in 53 of 53 corpus PCGs, Nautilus names 895/909).
 A Timbre is re-pointed to a factory Program only while the source set's Program at that slot still has the factory name
-(`convert_object(..., program_name=)`); otherwise it keeps its slot in the same wire bank. Set Lists are not converted
-(refused with a reason, shown on the dependency row).
+(`convert_object(..., program_name=)`); otherwise it keeps its slot in the same wire bank. Set Lists are converted by
+`Conversion/setlist.py` (Kronos 69416 B <-> Nautilus 69544 B: the Nautilus slot is 543 bytes, a Dynamics byte at +30 pushes the
+comment to +31; footer bytes 10-11 are Kronos-only). A set-list Program bank byte is NOT the Combi Timbre byte: INT 0-5, GM 6,
+g(n) 7-16, user 17-30 (U-A on the Kronos, G on the Nautilus - the same byte), so func-33 = byte + 1 from GM up (8,386 of 8,387
+real Kronos slots resolve with the shift; the old no-shift reading left 1,698 dangling). `setlist_slot_ref`/`set_setlist_slot_ref`
+hide that and the stride, so everything downstream still sees func-33 numbering. Program slots are re-pointed with the same
+factory-name rule as Combi Timbres; Combi/Song slots keep their numbers and are listed in the warnings. Not verified on hardware
+(`# HW-VERIFY:` in `Conversion/setlist.py`, `Data/librarian_sysex.py`).
 
 ### Sample references between instruments (2026-10-29)
 `Resources/Conversion/NautilusSampleEvidence.json` is layered over the hand-made `NautilusRomWaveformMap.json` by

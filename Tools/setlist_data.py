@@ -3,7 +3,7 @@ Set List decode — port of Core/SetListData.cs.
 
 A Set List Object Dump (obj 0x0D, func 0x73) decodes to a name + 128 slots.
 Layout per SysExInfo/MIDI implementation/SysExParams/SetList.txt:
-  slot N base = 24 + N*542, fields relative to base:
+  slot N base = 24 + N*542 (Nautilus: 543, Dynamics byte at +30, comments at +31), fields relative to base:
     +0    name (24 ASCII)
     +24   packed: type(bits1-0) color(bits5-2) fontLSB(bits7-6)
     +25   bank(bits4-0) + transpose-MSB(bits7-5)
@@ -92,9 +92,12 @@ class SetListData:
             return None
 
         name = _ascii(binary, 0, _NAME_LEN)
+        # A Nautilus slot is one byte longer (Dynamics at +30), so its comment starts at +31.
+        stride = _SLOT_SIZE + 1 if len(binary) == 69544 else _SLOT_SIZE
+        com_ofs = 30 + (stride - _SLOT_SIZE)
         slots: List[SetListSlot] = []
         for n in range(SLOT_COUNT):
-            b = _SLOT_BASE + n * _SLOT_SIZE
+            b = _SLOT_BASE + n * stride
             if b + 30 > len(binary):
                 break   # truncated dump — keep what decoded
 
@@ -106,8 +109,8 @@ class SetListData:
             index = binary[b + 26]
             hold = binary[b + 27]
             volume = binary[b + 28]
-            com_len = min(_COMMENT_LEN, len(binary) - (b + 30))
-            comments = _ascii(binary, b + 30, com_len) if com_len > 0 else ""
+            com_len = min(_COMMENT_LEN, len(binary) - (b + com_ofs))
+            comments = _ascii(binary, b + com_ofs, com_len) if com_len > 0 else ""
 
             slots.append(SetListSlot(n, slot_name, type_, bank, index, color, hold, volume, comments))
 

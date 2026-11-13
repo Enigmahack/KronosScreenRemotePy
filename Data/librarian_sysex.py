@@ -75,16 +75,43 @@ COMBI_NAUTILUS_SIZE = 5640
 _NAUTILUS_TIMBRE_SHIFT = 2170
 _NAUTILUS_USER_BANKS = (17, 30)
 
-# Set-list slot reference layout — mirror setlist_data.py so there is one source
-# of truth for these offsets.
+# Set-list slot layout — one object is a 24-byte name + 128 slots + a 16-byte footer. The Nautilus slot is one byte
+# longer (+30 holds Dynamics Value / On, so the comment starts at +31); every other field sits at the same offset.
+SETLIST_KRONOS_SIZE = 69416
+SETLIST_NAUTILUS_SIZE = 69544
 try:  # setlist_data uses module-private constants; fall back to literals if renamed
     from Tools.setlist_data import _SLOT_BASE as _SL_BASE, _SLOT_SIZE as _SL_STRIDE
 except Exception:  # pragma: no cover - defensive
     _SL_BASE, _SL_STRIDE = 24, 542
+_SL_NAUTILUS_STRIDE = _SL_STRIDE + 1
 _SL_TYPE_OFS = 24    # +24: bits1-0 = type (0=Combi,1=Prog,2=Song)
-_SL_BANK_OFS = 25    # +25: bits4-0 = internal linear bank
+_SL_BANK_OFS = 25    # +25: bits4-0 = set-list bank byte (see _setlist_bank_to_func33), bits7-5 = transpose
 _SL_INDEX_OFS = 26   # +26: performance index (0-199)
 _SL_SLOT_COUNT = 128
+
+
+def setlist_stride(body) -> int:
+    """Bytes per slot: 543 in a Nautilus body (69544), 542 otherwise."""
+    return _SL_NAUTILUS_STRIDE if len(body) == SETLIST_NAUTILUS_SIZE else _SL_STRIDE
+
+
+def setlist_slot_base(body, slot: int) -> int:
+    """Offset of a slot's name field (the slot's first byte)."""
+    return _SL_BASE + slot * setlist_stride(body)
+
+
+# HW-VERIFY: a set-list Program slot pointing at a GM or g(n) bank (raw 6-16) - the +1 shift is assumed to continue from
+# the user banks, which the corpus proves, down to GM; set the slot on a unit and read the byte back.
+def _setlist_bank_to_func33(type_: int, raw: int) -> int:
+    """A Program set-list bank byte counts INT-A..F 0-5, GM 6, g(1)..g(d) 7-16, user 17-30 (U-A on the Kronos, G on the
+    Nautilus); the func-33 numbering used everywhere else has an unused I-G at 6, so it is one higher from GM up.
+    Combi banks are the same in both. Measured on the real Kronos PCG corpus: of 8,387 user-bank Program slots, 8,386
+    resolve to a real Program with the shift and 6,689 without. GM / g(n) (6-16) never occur in the corpus (HW-VERIFY)."""
+    return raw + 1 if type_ == 1 and raw >= 6 else raw
+
+
+def _func33_to_setlist_bank(type_: int, func33: int) -> int:
+    return func33 - 1 if type_ == 1 and func33 >= 7 else func33
 
 
 # ── Bank-encoding inverse ────────────────────────────────────────────────────
@@ -221,7 +248,7 @@ def combi_timbre_number_pc(timbre: int, number: int) -> bytes:
 def setlist_slot_pc(slot: int, type_: int, func33_bank: int, index: int) -> bytes:
     """0x43 setting a set-list slot's whole reference (pid 18): value packs
     type<<16 | bank<<8 | index (KRONOS_MIDI_SysEx.txt SetList *note)."""
-    value = ((type_ & 0x03) << 16) | ((func33_bank & 0xFF) << 8) | (index & 0xFF)
+    value = ((type_ & 0x03) << 16) | ((_func33_to_setlist_bank(type_, func33_bank) & 0xFF) << 8) | (index & 0xFF)
     return param_change(typ=37, soc=0, sub=0, pid=18, idx=slot, value=value)
 
 
@@ -298,10 +325,10 @@ def iter_combi_timbre_refs(body: bytes):
 
 def setlist_slot_ref(body: bytes, slot: int) -> Tuple[int, int, int]:
     """Return (type, func33_bank, index) for a 0-based set-list slot.
-    type: 0=Combi, 1=Prog, 2=Song."""
-    b = _SL_BASE + slot * _SL_STRIDE
+    type: 0=Combi, 1=Prog, 2=Song. The bank is in func-33 numbering for both instruments' bodies."""
+    b = setlist_slot_base(body, slot)
     type_ = body[b + _SL_TYPE_OFS] & 0x03
-    bank = body[b + _SL_BANK_OFS] & 0x1F
+    bank = _setlist_bank_to_func33(type_, body[b + _SL_BANK_OFS] & 0x1F)
     index = body[b + _SL_INDEX_OFS]
     return type_, bank, index
 
@@ -309,21 +336,21 @@ def setlist_slot_ref(body: bytes, slot: int) -> Tuple[int, int, int]:
 def set_setlist_slot_ref(body: bytearray, slot: int,
                          func33_bank: int, index: int,
                          type_: Optional[int] = None) -> None:
-    """Patch a set-list slot's reference in place. Preserves the high bits of the
+    """Patch a set-list slot's reference in place (`func33_bank` in func-33 numbering). Preserves the high bits of the
     type/bank bytes (color, transpose) that share those bytes. If type_ is None
     the existing type bits are kept."""
-    b = _SL_BASE + slot * _SL_STRIDE
+    b = setlist_slot_base(body, slot)
     if type_ is not None:
         body[b + _SL_TYPE_OFS] = (body[b + _SL_TYPE_OFS] & ~0x03) | (type_ & 0x03)
-    body[b + _SL_BANK_OFS] = (body[b + _SL_BANK_OFS] & ~0x1F) | (func33_bank & 0x1F)
+    effective = body[b + _SL_TYPE_OFS] & 0x03
+    body[b + _SL_BANK_OFS] = (body[b + _SL_BANK_OFS] & ~0x1F) | (_func33_to_setlist_bank(effective, func33_bank) & 0x1F)
     body[b + _SL_INDEX_OFS] = index & 0xFF
 
 
 def iter_setlist_slot_refs(body: bytes):
     """Yield (slot_index, type, func33_bank, index) for all slots that fit."""
     for s in range(_SL_SLOT_COUNT):
-        b = _SL_BASE + s * _SL_STRIDE
-        if b + _SL_INDEX_OFS >= len(body):
+        if setlist_slot_base(body, s) + _SL_INDEX_OFS >= len(body):
             break
         type_, bank, index = setlist_slot_ref(body, s)
         yield s, type_, bank, index
@@ -492,7 +519,7 @@ def _selftest() -> None:
 
     # 4. Set-list slot reference patch preserves the shared color/transpose bits.
     sl = bytearray(69416)
-    b0 = _SL_BASE + 0 * _SL_STRIDE
+    b0 = setlist_slot_base(sl, 0)
     sl[b0 + _SL_TYPE_OFS] = 0b0011_1100      # color bits set, type=0
     sl[b0 + _SL_BANK_OFS] = 0b1110_0000      # transpose bits set, bank=0
     set_setlist_slot_ref(sl, 0, func33_bank=19, index=42, type_=1)
