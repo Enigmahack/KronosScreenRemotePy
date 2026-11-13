@@ -107,7 +107,10 @@ class AboutDialog(QDialog):
     def _fetch_daemon_ver(self):
         import Core.ctrl_client as CC
         resp = CC.get().query(self._host, self._ctrl_port, "VERSION", timeout_ms=3000)
-        QTimer.singleShot(0, self, lambda r=resp: self._apply_daemon_ver(r))
+        try:
+            QTimer.singleShot(0, self, lambda r=resp: self._apply_daemon_ver(r))
+        except RuntimeError:
+            pass   # dialog closed and deleted before the VERSION reply came back
 
     def _apply_daemon_ver(self, resp: Optional[str]):
         if not resp:

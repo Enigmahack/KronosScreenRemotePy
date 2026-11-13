@@ -205,7 +205,7 @@ def main():
             text="192.168.100.15")
         if ok and text.strip():
             settings.kronos_host = text.strip()
-            storage.save_settings(settings)
+            storage.save_settings_async(settings)
         elif not ok:
             sys.exit(0)
 
@@ -225,7 +225,9 @@ def main():
     if settings.kronos_host:
         win._connect_async()
 
-    sys.exit(app.exec())
+    rc = app.exec()
+    storage.flush_settings()   # the settings writer thread is a daemon: let queued writes land first
+    sys.exit(rc)
 
 
 if __name__ == "__main__":

@@ -82,6 +82,7 @@ class SysExToolWindow(QDialog):
         self._sysex_count = 0
         self._midi_count = 0
         self._initial_channel = initial_channel
+        self._shut_down = False
 
         self._build_ui()
 
@@ -243,12 +244,14 @@ class SysExToolWindow(QDialog):
         self._refresh_filter_buttons()
         self._apply_filter()
 
-    def _apply_filter(self):
+    def _apply_filter(self, first_row: int = 0):
         """Matches FilterMessage: with any Solo active, only Solo'd types show
         (a type with no button, i.e. "Other", is hidden during solo); with no
-        Solo active, only Off'd types are hidden ("Other" is always shown)."""
+        Solo active, only Off'd types are hidden ("Other" is always shown).
+        `first_row`: rows above it already carry the current filter (a flush
+        only needs to classify the rows it just appended)."""
         any_solo = any(s == _SOLO for s in self._filter_state.values())
-        for row in range(self._table.rowCount()):
+        for row in range(max(0, first_row), self._table.rowCount()):
             t = self._table.item(row, 2).data(Qt.ItemDataRole.UserRole) if self._table.item(row, 2) else "Other"
             state = self._filter_state.get(t)
             if any_solo:
@@ -275,11 +278,27 @@ class SysExToolWindow(QDialog):
             return
         batch = list(self._pending)
         self._pending.clear()
-        for is_send, msg in batch:
-            self._append_row(is_send, msg)
-        while self._table.rowCount() > _MAX_ENTRIES:
-            self._table.removeRow(0)
-        self._apply_filter()
+        # Only the last _MAX_ENTRIES rows can survive the trim below, so a burst (a long dump while the
+        # window was busy) builds just those instead of thousands of rows it would delete straight away.
+        # The dropped messages still count.
+        shown = batch[-_MAX_ENTRIES:]
+        for _is_send, msg in batch[:len(batch) - len(shown)]:
+            if ksx.classify_message(msg) == "SysEx":
+                self._sysex_count += 1
+            else:
+                self._midi_count += 1
+        self._table.setUpdatesEnabled(False)
+        try:
+            first_new = self._table.rowCount()
+            for is_send, msg in shown:
+                self._append_row(is_send, msg)
+            excess = self._table.rowCount() - _MAX_ENTRIES
+            if excess > 0:
+                self._table.model().removeRows(0, excess)   # one call, not one removeRow(0) per row
+                first_new -= excess
+            self._apply_filter(first_new)
+        finally:
+            self._table.setUpdatesEnabled(True)
         self._update_counts()
         self._apply_note_lighting(batch)
         if self._auto_scroll and self._table.rowCount() > 0:
@@ -361,15 +380,34 @@ class SysExToolWindow(QDialog):
         """OUT CH as 1-16 (C# SelectedChannel)."""
         return self._chan_combo.currentIndex() + 1 if self._chan_combo.currentIndex() >= 0 else 1
 
-    def closeEvent(self, ev):
-        self.closing.emit(self.selected_channel)
+    def _shutdown(self) -> None:
+        """Save OUT CH (via `closing`), stop the flush timer and let go of the bridge - once, from whichever
+        way the window goes away. Escape runs reject() -> done(), which (Qt >= 6.3) deletes this
+        WA_DeleteOnClose window WITHOUT a closeEvent, so the channel was lost and, if the window were
+        merely hidden, the bridge kept feeding an unbounded pending queue."""
+        if self._shut_down:
+            return
+        self._shut_down = True
         self._flush_timer.stop()
+        self._pending.clear()
         if self._bridge is not None:
-            try:
-                self._bridge.message_received.disconnect(self._on_incoming)
-                self._bridge.connection_changed.disconnect(self._on_connection_changed)
-            except (RuntimeError, TypeError):
-                pass
+            for sig, slot in ((self._bridge.message_received, self._on_incoming),
+                              (self._bridge.connection_changed, self._on_connection_changed)):
+                try:
+                    sig.disconnect(slot)
+                except (RuntimeError, TypeError):
+                    pass
+        try:
+            self.closing.emit(self.selected_channel)
+        except RuntimeError:
+            pass
+
+    def done(self, result: int) -> None:
+        self._shutdown()
+        super().done(result)
+
+    def closeEvent(self, ev):
+        self._shutdown()
         super().closeEvent(ev)
 
 

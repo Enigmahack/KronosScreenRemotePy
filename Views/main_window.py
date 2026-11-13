@@ -15,6 +15,7 @@ Control surface widget handles:
   - Data wheel drag
 """
 from __future__ import annotations
+import copy
 import dataclasses
 import datetime
 import logging
@@ -58,6 +59,8 @@ from Rendering.overlay_renderer import OverlayRenderer
 from Core.button_codes import btn
 from Core.stream_receiver import StreamReceiver
 from Core.sysex_service import SysExService
+from Core.midi_bridge import retire_thread
+
 from Core.device_family import DeviceFamily, ModelInfo
 from Views.main_window_dialogs import MainWindowDialogMixin
 from Views.revealable_password_edit import RevealablePasswordEdit
@@ -1668,7 +1671,10 @@ class _FtpLoginDialog(QDialog):
 
         def worker():
             ok, error = _verify_ftp_login(self._host, self._port, user, password)
-            QTimer.singleShot(0, self, lambda: self._on_verify_done(ok, error, user, password))
+            try:
+                QTimer.singleShot(0, self, lambda: self._on_verify_done(ok, error, user, password))
+            except RuntimeError:
+                pass   # dialog closed (Escape) and deleted while the check was running
 
         threading.Thread(target=worker, daemon=True, name="FtpVerify").start()
 
@@ -1710,6 +1716,10 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
 
         self._receiver: Optional[StreamReceiver] = None
         self._session_generation = 0
+        _app = QApplication.instance()
+        if _app is not None:   # any quit path: let retired MIDI-bridge threads end before the interpreter tears down
+            from Core.midi_bridge import join_retired
+            _app.aboutToQuit.connect(lambda: join_retired(3.0))
         self._palette:  list[PaletteEntry] = []
         self._overrides = Models.storage.load_overrides()
         self._locked    = Models.storage.load_locks()
@@ -1808,6 +1818,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
 
         # VU meter audio capture
         self._audio_capture = None
+        self._retired_audio: set = set()   # stopped captures still closing their stream
         self._vu_device_id: Optional[str] = settings.vu_device_id
 
         self._setup_ui()
@@ -2455,7 +2466,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
     def _set_scale_quality(self, mode: str):
         """User picked a scaling quality from the menu."""
         self._settings.scaling_quality = mode
-        Models.storage.save_settings(self._settings)
+        self._save_settings_soon()
         {"Sharp": self._act_scale_sharp, "Smooth": self._act_scale_smooth,
          "HighQuality": self._act_scale_hq}[mode].setChecked(True)  # exclusive group unchecks others
         self._frame_w._scale_mode = mode
@@ -2473,7 +2484,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
                 return
             host = text.strip()
             self._settings.kronos_host = host
-            Models.storage.save_settings(self._settings)
+            self._save_settings_soon()
         self._host = host
         self._connect_async()
 
@@ -2485,15 +2496,21 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             return True
         dlg = _FtpLoginDialog(self._host, self._settings.ftp_port,
                               self._settings.ftp_username, self._settings.ftp_password, self)
-        if dlg.exec() != QDialog.Accepted:
-            if dlg.exhausted_attempts:
+        try:
+            accepted = dlg.exec() == QDialog.Accepted
+            exhausted = dlg.exhausted_attempts
+            username, password, save = dlg.username, dlg.password, dlg.save_password
+        finally:
+            dlg.deleteLater()   # parented to the main window: would otherwise live until exit
+        if not accepted:
+            if exhausted:
                 QMessageBox.critical(self, "Authentication Failed",
                                      "Too many failed FTP login attempts.")
             return False
-        self._settings.ftp_username = dlg.username
-        self._settings.ftp_password = dlg.password
-        if dlg.save_password:
-            Models.storage.save_settings(self._settings)
+        self._settings.ftp_username = username
+        self._settings.ftp_password = password
+        if save:
+            self._save_settings_soon()
         return True
 
     def _connect_async(self):
@@ -2539,7 +2556,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         if isinstance(error, PermissionError):
             self._settings.ftp_username = ""
             self._settings.ftp_password = ""
-            Models.storage.save_settings(self._settings)
+            self._save_settings_soon()
             self._set_conn_state("disconnected", "Authentication failed — re-enter credentials in Settings")
         elif reconnecting:
             self._set_conn_state("connecting", "Reconnect failed — retrying in 5 s…")
@@ -2559,8 +2576,12 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         would be disruptive, so it stays silent-status-only there."""
         from Views.connection_dialogs import ConnectionFailedDialog
         dlg = ConnectionFailedDialog(self._host, self._ctrl_port, error_msg, parent=self)
-        dlg.exec()
-        if dlg.open_settings:
+        try:
+            dlg.exec()
+            open_settings = dlg.open_settings
+        finally:
+            dlg.deleteLater()
+        if open_settings:
             self._open_settings("Connection")
 
     def _prepare_transport_shutdown(self) -> bool:
@@ -2733,7 +2754,13 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         # Clear receiver so _schedule_reconnect can proceed and _connect_async
         # guard works correctly.  The QThread has already exited (disconnected
         # is emitted from the run() finally block) so no dispose() needed here.
-        self._receiver = None
+        # run() may still be unwinding after emitting; never drop a running QThread.
+        rx, self._receiver = self._receiver, None
+        if rx is not None:
+            try:
+                retire_thread(rx)     # no GUI-thread wait; kept referenced until it has ended
+            except RuntimeError:
+                pass
         if self._auto_reconnect_enabled and self._host:
             self._set_conn_state("connecting", "Connection lost — reconnecting in 3 s…")
             self.setWindowTitle(f"{_APP_TITLE} — reconnecting")
@@ -3668,7 +3695,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         self._act_hide_data.blockSignals(True)
         self._act_hide_data.setChecked(checked)
         self._act_hide_data.blockSignals(False)
-        Models.storage.save_settings(self._settings)
+        self._save_settings_soon()
         self._resize_to_fit()
 
     def _toggle_hide_value_input(self, checked: bool):
@@ -3679,7 +3706,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         self._act_hide_value.blockSignals(True)
         self._act_hide_value.setChecked(checked)
         self._act_hide_value.blockSignals(False)
-        Models.storage.save_settings(self._settings)
+        self._save_settings_soon()
         self._resize_to_fit()
 
     def _apply_layout(self, preset: str):
@@ -3715,7 +3742,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             self._show_left_panel(value_exp)
             self._value_rail.set_expanded(value_exp)
             self._data_rail.set_expanded(data_exp)
-        Models.storage.save_settings(self._settings)
+        self._save_settings_soon()
         self._resize_to_fit()
 
     def _toggle_focused_data_expand(self):
@@ -3725,7 +3752,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         self._settings.focused_data_expanded = exp
         self._ctrl_surface.setVisible(exp)
         self._data_rail.set_expanded(exp)
-        Models.storage.save_settings(self._settings)
+        self._save_settings_soon()
         self._resize_to_fit()
 
     def _toggle_focused_value_expand(self):
@@ -3735,14 +3762,14 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         self._settings.focused_value_expanded = exp
         self._show_left_panel(exp)
         self._value_rail.set_expanded(exp)
-        Models.storage.save_settings(self._settings)
+        self._save_settings_soon()
         self._resize_to_fit()
 
     def _on_always_on_top_toggled(self, checked: bool):
         self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, checked)
         self.show()
         self._settings.always_on_top = checked
-        Models.storage.save_settings(self._settings)
+        self._save_settings_soon()
 
     def _copy_ip_address(self):
         ip = self._host or self._settings.kronos_host
@@ -3762,7 +3789,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             "username": self._settings.ftp_username, "password": self._settings.ftp_password}
         for stale in [h for h in self._settings.host_credentials if h not in self._settings.recent_hosts]:
             del self._settings.host_credentials[stale]
-        Models.storage.save_settings(self._settings)
+        self._save_settings_soon()
         self._rebuild_recent_menu()
 
     def _rebuild_recent_menu(self):
@@ -3787,13 +3814,13 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         if cred:
             self._settings.ftp_username = cred["username"]
             self._settings.ftp_password = cred["password"]
-        Models.storage.save_settings(self._settings)
+        self._save_settings_soon()
         self._connect_async()
 
     def _clear_recent_hosts(self):
         self._settings.recent_hosts.clear()
         self._settings.host_credentials.clear()
-        Models.storage.save_settings(self._settings)
+        self._save_settings_soon()
         self._rebuild_recent_menu()
 
     def showEvent(self, event):
@@ -4146,7 +4173,10 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
     def _toggle_help(self):
         from Views.help_window import HelpWindow
         dlg = HelpWindow(self)
-        dlg.exec()
+        try:
+            dlg.exec()
+        finally:
+            dlg.deleteLater()
 
     # ── Settings dialog ────────────────────────────────────────────────────────
 
@@ -4164,7 +4194,13 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
                              on_image_preview=self._preview_image_adjust,
                              on_button_injector=self.show_button_injector,
                              on_test_mode=None if self._is_nautilus else self._enter_test_mode)
-        if dlg.exec() == QDialog.Accepted:
+        try:
+            accepted = dlg.exec() == QDialog.Accepted
+        finally:
+            # Parented to the main window: without this every open leaked a whole
+            # Settings dialog (and its callbacks into this window) until exit.
+            dlg.deleteLater()
+        if accepted:
             self._apply_settings_side_effects(mirror_before, ss_before, debug_before,
                                               hide_data_before, hide_value_before)
         else:
@@ -4197,13 +4233,13 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
                 self._settings.ftp_password = getattr(self._receiver, "_password", self._settings.ftp_password)
             if stopping_midi:
                 self._settings.midi_monitor_enabled = True
-            Models.storage.save_settings(self._settings)
+            self._save_settings_soon()
             self._apply_midi_monitor_menu_state()
             return
         if reconnect:
             if not self._disconnect(quiet=True):
                 return
-        Models.storage.save_settings(self._settings)
+        self._save_settings_soon()
         self._host        = self._settings.kronos_host
         self._ctrl_port   = self._settings.ctrl_port
         self._stream_port = self._settings.stream_port
@@ -4238,10 +4274,44 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         if self._perf_window:
             self._perf_window.update_host(self._host, self._ctrl_port)
 
+    # ── Settings persistence ─────────────────────────────────────────────────────
+    # Ordinary saves are debounced and written on a background thread (the data directory
+    # may be on an SMB share): the snapshot is a deep copy taken on the GUI thread, and the
+    # single writer drops any snapshot older than one already written. The exit path, Import
+    # and Export flush first and then use the blocking save so nothing pending can land
+    # after them.
+
+    _SETTINGS_SAVE_DELAY_MS = 250
+
+    def _save_settings_soon(self) -> None:
+        timer = getattr(self, "_settings_save_timer", None)
+        if timer is None:
+            timer = self._settings_save_timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.setInterval(self._SETTINGS_SAVE_DELAY_MS)
+            timer.timeout.connect(self._write_settings_async)
+            app = QApplication.instance()
+            if app is not None:   # a quit that bypasses _do_shutdown must not lose a pending save
+                app.aboutToQuit.connect(self._flush_settings_saves)
+        timer.start()
+
+    def _write_settings_async(self) -> None:
+        Models.storage.save_settings_async(self._settings)
+
+    def _flush_settings_saves(self, save_pending: bool = True, timeout_s: float = 5.0) -> None:
+        """Write a pending debounced save now (or drop it) and wait for queued ones."""
+        timer = getattr(self, "_settings_save_timer", None)
+        if timer is not None and timer.isActive():
+            timer.stop()
+            if save_pending:
+                self._write_settings_async()
+        Models.storage.flush_settings(timeout_s)
+
     def _import_settings(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Import Settings", "", "JSON Files (*.json)")
         if not path:
             return
+        self._flush_settings_saves(save_pending=False)   # a pending save must not land on the import
         mirror_before     = self._settings.vga_mirror_enabled
         ss_before         = self._settings.screensaver_timeout
         debug_before      = self._settings.debug_logging
@@ -4266,6 +4336,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
                                               "JSON Files (*.json)")
         if not path:
             return
+        self._flush_settings_saves(save_pending=False)   # export_settings saves synchronously itself
         try:
             Models.storage.export_settings(self._settings, path)
         except Exception as e:
@@ -4387,7 +4458,10 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
     def _open_about(self):
         from Views.about_dialog import AboutDialog
         dlg = AboutDialog(self._host, self._ctrl_port, self)
-        dlg.exec()
+        try:
+            dlg.exec()
+        finally:
+            dlg.deleteLater()
 
     # ── File Manager ──────────────────────────────────────────────────────────
 
@@ -4426,7 +4500,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
     def _save_midi_output_channel(self, channel: int) -> None:
         if channel != self._settings.midi_output_channel:
             self._settings.midi_output_channel = channel
-            Models.storage.save_settings(self._settings)
+            self._save_settings_soon()
 
     def _apply_midi_settings(self) -> None:
         """Push Settings > MIDI/SysEx into the service, then reconcile the Monitor-MIDI state."""
@@ -4449,7 +4523,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         elif not self._settings.midi_monitor_enabled and running:
             if not self._prepare_transport_shutdown():
                 self._settings.midi_monitor_enabled = True
-                Models.storage.save_settings(self._settings)
+                self._save_settings_soon()
                 return
             svc.stop()
             self._set_midi_badge(False)
@@ -4571,7 +4645,10 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         a_dis.triggered.connect(self._disconnect)
         a_dis.setEnabled(self._receiver is not None)
 
+        # The shared Scaling Quality actions are owned by the window, not this
+        # menu, so deleting the menu leaves them intact.
         menu.exec(global_pos)
+        menu.deleteLater()
 
     def _zoom_step(self, delta: float):
         """Mirrors C#'s DoZoomIn/DoZoomOut: zooming in clamps at 10.0x and force-enables
@@ -4601,6 +4678,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         a_copy.triggered.connect(lambda: QApplication.clipboard().setText(self._host or ""))
         a_copy.setEnabled(bool(self._host))
         menu.exec(self._status_label.mapToGlobal(local_pos))
+        menu.deleteLater()
 
     def _show_kbd_context_menu(self, local_pos):
         menu = QMenu(self)
@@ -4611,11 +4689,13 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         a_dis.triggered.connect(lambda: self._act_disable_kbd.setChecked(True))
         a_dis.setEnabled(self._kbd_send_en)
         menu.exec(self._kbd_label.mapToGlobal(local_pos))
+        menu.deleteLater()
 
     def _show_fps_context_menu(self, local_pos):
         menu = QMenu(self)
         menu.addAction("Set Max FPS…", self._prompt_set_fps)
         menu.exec(self._fps_label.mapToGlobal(local_pos))
+        menu.deleteLater()
 
     def _prompt_set_fps(self):
         from PySide6.QtWidgets import QInputDialog
@@ -4624,7 +4704,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         if ok:
             self._fps = val
             self._settings.max_fps = val
-            Models.storage.save_settings(self._settings)
+            self._save_settings_soon()
             if self._receiver:
                 self._ctrl_send(f"FPS {val}")
 
@@ -4637,6 +4717,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
                 lambda checked, c=_MODE_CMDS[i], m=i:
                     (self._ctrl_send(btn(c)), self._set_pending_mode(m)))
         menu.exec(self._mode_label.mapToGlobal(local_pos))
+        menu.deleteLater()
 
     # ── Connection state ───────────────────────────────────────────────────────
 
@@ -4786,15 +4867,25 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             return
         self._ping_inflight = True
         host, port = self._host, self._ctrl_port
-        threading.Thread(target=self._ping_bg, args=(host, port),
+        threading.Thread(target=self._ping_bg,
+                         args=(host, port, self._session_generation, self._receiver),
                          daemon=True, name="Ping").start()
 
-    def _ping_bg(self, host: str, port: int):
+    def _ping_bg(self, host: str, port: int, generation=None, receiver=None):
         ms = _icmp_ping(host)
-        self._ping_inflight = False
-        QTimer.singleShot(0, self, lambda m=ms: self._ping_result(m))
+        try:
+            QTimer.singleShot(0, self, lambda m=ms: self._ping_result(m, generation, receiver, host))
+        except RuntimeError:
+            pass   # window closed while the ping was running
 
-    def _ping_result(self, ms: float):
+    def _ping_result(self, ms: float, generation=None, receiver=None, host=None):
+        # A ping started for an earlier session (disconnect, reconnect, host change)
+        # must neither repaint the footer nor clear the current session's in-flight flag.
+        if generation is not None and (
+                not self._session_is_current(generation, receiver)
+                or (host is not None and host != self._host)):
+            return
+        self._ping_inflight = False
         if ms < 0:
             self._ping_label.setText("⇄ ×")
             self._ping_label.setStyleSheet(f"color: {T.ERROR}; font-size: {T.FS_SMALL}px;")
@@ -4837,7 +4928,10 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
         btns.accepted.connect(dlg.accept)
         layout.addWidget(btns)
-        dlg.exec()
+        try:
+            dlg.exec()
+        finally:
+            dlg.deleteLater()
         self._clear_notification()
 
     def _show_notify_context_menu(self, global_pos: QPoint):
@@ -4845,12 +4939,34 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         menu.addAction("Open Log",           self._open_notify_log)
         menu.addAction("Clear Notification", self._clear_notification)
         menu.exec(global_pos)
+        menu.deleteLater()
 
     # ── VU meter / Audio ───────────────────────────────────────────────────────
 
     def _open_vu_device_picker(self):
+        # Device enumeration (PortAudio init on first use) can take seconds on
+        # Windows; do it off the GUI thread and pop the menu when it returns.
+        if getattr(self, "_vu_enum_busy", False):
+            return
+        self._vu_enum_busy = True
         from Rendering.vu_meter import list_audio_devices
-        devices = list_audio_devices()
+
+        def work():
+            try:
+                devices = list_audio_devices()
+            except Exception:
+                devices = []
+            try:
+                QTimer.singleShot(0, self, lambda d=devices: self._show_vu_device_menu(d))
+            except RuntimeError:
+                pass   # window closed meanwhile
+
+        threading.Thread(target=work, daemon=True, name="AudioDevices").start()
+
+    def _show_vu_device_menu(self, devices):
+        self._vu_enum_busy = False
+        if self._shutting_down:
+            return
         menu = QMenu(self)
         a_none = menu.addAction("No monitoring")
         a_none.setCheckable(True)
@@ -4868,11 +4984,12 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             menu.addAction("(no audio devices found)").setEnabled(False)
         btn_pos = QPoint(0, self._vu_picker_btn.height())
         menu.exec(self._vu_picker_btn.mapToGlobal(btn_pos))
+        menu.deleteLater()
 
     def _set_vu_device(self, device_id: Optional[str]):
         self._vu_device_id = device_id
         self._settings.vu_device_id = device_id
-        Models.storage.save_settings(self._settings)
+        self._save_settings_soon()
         self._stop_audio_capture()
         if device_id is not None:
             self._start_audio_capture(device_id)
@@ -4895,10 +5012,38 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         self._notify(message, is_error=True)
 
     def _stop_audio_capture(self):
-        if self._audio_capture is not None:
-            self._audio_capture.stop()
-            self._audio_capture = None
+        """Non-blocking: AudioCapture.stop() waits up to 2 s for the audio stream to
+        close, which froze the window on every device switch. Detach the old capture,
+        tell it to finish, and let it delete itself once its thread has ended (it is
+        parented to this window, so it can't be collected while still running;
+        _do_shutdown waits for any that are still winding down)."""
+        cap, self._audio_capture = self._audio_capture, None
+        if cap is not None:
+            try:
+                cap.levels_updated.disconnect(self._vu_widget.update_levels)
+            except (RuntimeError, TypeError):
+                pass
+            cap._running = False
+            cap.quit()
+            if cap.isRunning():
+                # Unparent so the window's own teardown can never destroy it while
+                # its thread is still closing the stream; the set keeps it alive.
+                cap.setParent(None)
+                self._retired_audio.add(cap)
+                cap.finished.connect(self._on_retired_audio_finished)
+                if not cap.isRunning():   # finished between the check and the connect
+                    self._on_retired_audio_finished(cap)
+            else:
+                cap.deleteLater()
         self._vu_widget.reset()
+
+    @Slot()
+    def _on_retired_audio_finished(self, cap=None):
+        cap = cap if cap is not None else self.sender()
+        if cap in self._retired_audio:
+            self._retired_audio.discard(cap)
+            cap.wait(500)   # finished() is already out; this only covers QThread's own last steps
+            cap.deleteLater()
 
     # ── Quit ───────────────────────────────────────────────────────────────────
 
@@ -4994,6 +5139,8 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         if audio:
             audio.wait(500)
             self._audio_capture = None
+        for cap in list(self._retired_audio):
+            cap.wait(2000)   # same budget the old blocking AudioCapture.stop() had
 
         self._sysex_service.stop()
         self._ctrl.stop_persistent()
@@ -5003,7 +5150,18 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             self._settings.window_top    = self.y()
             self._settings.window_width  = self.width()
             self._settings.window_height = self.height()
+        # Exit is the one place that waits: drop any pending debounced save (the blocking
+        # save below supersedes it), let queued writes finish, then save synchronously.
+        # (The only blocking save_settings allowed outside Models.storage - see
+        # tests/test_settings_save_routing.py.)
+        self._flush_settings_saves(save_pending=False)
         Models.storage.save_settings(self._settings)
+        try:
+            # Final name-cache writes + stopped bridge threads; a bridge still inside
+            # connect() can take its whole 5 s timeout, and dropping a running QThread aborts.
+            self._sysex_service.flush(8.0)
+        except Exception:                     # noqa: BLE001 - exit must go on
+            logging.exception("SysEx service flush at exit failed")
         self.close()
 
     def eventFilter(self, watched, event):

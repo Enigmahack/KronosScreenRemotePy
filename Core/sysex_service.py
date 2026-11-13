@@ -20,7 +20,10 @@ Not ported: USB-direct transport (no daemon link), and the storage-change counte
 """
 from __future__ import annotations
 
+import collections
 import contextlib
+import itertools
+import logging
 import os
 import threading
 import time
@@ -96,6 +99,36 @@ _KNOWN_BODY_SIZES = {0: {3706, 4960, 3700, 4954}, 1: {7810, 5640}, 2: {7810, 564
 
 _NO_REPLY = object()  # sentinel: distinct from any real reply value (0, False, b"", ...)
 
+log = logging.getLogger(__name__)
+
+from Core.latest_wins_writer import LatestWinsWriter, next_version   # noqa: E402,F401 - re-exported
+
+
+# The name cache and dumped-bank ledger are each one JSON file shared by every host, so
+# all their reads and writes go through this single writer.
+_CACHE_IO = LatestWinsWriter("SysExCacheIO")
+
+
+class _Session:
+    """Name cache + dumped-bank ledger of one start() (one instrument connection).
+    Everything scheduled for a session captures it, so work left over from a previous
+    connection can never touch the next one's caches."""
+
+    def __init__(self, key: str, loaded: bool = False):
+        self.key = key
+        self.names: Dict[Tuple[int, int, int], str] = {}
+        self.dumped: Set[Tuple[int, int]] = set()
+        self.loaded = threading.Event()
+        if loaded:
+            self.loaded.set()
+        # (type, bank) invalidated by a Bank Digest before the disk caches were merged in.
+        self.invalidated: Set[Tuple[int, int]] = set()
+        self.dirty_names = False
+        self.dirty_dumped = False
+        self.closed = False
+        self.persist_timer: Optional[threading.Timer] = None
+        self.listener: Optional[Callable[[bytes], None]] = None
+
 
 def _await_reply(bridge: Optional[MidiBridgeClient], send: Callable[[], bool],
                   match: Callable[[bytes], Optional[object]], timeout_s: float):
@@ -144,7 +177,7 @@ class SysExService(QObject):
         super().__init__(parent)
         self._bridge: Optional[MidiBridgeClient] = None
         self._dump: Optional[SysExDumpCollector] = None
-        self._cache_key = ""
+        self._tx_slot = None
         self._dump_gate = DumpGate()
         # Kronos (4-byte Exclusive Header) framing until told otherwise — see
         # set_device_family(). Reset to this default on every start()/stop(),
@@ -160,10 +193,9 @@ class SysExService(QObject):
         self._last_bank_id: Optional[ksx.BankId] = None
         self._last_rx_emit = 0.0        # throttle rx_activity (coalesce dump floods)
 
-        self._stream_names: Dict[Tuple[int, int, int], str] = {}
-        self._dumped_banks: Set[Tuple[int, int]] = set()
+        # Guards every _Session's names/dumped/flags. The current session is replaced by start().
         self._names_lock = threading.Lock()
-        self._persist_timer: Optional[threading.Timer] = None
+        self._sess = _Session("", loaded=True)
 
         self._performance_display = ""
         self._is_available = False
@@ -195,10 +227,29 @@ class SysExService(QObject):
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
+    # Current session's caches (kept as attributes for callers and tests that use them).
+    @property
+    def _stream_names(self) -> Dict[Tuple[int, int, int], str]:
+        return self._sess.names
+
+    @property
+    def _dumped_banks(self) -> Set[Tuple[int, int]]:
+        return self._sess.dumped
+
+    @property
+    def _cache_key(self) -> str:
+        return self._sess.key
+
+    @_cache_key.setter
+    def _cache_key(self, key: str) -> None:
+        self._sess.key = key
+
     def start(self, host: str, port: int = 9875):
+        """Non-blocking: the name cache and dumped-bank ledger are read on the cache I/O
+        thread (after any write still queued by the previous stop()) and merged in when
+        they arrive; the service is usable meanwhile."""
         self.stop()
 
-        self._cache_key = host
         self._performance_display = ""
         self._is_available = False
         self._state_mode = 0
@@ -206,16 +257,20 @@ class SysExService(QObject):
         self._have_bank_context = False
         self._last_bank_id = None
 
+        sess = _Session(host)
         with self._names_lock:
-            self._stream_names = {
-                (n.type, n.bank, n.number): n.name for n in Models.storage.load_names(host)
-            }
-            self._dumped_banks = Models.storage.load_dumped_banks(host)
+            self._sess = sess
+        _CACHE_IO.call(lambda s=sess: self._load_session_caches(s))
+
+        def listener(raw: bytes, s=sess):
+            self._on_raw_message(raw, s)
+        sess.listener = listener
 
         self._bridge = MidiBridgeClient(host, port)
-        self._bridge.add_raw_listener(self._on_raw_message)
+        self._bridge.add_raw_listener(listener)
         self._bridge.connection_changed.connect(self._on_connection_changed)
-        self._bridge.message_sent.connect(lambda _n: self.tx_activity.emit())
+        self._tx_slot = lambda _n: self.tx_activity.emit()
+        self._bridge.message_sent.connect(self._tx_slot)
         self._bridge.start()
         self._dump = SysExDumpCollector(self._bridge, self._codec)
 
@@ -226,6 +281,8 @@ class SysExService(QObject):
                          name="SysExPerfLoop").start()
 
     def stop(self):
+        """Non-blocking: signals everything to stop, queues the final cache writes on the
+        cache I/O thread and lets the bridge thread end in the background."""
         # New transport generation: any dump/write still in flight against the
         # outgoing bridge is now orphaned — its later end() must be a no-op so it
         # can't un-pause the next connection's refresh_now() (see DumpGate).
@@ -237,15 +294,32 @@ class SysExService(QObject):
             self._refresh_epoch += 1
             self._name_pull_epoch += 1
         self._wake.set()
-        if self._persist_timer is not None:
-            self._persist_timer.cancel()
-            self._persist_timer = None
-        if self._cache_key:
-            self._persist_names()
-        if self._bridge is not None:
-            self._bridge.remove_raw_listener(self._on_raw_message)
-            self._bridge.dispose()
-            self._bridge = None
+        sess = self._sess
+        with self._names_lock:
+            timer, sess.persist_timer = sess.persist_timer, None
+            was_closed, sess.closed = sess.closed, True    # no further changes or timed writes
+        if timer is not None:
+            timer.cancel()
+        if not was_closed:
+            # Final writes (only if something changed). If the disk caches have not been
+            # merged in yet, the pending load job writes them once it has merged.
+            self._persist_names(sess, final=True)
+            self._persist_dumped(sess, final=True)
+        bridge, self._bridge = self._bridge, None
+        if bridge is not None:
+            for cb in (sess.listener, self._on_raw_message):
+                if cb is not None:
+                    bridge.remove_raw_listener(cb)
+            for sig, slot in (("connection_changed", self._on_connection_changed),
+                              ("message_sent", self._tx_slot)):
+                if slot is None:
+                    continue
+                try:
+                    getattr(bridge, sig).disconnect(slot)
+                except (AttributeError, RuntimeError, TypeError):
+                    pass
+            bridge.dispose()
+        self._tx_slot = None
         self._dump = None
         # A reconnect may be to a genuinely different instrument (host change,
         # or the same host now running a different family) — don't carry over
@@ -408,9 +482,16 @@ class SysExService(QObject):
 
     # ── Live stream decode ───────────────────────────────────────────────────
 
-    def _on_raw_message(self, raw: bytes):
-        """Called synchronously on the bridge's network thread."""
+    def _on_raw_message(self, raw: bytes, sess: Optional[_Session] = None):
+        """Called synchronously on the bridge's network thread. `sess` is the session the
+        bridge was started for; a message still in flight from a stopped bridge is dropped."""
         if not raw:
+            return
+        if sess is None:
+            sess = self._sess
+        elif sess is not self._sess:
+            return
+        if sess.closed:
             return
         # Throttle to ~25 Hz so a bank dump doesn't queue thousands of GUI events
         # (the footer flash only needs to be refreshed, not per-message).
@@ -427,13 +508,19 @@ class SysExService(QObject):
             if dig_obj in (0x00, 0x01):
                 t = 1 if dig_obj == 0x00 else 0
                 with self._names_lock:
-                    for k in [k for k in self._stream_names if k[0] == t and k[1] == dig_bank]:
-                        del self._stream_names[k]
-                    was_dumped = (t, dig_bank) in self._dumped_banks
-                    self._dumped_banks.discard((t, dig_bank))
-                if was_dumped:
-                    Models.storage.save_dumped_banks(self._cache_key, self._snapshot_dumped())
-                self._persist_names()
+                    stale = [k for k in sess.names if k[0] == t and k[1] == dig_bank]
+                    for k in stale:
+                        del sess.names[k]
+                    was_dumped = (t, dig_bank) in sess.dumped
+                    sess.dumped.discard((t, dig_bank))
+                    if not sess.loaded.is_set():
+                        sess.invalidated.add((t, dig_bank))   # also drop it from the disk copy
+                        sess.dirty_names = sess.dirty_dumped = True
+                    else:
+                        sess.dirty_names = sess.dirty_names or bool(stale)
+                        sess.dirty_dumped = sess.dirty_dumped or was_dumped
+                self._persist_dumped(sess)
+                self._persist_names(sess)
             self.refresh_now()
             return
 
@@ -448,11 +535,12 @@ class SysExService(QObject):
                 if idx >= 0 and nm:
                     key = (type_, obj_bank, idx)
                     with self._names_lock:
-                        changed = self._stream_names.get(key) != nm
+                        changed = sess.names.get(key) != nm
                         if changed:
-                            self._stream_names[key] = nm
+                            sess.names[key] = nm
+                            sess.dirty_names = True
                     if changed:
-                        self._schedule_persist()
+                        self._schedule_persist(sess)
                         if (self._last_bank_id is not None and self._last_bank_id.type == type_
                                 and self._last_bank_id.obj_bank == obj_bank
                                 and self._last_bank_id.number == idx):
@@ -498,7 +586,7 @@ class SysExService(QObject):
             if bid is not None:
                 self._last_bank_id = bid
                 with self._names_lock:
-                    name = self._stream_names.get((bid.type, bid.obj_bank, bid.number))
+                    name = sess.names.get((bid.type, bid.obj_bank, bid.number))
                 self._set_stream_perf_display(bid, name)
                 # Optional per-change name pull: fetch just this object's name when we don't have it.
                 if self.pull_names_on_change and not (name or "").strip():
@@ -537,23 +625,99 @@ class SysExService(QObject):
 
     # ── Name cache persistence ──────────────────────────────────────────────
 
-    def _persist_names(self):
-        with self._names_lock:
-            snapshot = [
-                ksx.CachedName(t, b, n, name) for (t, b, n), name in self._stream_names.items()
-            ]
-        Models.storage.save_names(self._cache_key, snapshot)
+    # Every write of name_cache.json / dumped_banks.json goes through _CACHE_IO with a version
+    # taken together with its snapshot, so writes land in snapshot order (newest wins) and in
+    # FIFO order with the cache loads of a following start().
 
-    def _schedule_persist(self, delay_s: float = 2.0):
-        if self._persist_timer is not None:
-            self._persist_timer.cancel()
-        self._persist_timer = threading.Timer(delay_s, self._persist_names)
-        self._persist_timer.daemon = True
-        self._persist_timer.start()
+    def _may_persist(self, sess: _Session, final: bool) -> bool:   # under self._names_lock
+        if not sess.key or not sess.loaded.is_set():
+            return False      # before the merge, a snapshot would replace the whole cached list
+        return final or (sess is self._sess and not sess.closed)
+
+    def _persist_names(self, sess: Optional[_Session] = None, final: bool = False,
+                       inline: bool = False) -> None:
+        sess = self._sess if sess is None else sess
+        with self._names_lock:
+            if not sess.dirty_names or not self._may_persist(sess, final):
+                return
+            snapshot = [ksx.CachedName(t, b, n, name) for (t, b, n), name in sess.names.items()]
+            sess.dirty_names = False
+            version = next_version()
+        key = sess.key
+        job = lambda: Models.storage.save_names(key, snapshot)  # noqa: E731
+        if inline:
+            _CACHE_IO.run_inline(("names", key), version, job)
+        else:
+            _CACHE_IO.submit(("names", key), version, job)
+
+    def _persist_dumped(self, sess: Optional[_Session] = None, final: bool = False,
+                        inline: bool = False) -> None:
+        sess = self._sess if sess is None else sess
+        with self._names_lock:
+            if not sess.dirty_dumped or not self._may_persist(sess, final):
+                return
+            snapshot = set(sess.dumped)
+            sess.dirty_dumped = False
+            version = next_version()
+        key = sess.key
+        job = lambda: Models.storage.save_dumped_banks(key, snapshot)  # noqa: E731
+        if inline:
+            _CACHE_IO.run_inline(("dumped", key), version, job)
+        else:
+            _CACHE_IO.submit(("dumped", key), version, job)
+
+    def _schedule_persist(self, sess: Optional[_Session] = None, delay_s: float = 2.0):
+        sess = self._sess if sess is None else sess
+        t = threading.Timer(delay_s, self._persist_names, args=(sess,))
+        t.daemon = True
+        with self._names_lock:
+            if sess.closed:
+                return
+            old, sess.persist_timer = sess.persist_timer, t
+        if old is not None:
+            old.cancel()
+        t.start()
+
+    def _load_session_caches(self, sess: _Session) -> None:
+        """Runs on the cache I/O thread: reads this host's caches, merges them under what
+        the session has captured meanwhile (live names win; banks a Bank Digest invalidated
+        meanwhile are dropped), then writes back if the session changed anything."""
+        try:
+            disk_names = Models.storage.load_names(sess.key)
+            disk_dumped = Models.storage.load_dumped_banks(sess.key)
+        except Exception:                          # noqa: BLE001 - loaders already log
+            disk_names, disk_dumped = [], set()
+        with self._names_lock:
+            inv = sess.invalidated
+            for n in disk_names:
+                k = (n.type, n.bank, n.number)
+                if k not in sess.names and (n.type, n.bank) not in inv:
+                    sess.names[k] = n.name
+            sess.dumped.update(b for b in disk_dumped if b not in inv)
+            sess.invalidated = set()
+            sess.loaded.set()
+            final = sess.closed
+        # Inline: a following start() for the same host has its load queued behind this job.
+        self._persist_names(sess, final=final, inline=True)
+        self._persist_dumped(sess, final=final, inline=True)
+        bid = self._last_bank_id
+        if sess is self._sess and not final and bid is not None and self._performance_display == bid.display:
+            with self._names_lock:
+                name = sess.names.get((bid.type, bid.obj_bank, bid.number))
+            if name:
+                self._set_stream_perf_display(bid, name)
+
+    def flush(self, timeout_s: float = 5.0) -> bool:
+        """Wait (bounded) for queued cache writes and stopped bridge threads; for exit and
+        tests. Never needed for correctness while the application keeps running."""
+        deadline = time.monotonic() + max(0.0, timeout_s)
+        ok = _CACHE_IO.flush(timeout_s)
+        from Core.midi_bridge import join_retired
+        return join_retired(max(0.0, deadline - time.monotonic())) and ok
 
     def _snapshot_dumped(self) -> Set[Tuple[int, int]]:
         with self._names_lock:
-            return set(self._dumped_banks)
+            return set(self._sess.dumped)
 
     def current_name_count(self) -> int:
         with self._names_lock:
@@ -580,15 +744,18 @@ class SysExService(QObject):
         if dump is None or not self.can_dump:
             return self.current_name_count()
 
+        sess = self._sess
+        # The ledger is read from disk in the background after start(); without it every bank
+        # would be swept again. Blocking here is fine: this runs on a worker thread.
+        sess.loaded.wait(10.0)
         all_banks = ksx.all_name_banks()
         total = len(all_banks)
         with self._names_lock:
-            todo = [b for b in all_banks if b not in self._dumped_banks]
+            todo = [b for b in all_banks if b not in sess.dumped]
         if not todo:
             return self.current_name_count()
 
         gate_epoch = self._dump_gate.begin()   # pause refresh_now() for the whole sweep
-        ledger_dirty = False
         try:
             for type_, obj_bank in todo:
                 if cancel_event.is_set():
@@ -605,7 +772,7 @@ class SysExService(QObject):
                 else:
                     def per_obj_progress(_c):
                         with self._names_lock:
-                            nd = len(self._dumped_banks)
+                            nd = len(sess.dumped)
                         if progress:
                             progress(nd, total, self.current_name_count())
 
@@ -615,18 +782,18 @@ class SysExService(QObject):
 
                 if done_ok:
                     with self._names_lock:
-                        self._dumped_banks.add((type_, obj_bank))
-                    ledger_dirty = True
+                        if not sess.closed:          # a reconnect ended this sweep's session
+                            sess.dumped.add((type_, obj_bank))
+                            sess.dirty_dumped = True
 
                 with self._names_lock:
-                    now_done = len(self._dumped_banks)
+                    now_done = len(sess.dumped)
                 if progress:
                     progress(now_done, total, self.current_name_count())
         finally:
             self._dump_gate.end(gate_epoch)
-            if ledger_dirty:
-                Models.storage.save_dumped_banks(self._cache_key, self._snapshot_dumped())
-            self._persist_names()
+            self._persist_dumped(sess)
+            self._persist_names(sess)
         return self.current_name_count()
 
     # ── Set List dumps ──────────────────────────────────────────────────────
@@ -821,9 +988,13 @@ class SysExService(QObject):
         if dump is None or not self.can_dump:
             return 0
         saved = 0
+        # Same as backup_objects: a sibling temp file, flushed and fsynced, then moved into
+        # place, so a failure part-way never leaves a truncated backup under the real name.
+        # A cancelled sweep still keeps what it dumped (as before), just written atomically.
+        tmp = f"{path}.tmp"
         gate_epoch = self._dump_gate.begin()
         try:
-            with open(path, "wb") as f:
+            with open(tmp, "wb") as f:
                 for i in range(slot_count):
                     if cancel_event is not None and cancel_event.is_set():
                         break
@@ -833,6 +1004,15 @@ class SysExService(QObject):
                         saved += 1
                     if progress:
                         progress(i + 1, slot_count, saved)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, path)
+        except BaseException:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            raise
         finally:
             self._dump_gate.end(gate_epoch)
         return saved

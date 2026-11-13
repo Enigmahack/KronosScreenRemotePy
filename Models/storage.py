@@ -6,6 +6,11 @@ else the per-user application-data directory for the platform, else the script's
 own folder for a legacy install that already has data there and can still write
 it. The program may live anywhere — a network share, a read-only image, a USB
 stick — without that dictating where its state goes.
+
+Settings: application code persists AppSettings with `save_settings_async` (snapshot now, written
+on a background thread, newest snapshot wins) and fences with `flush_settings` where it must wait.
+The blocking `save_settings` is the primitive behind it; outside this module it is used only at
+exit (after a flush). `tests/test_settings_save_routing.py` enforces this.
 """
 from __future__ import annotations
 import logging
@@ -591,8 +596,53 @@ def save_settings(s: AppSettings):
         _note_write_failure("Settings", e)
 
 
+# ── The one way to persist settings from application code ────────────────────────────────────────────
+# `save_settings` is the blocking primitive (it may sit on a slow share). Application code (windows, services,
+# the Sample Editor, ...) calls `save_settings_async` instead: it snapshots on the CALLER's thread, hands the write
+# to one background writer (newest snapshot wins, an older one can never land after a newer one) and returns at once.
+# Use `flush_settings` before anything that reads or replaces settings.json (Import/Reset/exit).
+_settings_writer = None
+_settings_writer_lock = threading.Lock()
+_settings_snapshot_lock = threading.Lock()
+
+
+def _writer():
+    global _settings_writer
+    with _settings_writer_lock:
+        if _settings_writer is None:
+            import atexit
+            from Core.latest_wins_writer import LatestWinsWriter
+            _settings_writer = LatestWinsWriter("SettingsIO")
+            # The writer thread is a daemon: a write still queued at interpreter exit would be lost.
+            atexit.register(_settings_writer.flush, 5.0)
+        return _settings_writer
+
+
+def save_settings_async(s: AppSettings) -> None:
+    """Persist `s` without blocking: deep-copied on the caller's thread, written in the background."""
+    import copy
+    from Core.latest_wins_writer import next_version
+    # Copy and version together: two threads copying and versioning separately could give the older
+    # copy the higher version, and that older copy would then win.
+    with _settings_snapshot_lock:
+        snapshot = copy.deepcopy(s)
+        version = next_version()
+    # `save_settings` is looked up when the job runs (not bound here), so tests can patch it.
+    _writer().submit("settings", version, lambda: save_settings(snapshot))
+
+
+def flush_settings(timeout_s: float = 5.0) -> bool:
+    """Wait until every queued settings write has landed (False on timeout)."""
+    ok = _writer().flush(timeout_s)
+    if not ok:
+        log.warning("settings writes still pending after %.1f s", timeout_s)
+    return ok
+
+
 def export_settings(s: AppSettings, path: str):
-    """Export all settings to a JSON file."""
+    """Export all settings to a JSON file. Blocking on purpose: the file must be written before the copy,
+    and the flush first means no older queued write can land between the two."""
+    flush_settings()
     save_settings(s)
     import shutil
     shutil.copy2(str(_path("settings.json")), path)
@@ -600,6 +650,7 @@ def export_settings(s: AppSettings, path: str):
 
 def import_settings(path: str) -> AppSettings:
     """Import settings from a JSON file, replace current settings."""
+    flush_settings()   # a queued write must not land on top of the imported file
     import shutil
     shutil.copy2(path, str(_path("settings.json")))
     return load_settings()
@@ -607,6 +658,7 @@ def import_settings(path: str) -> AppSettings:
 
 def reset_all():
     """Delete all persisted data files and return a fresh AppSettings."""
+    flush_settings()   # a queued write must not recreate settings.json after the delete
     for name in ("settings.json", "palette_override.json", "palette_lock.json", "cal_data.json",
                  "name_cache.json", "dumped_banks.json", "setlist_cache.json"):
         p = _path(name)

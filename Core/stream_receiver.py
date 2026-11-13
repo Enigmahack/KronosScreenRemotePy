@@ -15,11 +15,12 @@ import logging
 import select
 import socket
 import struct
+import threading
 import time
 import zlib
 from typing import List, Optional
 
-from PySide6.QtCore import QThread, Signal
+from PySide6.QtCore import Qt, QThread, Signal, Slot
 
 from Models.models import PaletteEntry
 
@@ -60,8 +61,14 @@ def version_failure_message(status: int, ver_min: Optional[int], ver_max: Option
 
 
 class StreamReceiver(QThread):
-    frame_received = Signal(bytes)   # raw 8bpp frame bytes
+    # The whole reconstructed canvas (8bpp indices or RGB565LE), emitted on the
+    # thread that owns this object (the GUI thread). Latest-frame coalesced: if
+    # the GUI falls behind, intermediate canvases are skipped rather than queued
+    # (every emission is the full canvas, so the newest one already contains
+    # every rect that arrived before it).
+    frame_received = Signal(bytes)
     disconnected   = Signal()
+    _frame_ready   = Signal()        # worker -> owner thread: "a canvas is pending"
 
     def __init__(self, host: str, port: int, pull_mode: bool, fps: int,
                  username: str = "", password: str = "", parent=None):
@@ -77,6 +84,13 @@ class StreamReceiver(QThread):
         self._password  = password
         self._sock: Optional[socket.socket] = None
         self._stop      = False
+        # Latest-frame slot: the worker composites into _canvas under _frame_lock
+        # and posts _frame_ready only when nothing is pending yet; the owner-thread
+        # slot copies the canvas under the lock and clears the flag.
+        self._frame_lock = threading.Lock()
+        self._canvas: Optional[bytearray] = None
+        self._frame_pending = False
+        self._frame_ready.connect(self._deliver_frame, Qt.ConnectionType.QueuedConnection)
 
         self.width   = 800
         self.height  = 600
@@ -183,6 +197,12 @@ class StreamReceiver(QThread):
                 pass
             raise
 
+    def start(self, *args, **kwargs):
+        # Reset here, on the caller's thread, not at the top of run(): a stop()
+        # issued between start() and the worker reaching run() must not be undone.
+        self._stop = False
+        super().start(*args, **kwargs)
+
     def stop(self):
         self._stop = True
         try:
@@ -201,13 +221,15 @@ class StreamReceiver(QThread):
         persistent canvas (master_frame) and the whole canvas is emitted after
         each one, mirroring StreamReceiver.cs's V3FrameDecoder.ApplyRect.
         """
-        self._stop = False
         log.debug("run() started, mode=%s, format=%s, bpp=%d", self._mode,
                   "RGB565" if self.stream_fmt == 1 else "INDEX8", self.bytes_per_pixel)
         interval    = (1.0 / self._fps) if self._mode == _MODE_PULL and self._fps > 0 else 0.0
         hdr_buf     = bytearray(4)
         frame_size  = self.width * self.height * self.bytes_per_pixel
         master_frame = bytearray(frame_size)   # persistent reconstructed canvas
+        with self._frame_lock:
+            self._canvas = master_frame
+            self._frame_pending = False
         # Generous bound on a rect payload — a raw uncompressed full frame plus
         # PackBits' worst-case ~1/128 expansion, with headroom (mirrors
         # StreamReceiver.cs's MaxRectPayload).
@@ -288,7 +310,8 @@ class StreamReceiver(QThread):
                     decoded = dview
                 elif enc == 2:  # zlib / RFC 1950 deflate
                     try:
-                        out = zlib.decompress(bytes(data))
+                        # Cap output so a corrupt payload can't inflate unbounded.
+                        out = zlib.decompressobj().decompress(bytes(data), decoded_len + 1)
                     except zlib.error as e:
                         log.warning("stream ended: zlib inflate failed: %s", e)
                         break
@@ -305,12 +328,17 @@ class StreamReceiver(QThread):
                 # the canvas, so a single contiguous copy would misalign rows.
                 src_pitch = w * self.bytes_per_pixel
                 dst_pitch = self.width * self.bytes_per_pixel
-                for row in range(h):
-                    s = row * src_pitch
-                    d = (y0 + row) * dst_pitch + x0 * self.bytes_per_pixel
-                    master_frame[d:d + src_pitch] = decoded[s:s + src_pitch]
-
-                self.frame_received.emit(bytes(master_frame))
+                with self._frame_lock:
+                    for row in range(h):
+                        s = row * src_pitch
+                        d = (y0 + row) * dst_pitch + x0 * self.bytes_per_pixel
+                        master_frame[d:d + src_pitch] = decoded[s:s + src_pitch]
+                    post = not self._frame_pending
+                    self._frame_pending = True
+                # At most one delivery is ever queued; later rects just update the
+                # canvas it will copy. Memory stays bounded however slow the GUI is.
+                if post:
+                    self._frame_ready.emit()
 
                 if self._mode == _MODE_PULL and interval > 0:
                     time.sleep(interval)
@@ -325,6 +353,17 @@ class StreamReceiver(QThread):
                 pass
             if not self._stop:
                 self.disconnected.emit()
+
+    @Slot()
+    def _deliver_frame(self):
+        """Owner (GUI) thread: snapshot the newest canvas and emit it."""
+        with self._frame_lock:
+            canvas = self._canvas
+            self._frame_pending = False
+            if canvas is None:
+                return
+            frame = bytes(canvas)
+        self.frame_received.emit(frame)
 
     def dispose(self):
         self.stop()

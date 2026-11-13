@@ -161,7 +161,12 @@ class AudioCapture(QThread):
     def __init__(self, device_id: Optional[str] = None, parent=None):
         super().__init__(parent)
         self._device_id = device_id
-        self._running   = False
+        self._running   = True    # start() re-arms it; stop() before run() begins must stick
+
+    def start(self, *args, **kwargs):
+        # Set before the thread runs so a stop() racing the start isn't undone.
+        self._running = True
+        super().start(*args, **kwargs)
 
     def set_device(self, device_id: Optional[str]):
         self._device_id = device_id
@@ -172,7 +177,8 @@ class AudioCapture(QThread):
         self.wait(2000)
 
     def run(self):
-        self._running = True
+        if not self._running:
+            return
         try:
             import sounddevice as sd
             import numpy as np

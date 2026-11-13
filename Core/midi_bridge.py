@@ -20,7 +20,7 @@ import threading
 import time
 from typing import Callable, List, Optional
 
-from PySide6.QtCore import QThread, Signal
+from PySide6.QtCore import QCoreApplication, QObject, QThread, Signal, Slot
 
 MIDI_BRIDGE_PORT = 9875
 
@@ -150,6 +150,80 @@ class MidiStreamParser:
         return 0
 
 
+_RETIRED: set = set()   # threads that outlived dispose(); keeps them referenced
+_RETIRED_LOCK = threading.Lock()
+
+
+class _Reaper(QObject):
+    """Lives on the GUI thread. A retired thread's `finished` is queued here, so the last
+    Python reference to it is dropped on the GUI thread once it has fully stopped, never
+    on the dying thread itself (dropping it there, while QThread still counts as running,
+    aborts the process)."""
+
+    @Slot()
+    def reap(self):
+        prune_retired()
+
+
+_reaper: Optional[_Reaper] = None
+
+
+def prune_retired() -> None:
+    """Forget retired threads that have completely finished."""
+    with _RETIRED_LOCK:
+        done = []
+        for t in _RETIRED:
+            try:
+                if t.isFinished():
+                    done.append(t)
+            except RuntimeError:          # C++ object already deleted
+                done.append(t)
+        for t in done:
+            _RETIRED.discard(t)
+
+
+def retire_thread(t: QThread) -> None:
+    """Keep a QThread referenced until it has really finished, without waiting for it.
+    Call on the GUI thread instead of a blocking wait(): dropping the last Python
+    reference to a running QThread aborts the process."""
+    global _reaper
+    prune_retired()
+    try:
+        if not t.isRunning():
+            return
+    except RuntimeError:                  # C++ object already deleted
+        return
+    app = QCoreApplication.instance()
+    if _reaper is None and app is not None:
+        _reaper = _Reaper()
+        if _reaper.thread() is not app.thread():
+            _reaper.moveToThread(app.thread())
+    with _RETIRED_LOCK:
+        _RETIRED.add(t)
+    if _reaper is not None:
+        try:
+            t.finished.connect(_reaper.reap)     # queued: runs on the GUI thread
+        except (RuntimeError, TypeError):
+            pass
+    prune_retired()                              # it may have finished meanwhile
+
+
+def join_retired(timeout_s: float) -> bool:
+    """Wait (bounded) for every retired thread; for application exit. True if all ended."""
+    deadline = time.monotonic() + max(0.0, timeout_s)
+    with _RETIRED_LOCK:
+        threads = list(_RETIRED)
+    for t in threads:
+        left_ms = int(max(0.0, deadline - time.monotonic()) * 1000)
+        try:
+            t.wait(left_ms)
+        except RuntimeError:
+            pass
+    prune_retired()
+    with _RETIRED_LOCK:
+        return not _RETIRED
+
+
 class MidiBridgeClient(QThread):
     """Reconnecting TCP client for the MIDI bridge (port 9875).
 
@@ -243,8 +317,11 @@ class MidiBridgeClient(QThread):
                 pass
 
     def dispose(self):
+        """Non-blocking: signal the thread to stop and let it finish in the background
+        (a slow connect() can take up to its 5 s timeout). The thread stays referenced
+        in _RETIRED until it has ended; join_retired() waits for it at exit."""
         self.stop()
-        self.wait(3000)
+        retire_thread(self)
 
     def run(self):
         retry_s = 2.0

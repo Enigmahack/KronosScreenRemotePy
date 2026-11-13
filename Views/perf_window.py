@@ -231,6 +231,10 @@ class PerformanceWindow(QDialog):
         self._timer.timeout.connect(self._poll)
         self._set_interval(0)  # start at 1 s
 
+        self._poll_busy = False
+        # Bumped on every host change: a SYSINFO reply for an earlier host (or one
+        # that lands after a disconnect) must not repaint the window as "Connected".
+        self._poll_token = 0
         if host:
             self._timer.start()
             self._poll()
@@ -353,31 +357,50 @@ class PerformanceWindow(QDialog):
             self._status_lbl.setStyleSheet(f"color: {_RED}; font-size: 11px;")
 
     def update_host(self, host: str, ctrl_port: int):
+        if (host, ctrl_port) != (self._host, self._ctrl_port) or not host:
+            self._poll_token += 1   # an in-flight poll's reply is discarded when it lands
         self._host      = host
         self._ctrl_port = ctrl_port
         if host:
-            self._timer.start()
-            self._poll()
+            if self.isVisible():   # never poll the (fragile) daemon on behalf of a hidden window
+                self._timer.start()
+                self._poll()
         else:
             self._timer.stop()
             self._set_status(False)
 
     def _poll(self):
-        if not self._host:
+        if not self._host or self._poll_busy:
             return
+        self._poll_busy = True
         import threading
-        threading.Thread(target=self._fetch, daemon=True, name="PerfPoll").start()
+        threading.Thread(target=self._fetch,
+                         args=(self._host, self._ctrl_port, self._poll_token),
+                         daemon=True, name="PerfPoll").start()
 
-    def _fetch(self):
+    def _fetch(self, host: str = None, port: int = None, token: int = None):
         import Core.ctrl_client as CC
-        resp = CC.get().query_multi(self._host, self._ctrl_port, "SYSINFO", timeout_ms=4000)
+        if host is None:
+            host, port, token = self._host, self._ctrl_port, self._poll_token
+        try:
+            resp = CC.get().query_multi(host, port, "SYSINFO", timeout_ms=4000)
+        except Exception:
+            resp = None   # still reach _apply, which clears _poll_busy
         from PySide6.QtCore import QTimer as _QT
         try:
-            _QT.singleShot(0, self, lambda r=resp: self._apply(r))
+            _QT.singleShot(0, self, lambda r=resp: self._apply(r, token))
         except RuntimeError:
             pass  # dialog C++ object deleted before thread finished — safe to ignore
 
-    def _apply(self, resp: Optional[str]):
+    def _apply(self, resp: Optional[str], token: Optional[int] = None):
+        if token is not None:
+            # Always free the slot (one SYSINFO in flight at a time, even across a
+            # host change - the daemon is fragile), then drop a stale reply.
+            self._poll_busy = False
+            if token != self._poll_token:
+                return            # reply for an earlier host / session
+        if not self._host:
+            return                # disconnected while the poll was in flight
         if not resp:
             self._set_status(False)
             return
@@ -535,6 +558,17 @@ class PerformanceWindow(QDialog):
         except ValueError:
             self._prev_rto_set = False
         self._lbl_audio.setText("  ".join(parts) if parts else "—")
+
+    def hideEvent(self, event):
+        # Esc/reject() hides without closeEvent; stop polling either way.
+        self._timer.stop()
+        super().hideEvent(event)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self._host and not self._timer.isActive():
+            self._timer.start()
+            self._poll()
 
     def closeEvent(self, event):
         self._timer.stop()
