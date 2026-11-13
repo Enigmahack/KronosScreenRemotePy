@@ -55,8 +55,16 @@ def _read_wav(path: str) -> Tuple[np.ndarray, int]:
     tag, ch, rate, _br, _ba, bits = struct.unpack_from("<HHIIHH", fmt, 0)
     if tag == 0xFFFE and len(fmt) >= 26:                 # WAVE_FORMAT_EXTENSIBLE: real tag in the sub-format GUID
         tag = struct.unpack_from("<H", fmt, 24)[0]
+    # Check the format before any arithmetic on the bit depth: compressed formats (IMA ADPCM, tag 0x11, is 4-bit)
+    # would divide by zero below, and a 16/24-bit "float" would be read with the wrong dtype.
+    if tag not in (1, 3):
+        raise AudioImportError(f"unsupported WAV format tag {tag:#x} (only PCM and IEEE float can be imported)")
     if ch < 1 or rate < 1:
         raise AudioImportError("WAV has an invalid channel count or sample rate")
+    if tag == 1 and bits not in (8, 16, 24, 32):
+        raise AudioImportError(f"unsupported WAV bit depth: {bits}")
+    if tag == 3 and bits not in (32, 64):
+        raise AudioImportError(f"unsupported WAV float bit depth: {bits}")
     width = bits // 8
     usable = len(pcm) - len(pcm) % (width * ch)
     raw = pcm[:usable]
@@ -253,6 +261,29 @@ def _selftest() -> None:
         check("junk-raises", True)
     odd = write_wav("odd.wav", mono.tobytes()[:-1], 44100, 1)
     check("trailing-odd-byte-ignored", len(import_to_mono_44100(odd)) == len(mono) - 1)
+
+    # crafted headers that used to crash: IMA ADPCM (4-bit, ZeroDivisionError), 16/24-bit "float" (ValueError),
+    # odd integer depths, extensible-wrapped ADPCM. Each must raise the module's own error, nothing else.
+    def crafted(name, tag, bits, payload=bytes(64), ch=1, ext_tag=None):
+        fmt = struct.pack("<HHIIHH", tag, ch, 44100, 44100, max(1, ch * bits // 8), bits)
+        if ext_tag is not None:
+            fmt += struct.pack("<HHIH", 22, bits, 0, ext_tag) + bytes(14)
+        p = os.path.join(tmp, name)
+        body = b"WAVE" + b"fmt " + struct.pack("<I", len(fmt)) + fmt + b"data" + struct.pack("<I", len(payload)) + payload
+        open(p, "wb").write(b"RIFF" + struct.pack("<I", len(body)) + body)
+        return p
+
+    for name, args in (("adpcm", (0x11, 4)), ("float16", (3, 16)), ("float24", (3, 24)), ("pcm12", (1, 12)),
+                       ("pcm4", (1, 4)), ("pcm0", (1, 0)), ("float0", (3, 0)), ("ext-adpcm", (0xFFFE, 4, bytes(64), 1, 0x11)),
+                       ("ext-float16", (0xFFFE, 16, bytes(64), 1, 3))):
+        try:
+            import_to_mono_44100(crafted(name + ".wav", *args)); check("crafted-" + name, False)
+        except AudioImportError:
+            check("crafted-" + name, True)
+        except Exception as e:                                          # noqa: BLE001 - the point of the test
+            check(f"crafted-{name}-{type(e).__name__}", False)
+    of64 = import_to_mono_44100(crafted("f64.wav", 3, 64, np.array([0.5, -0.5], "<f8").tobytes()))
+    check("float64", of64.tolist() == [16384, -16384])
 
     if fails:
         print("FAIL:", ", ".join(fails)); sys.exit(1)

@@ -28,6 +28,20 @@ from Utils.midi_note_name import to_name
 
 log = logging.getLogger(__name__)
 
+
+def _decode_for_repository(audio_path: str):
+    """One decode per file (the channel-count peek of a non-WAV used to decode it in full, then again): a genuinely
+    stereo source -> ("stereo", left, right), anything else -> ("mono", pcm). Errors are returned, not raised, so one
+    bad file does not stop the rest of a batch."""
+    try:
+        data, src_rate = audio_import.read_audio(audio_path)
+        if data.ndim == 2 and data.shape[1] >= 2:
+            left, right = audio_import.convert_to_stereo_44100(data, src_rate)
+            return ("stereo", left, right)
+        return ("mono", audio_import.convert_to_mono_44100(data, src_rate))
+    except Exception as ex:                                  # noqa: BLE001 - reported per file by the caller
+        return ex
+
 SKIPPED = builder.SKIPPED_SAMPLE_FILENAME
 
 
@@ -78,7 +92,8 @@ class ZoneMixin:
         if m is None:
             return
         try:
-            pcm = audio_import.import_to_mono_44100(audio_path)
+            pcm = self.run_heavy(f"Decoding '{os.path.basename(audio_path)}'...",
+                                 lambda: audio_import.import_to_mono_44100(audio_path))
             name = os.path.splitext(os.path.basename(audio_path))[0]
             zone = builder.add_sample_zone(m, kmp_path, name, pcm, audio_import.TARGET_SAMPLE_RATE, original_key, top_key)
             self._save_multisample_now(m, kmp_path)
@@ -261,11 +276,16 @@ class ZoneMixin:
         failures: List[str] = []
         alloc = ksc_mod.Sno1Allocator(kmp_dir)          # one scan for the whole batch
         rate = audio_import.TARGET_SAMPLE_RATE
-        for audio_path in audio_paths:
+        # Every file is decoded up front in ONE background step (the window runs run_heavy on a worker under a busy
+        # dialog); nothing in the collection is touched until all decoding has finished.
+        decoded = self.run_heavy("Decoding audio...", lambda: [_decode_for_repository(p) for p in audio_paths])
+        for audio_path, dec in zip(audio_paths, decoded):
             try:
+                if isinstance(dec, Exception):
+                    raise dec
                 name = os.path.splitext(os.path.basename(audio_path))[0]
-                if audio_import.get_source_channel_count(audio_path) >= 2:
-                    left, right = audio_import.import_stereo_to_lr_44100(audio_path)
+                if dec[0] == "stereo":
+                    left, right = dec[1], dec[2]
                     lf, rf = self._unique_bare_ksf_file_name(f"{name}-L"), self._unique_bare_ksf_file_name(f"{name}-R")
                     lk = KsfSample(name=name, suffix="-L", sample_rate=rate, flags=0x81, sno1=alloc.next())
                     lk.set_samples(left)
@@ -278,7 +298,7 @@ class ZoneMixin:
                     self._collection.entries.extend([lf, rf])
                     written.extend([lp, rp])
                 else:
-                    pcm = audio_import.import_to_mono_44100(audio_path)
+                    pcm = dec[1]
                     fn = self._unique_bare_ksf_file_name(name)
                     k = KsfSample(name=name, sample_rate=rate, flags=0x81, sno1=alloc.next())
                     k.set_samples(pcm)
@@ -457,24 +477,12 @@ class ZoneMixin:
     def _sweep_orphaned_repository_files(self) -> None:
         """Deletes every bare .KSF in the content folder that is BOTH no longer a listed entry AND not referenced
         by any zone in the loaded tree — dead weight a real Kronos-authored collection does not have. Run from
-        save_all_changes, NOT from retire (which would break same-session reuse into a second zone)."""
-        if self._collection is None or self._collection_path is None:
-            return
-        content_dir = ksc_mod.content_dir_for(self._collection_path)
-        if not os.path.isdir(content_dir):
-            return
-        referenced = {e.lower() for e in self._collection.entries}
-        for node in self.all_multisample_nodes():
-            for z in node.multisample_ref[0].zones:
-                if not z.is_skipped:
-                    referenced.add(z.filename.lower())
-        for f in os.listdir(content_dir):
-            p = os.path.join(content_dir, f)
-            if f.upper().endswith(".KSF") and os.path.isfile(p) and f.lower() not in referenced:
-                try:
-                    os.remove(p)
-                except OSError as ex:
-                    log.warning("Sample Editor: couldn't remove orphaned repository file '%s': %s", p, ex)
+        save_all_changes (there: on the save worker, after every write landed), NOT from retire (which would break
+        same-session reuse into a second zone)."""
+        from Core.sample_editor_model.io import _delete_orphans
+        plan = self._plan_orphan_sweep()
+        if plan is not None:
+            _delete_orphans(*plan)
 
     # ── stereo pairs / new multisamples ────────────────────────────────────────────────────
 
@@ -518,7 +526,8 @@ class ZoneMixin:
             return
         lm, lp, rm, rp = (m, kmp_path, sibling, sibling_path) if m.suffix == "-L" else (sibling, sibling_path, m, kmp_path)
         try:
-            left_pcm, right_pcm = audio_import.import_stereo_to_lr_44100(audio_path)
+            left_pcm, right_pcm = self.run_heavy(f"Decoding '{os.path.basename(audio_path)}'...",
+                                                 lambda: audio_import.import_stereo_to_lr_44100(audio_path))
             name = os.path.splitext(os.path.basename(audio_path))[0]
             lz, rz = builder.add_stereo_sample_zone_pair(lm, lp, rm, rp, name, left_pcm, right_pcm,
                                                          audio_import.TARGET_SAMPLE_RATE, original_key, top_key)
@@ -719,8 +728,7 @@ class ZoneMixin:
             return None
 
         self._zone_undo.record_before_edit(ZoneListSnapshot.of(m.zones, sibling_zones))
-        self._undo_domains.append(DOMAIN_ZONE)
-        self._redo_domains.clear()
+        self._push_undo_marker(DOMAIN_ZONE)
 
         label = "(skipped)" if zone.is_skipped else zone.filename
         del m.zones[idx]
@@ -765,8 +773,7 @@ class ZoneMixin:
                 old_next_top = zones[idx + 1].top_key
             sibling_zones, sibling_m, sibling_path = self._resolve_sibling_zones_for(zones)
             self._zone_undo.record_before_edit(ZoneListSnapshot.of(zones, sibling_zones))
-            self._undo_domains.append(DOMAIN_ZONE)
-            self._redo_domains.clear()
+            self._push_undo_marker(DOMAIN_ZONE)
 
         old_top = zone.top_key
         zone.top_key = new_top
@@ -805,8 +812,7 @@ class ZoneMixin:
         # Of the three key-range edits this one most needs mirroring: it rewrites EVERY TopKey in the list.
         sibling_zones, sibling_m, sibling_path = self._resolve_sibling_zones_for(zones)
         self._zone_undo.record_before_edit(ZoneListSnapshot.of(zones, sibling_zones))
-        self._undo_domains.append(DOMAIN_ZONE)
-        self._redo_domains.clear()
+        self._push_undo_marker(DOMAIN_ZONE)
 
         width = {}
         prev = -1

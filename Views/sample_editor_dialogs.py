@@ -24,9 +24,12 @@ def prompt_text(parent, title: str, label: str, default: str = "", max_length: i
     if max_length > 0:
         dlg.input.setMaxLength(max_length)
     dlg.input.selectAll()
-    if dlg.exec() != InputDialog.DialogCode.Accepted:
-        return None
-    return dlg.value()
+    try:
+        if dlg.exec() != InputDialog.DialogCode.Accepted:
+            return None
+        return dlg.value()
+    finally:
+        dlg.deleteLater()                       # parented to the window: would otherwise live as long as it does
 
 
 def confirm(parent, title: str, text: str, default_no: bool = True) -> bool:
@@ -34,7 +37,10 @@ def confirm(parent, title: str, text: str, default_no: bool = True) -> bool:
                       QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, parent)
     box.setDefaultButton(QMessageBox.StandardButton.No if default_no else QMessageBox.StandardButton.Yes)
     box.setStyleSheet(_message_box_stylesheet())
-    return box.exec() == QMessageBox.StandardButton.Yes
+    try:
+        return box.exec() == QMessageBox.StandardButton.Yes
+    finally:
+        box.deleteLater()
 
 
 class CreateMultisampleDialog(BaseDialog):

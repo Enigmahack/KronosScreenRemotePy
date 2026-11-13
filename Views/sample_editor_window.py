@@ -34,7 +34,7 @@ from Views.sample_editor_dialogs import (
 from Views.sample_editor_widgets import (
     FieldBox, ICON_GREEN, ICON_GREY, path_icon, play_stop_icon, undo_icon, zoom_icon)
 from Views.sample_keymap_control import SampleKeymapControl
-from Views.sample_remote_source import KronosRemoteSampleSource
+from Views.sample_remote_source import KronosRemoteSampleSource, run_blocking
 from Views.sample_small_controls import (
     SamplePanControl, SampleVolumeControl, SampleVuMeter, SampleWaveformRuler)
 from Views.sample_waveform_control import SampleWaveformControl
@@ -175,13 +175,20 @@ def find_multisample_node(nodes, kmp_path: str) -> Optional[SampleTreeNode]:
 
 class SampleEditorWindow(QMainWindow):
     def __init__(self, host: str = "", ftp_port: int = 21, user: str = "", password: str = "", parent=None,
-                 model: Optional[SampleEditorModel] = None):
+                 model: Optional[SampleEditorModel] = None, settings=None):
         super().__init__(parent)
         self._host, self._ftp_port, self._user, self._pass = host, ftp_port, user, password
-        settings = getattr(parent, "_settings", None) or storage.load_settings()
-        self._model = model or SampleEditorModel(settings, storage.save_settings)
+        # The caller's live settings object (never a private re-load: saving a stale copy would overwrite newer values).
+        settings = settings or getattr(parent, "_settings", None) or storage.load_settings()
+        # Recent-file changes persist through the non-blocking settings writer (a slow share must not stall the UI).
+        self._model = model or SampleEditorModel(settings, storage.save_settings_async)
         self._marshal = _Marshal(self)
         self._model.dispatch = self._marshal.call.emit
+        # Heavy pure computations (decode, tempo/pitch, export) run on a worker under a modal busy dialog; the model
+        # applies their result on this thread. `_busy` gates the app-wide key filter and close while one runs.
+        self._busy = False
+        self._model.run_heavy = self._run_heavy
+        self._report: Optional[SampleReportWindow] = None
 
         self._syncing_views = False
         self._suppress_combo = False
@@ -730,6 +737,21 @@ class SampleEditorWindow(QMainWindow):
         return wf
 
     # ── refresh (port of RefreshDetailPanels) ──────────────────────────────────────────────
+
+    def _run_heavy(self, label: str, fn: Callable[[], object]) -> object:
+        """The model's `run_heavy` hook: `fn` (pure, touches no widget and no observable model state) runs on a
+        worker thread under a window-modal busy dialog; its exception is re-raised here so the model's own error
+        handling sees exactly what an inline call would have raised."""
+        if self._busy:                     # never nest a second worker under the first
+            return fn()
+        self._busy = True
+        try:
+            result, err = run_blocking(self, label, lambda _progress: fn())
+        finally:
+            self._busy = False
+        if err is not None:
+            raise err
+        return result
 
     def _after(self, mutate: Callable[[], None]) -> None:
         mutate()
@@ -1515,6 +1537,7 @@ class SampleEditorWindow(QMainWindow):
         menu.addAction("Close Collection").triggered.connect(lambda: self._unload_with_confirm(owning))
         menu.addAction("Close Editor").triggered.connect(self.close)
         menu.exec(self._tree.viewport().mapToGlobal(pos))
+        menu.deleteLater()
 
     def _on_wave_context_menu(self, pane: SampleWaveformControl, pos: QPoint) -> None:
         """Always opens (right-click must still reach Paste with no selection); selection-only items are disabled
@@ -1548,6 +1571,7 @@ class SampleEditorWindow(QMainWindow):
         menu.addSeparator()
         add("&Loop Selected Area", lambda: self._after(m.set_loop_from_selection), has_sel)
         menu.exec(pane.mapToGlobal(pos))
+        menu.deleteLater()
 
     def _gain_menu(self, button: QPushButton, presets) -> None:
         menu = QMenu(self)
@@ -1555,6 +1579,7 @@ class SampleEditorWindow(QMainWindow):
             menu.addAction(f"{v:+d} dB").triggered.connect(
                 lambda _c=False, d=v: self._after(lambda: self._model.apply_gain_adjust(float(d))))
         menu.exec(button.mapToGlobal(QPoint(0, button.height())))
+        menu.deleteLater()
 
     # ── file / collection handlers ─────────────────────────────────────────────────────────
 
@@ -1627,14 +1652,17 @@ class SampleEditorWindow(QMainWindow):
             return
         preview = m.next_free_mno1()
         dlg = CreateMultisampleDialog(preview, self)
-        if dlg.exec() != CreateMultisampleDialog.DialogCode.Accepted:
+        accepted = dlg.exec() == CreateMultisampleDialog.DialogCode.Accepted
+        stereo = dlg.stereo
+        dlg.deleteLater()
+        if not accepted:
             return
         # A stereo pair needs TWO contiguous free slots; the previewed (mono) slot can collide with a still-taken
         # neighbour, so it is recomputed with the real count. The title may differ — accepted, not worth a second
         # round-trip through the dialog.
-        slot = m.next_free_mno1(2) if dlg.stereo else preview
+        slot = m.next_free_mno1(2) if stereo else preview
         base = f"NEWMS{slot:03d}"
-        node = (m.new_stereo_multisample_pair_in_collection(base, slot) if dlg.stereo
+        node = (m.new_stereo_multisample_pair_in_collection(base, slot) if stereo
                 else m.new_multisample_in_collection(base, slot))
         self.refresh()
         self._update_status()
@@ -1699,11 +1727,20 @@ class SampleEditorWindow(QMainWindow):
             return None
         return KronosRemoteSampleSource(self, self._host, self._ftp_port, self._user, self._pass)
 
+    def _while_remote(self, fn: Callable[[], None]) -> None:
+        """A pull/push spins nested event loops (busy dialog, folder browser) while the model is mid-call: hold the
+        key filter and close off for the duration, like a heavy computation does."""
+        self._busy = True
+        try:
+            fn()
+        finally:
+            self._busy = False
+
     def on_pull_collection(self) -> None:
         src = self._remote_source()
         if src is None:
             return
-        self._model.pull_collection_from_kronos(src)
+        self._while_remote(lambda: self._model.pull_collection_from_kronos(src))
         self._select_first_root()
         self.refresh()
         self._update_status()
@@ -1712,7 +1749,7 @@ class SampleEditorWindow(QMainWindow):
         src = self._remote_source()
         if src is None:
             return
-        self._model.pull_multisample_from_kronos(src)
+        self._while_remote(lambda: self._model.pull_multisample_from_kronos(src))
         self._select_first_root()
         self.refresh()
         self._update_status()
@@ -1720,19 +1757,19 @@ class SampleEditorWindow(QMainWindow):
     def on_push_sample(self) -> None:
         src = self._remote_source()
         if src is not None:
-            self._model.push_selected_sample(src)
+            self._while_remote(lambda: self._model.push_selected_sample(src))
             self._update_status()
 
     def on_push_multisample(self) -> None:
         src = self._remote_source()
         if src is not None:
-            self._model.push_selected_multisample(src)
+            self._while_remote(lambda: self._model.push_selected_multisample(src))
             self._update_status()
 
     def on_push_collection(self) -> None:
         src = self._remote_source()
         if src is not None:
-            self._model.push_collection_to_kronos(src)
+            self._while_remote(lambda: self._model.push_collection_to_kronos(src))
             self._update_status()
 
     # ── import / export ────────────────────────────────────────────────────────────────────
@@ -1873,6 +1910,14 @@ class SampleEditorWindow(QMainWindow):
             self._update_status()
 
     def on_report(self) -> None:
+        # One report at a time: each call used to parent a fresh window to this one and orphan the last.
+        old, self._report = self._report, None
+        if old is not None:
+            try:
+                old.close()
+                old.deleteLater()
+            except RuntimeError:                 # already destroyed on the C++ side
+                pass
         self._report = SampleReportWindow(self._model.build_normalization_report(), self)
         self._report.show()
 
@@ -1930,9 +1975,12 @@ class SampleEditorWindow(QMainWindow):
             self._status.setText("No sample loaded.")
             return
         dlg = InsertSilenceDialog(m.sample_rate, max(1, m.sample_rate // 4), m.has_stereo_pair, self)
-        if dlg.exec() != InsertSilenceDialog.DialogCode.Accepted:
+        accepted = dlg.exec() == InsertSilenceDialog.DialogCode.Accepted
+        frames, left, right = dlg.frames, dlg.apply_to_left, dlg.apply_to_right
+        dlg.deleteLater()
+        if not accepted:
             return
-        self._after(lambda: m.apply_insert_silence(dlg.frames, dlg.apply_to_left, dlg.apply_to_right))
+        self._after(lambda: m.apply_insert_silence(frames, left, right))
 
     def on_gain_dialog(self) -> None:
         if not self._model.has_sample_loaded:
@@ -1978,6 +2026,8 @@ class SampleEditorWindow(QMainWindow):
         from PySide6.QtCore import QEvent
         if ev.type() != QEvent.Type.KeyPress or not self.isActiveWindow():
             return False
+        if self._busy:                           # a worker is computing from the current state: no edits now
+            return True
         mods = ev.modifiers() & ~Qt.KeyboardModifier.KeypadModifier
         key = ev.key()
         if key == Qt.Key.Key_Plus and (mods & Qt.KeyboardModifier.ControlModifier):
@@ -2044,6 +2094,9 @@ class SampleEditorWindow(QMainWindow):
             self._status.setText(f"Don't know what to do with '{os.path.basename(path)}' - drop a .KSC, .KMP, or an audio file.")
 
     def closeEvent(self, e) -> None:
+        if self._busy:
+            e.ignore()
+            return
         if self._model.has_unsaved_changes and not confirm(
                 self, "Unsaved Changes", "There are unsaved changes in the Sample Editor. Close anyway and discard them?"):
             e.ignore()
@@ -2052,5 +2105,9 @@ class SampleEditorWindow(QMainWindow):
         self._vu_timer.stop()
         self._playhead_timer.stop()
         self._model.stop_playback()
+        self._model.remove_listener(self._on_model_changed)
+        if self._on_cursor_moved in self._model.cursor_moved_listeners:
+            self._model.cursor_moved_listeners.remove(self._on_cursor_moved)
+        self._model.run_heavy = lambda _label, fn: fn()
         self._model.dispose()
         super().closeEvent(e)

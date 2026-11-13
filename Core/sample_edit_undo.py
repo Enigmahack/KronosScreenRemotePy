@@ -4,7 +4,9 @@ Sample Editor undo — port of Core/Sample/SampleEditUndo.cs + SampleZoneUndo.cs
 TWO independent stacks (arbitrated by the model's `_undo_domains`, see Core/sample_editor_model.py):
 
   SampleEditUndo — full pre-edit SNAPSHOTS of one sample (PCM + the marker/flag fields a drag can
-      change without touching PCM). A waveform snapshot is a multi-MB buffer and most PCM edits (crop,
+      change without touching PCM). The model stores a `StereoStep` per entry: the selected sample's
+      snapshot and/or its stereo partner's as ONE entry, so a mirrored (both-channel) edit can never
+      lose one half to eviction while the other survives (that let Undo revert L without R). A waveform snapshot is a multi-MB buffer and most PCM edits (crop,
       tempo/pitch, destructive filters) have no cheap analytic inverse, so this is bounded by a BYTE
       cap (AppSettings.sample_undo_byte_cap_mb), FIFO-evicting the oldest step, not by a step count.
       Cap accounting counts len(pcm) even for field-only edits that reuse the same Pcm reference — a
@@ -26,6 +28,8 @@ from Data.kmp_multisample import KmpZone
 from Data.ksf_sample import KsfSample
 
 DEFAULT_BYTE_CAP_MB = 256
+DEFAULT_MAX_SAMPLE_STEPS = 1000     # a step-count ceiling as well: a field edit of a tiny or header-only sample
+                                    # costs ~0 counted bytes, so the byte cap alone would never evict it
 
 
 @dataclass(frozen=True)
@@ -56,11 +60,29 @@ class SampleFieldSnapshot:
         s.restore_loop_tune(self.loop_tune)
 
 
+@dataclass(frozen=True)
+class StereoStep:
+    """One undo step of the selected sample and/or its stereo partner. `primary` / `partner` are the pre-edit
+    snapshots (None = that channel was not touched); `primary_obj` / `partner_obj` are the samples they belong to,
+    so a step is never applied to a different sample than the one it was recorded from."""
+    primary: Optional[SampleFieldSnapshot]
+    partner: Optional[SampleFieldSnapshot]
+    primary_obj: Optional[KsfSample] = None
+    partner_obj: Optional[KsfSample] = None
+
+
+def _cost(entry) -> int:
+    if isinstance(entry, StereoStep):
+        return sum(len(h.pcm) for h in (entry.primary, entry.partner) if h is not None)
+    return len(entry.pcm)
+
+
 class SampleEditUndo:
-    def __init__(self, byte_cap: int = DEFAULT_BYTE_CAP_MB * 1024 * 1024):
+    def __init__(self, byte_cap: int = DEFAULT_BYTE_CAP_MB * 1024 * 1024, max_steps: int = DEFAULT_MAX_SAMPLE_STEPS):
         self.byte_cap = byte_cap
-        self._undo: Deque[SampleFieldSnapshot] = deque()
-        self._redo: Deque[SampleFieldSnapshot] = deque()
+        self.max_steps = max_steps
+        self._undo: Deque = deque()        # SampleFieldSnapshot or StereoStep entries
+        self._redo: Deque = deque()
         self._undo_bytes = 0
         self._redo_bytes = 0
         self.evicted_since_last_check = 0
@@ -74,44 +96,63 @@ class SampleEditUndo:
     @property
     def can_redo(self) -> bool: return bool(self._redo)
 
+    def peek_undo(self):
+        """The entry undo() would return next (None when empty): the model needs its shape to build `current`."""
+        return self._undo[-1] if self._undo else None
+
+    def peek_redo(self):
+        return self._redo[-1] if self._redo else None
+
+    def clear_redo(self) -> None:
+        self._redo.clear()
+        self._redo_bytes = 0
+
+    def discard_top(self, undo: bool) -> None:
+        """Drop the entry undo()/redo() would return WITHOUT moving it to the opposite stack: for a step whose
+        targets no longer exist (nothing to apply, so nothing to redo either)."""
+        stack, attr = (self._undo, "_undo_bytes") if undo else (self._redo, "_redo_bytes")
+        if stack:
+            entry = stack.pop()
+            setattr(self, attr, getattr(self, attr) - _cost(entry))
+
     def take_evicted_count(self) -> int:
         """Steps silently dropped past the cap since last read — the UI reports 'N earlier step(s) no
         longer available' instead of undo just quietly stopping."""
         n, self.evicted_since_last_check = self.evicted_since_last_check, 0
         return n
 
-    def record_before_edit(self, pre_edit: SampleFieldSnapshot) -> None:
+    def record_before_edit(self, pre_edit) -> None:
         """Call BEFORE applying an edit. A fresh edit invalidates whatever was undone."""
         self._redo.clear()
         self._redo_bytes = 0
         self._undo.append(pre_edit)
-        self._undo_bytes += len(pre_edit.pcm)
+        self._undo_bytes += _cost(pre_edit)
         self._evict(self._undo, "_undo_bytes")
 
-    def undo(self, current: SampleFieldSnapshot) -> Optional[SampleFieldSnapshot]:
+    def undo(self, current):
         if not self._undo:
             return None
         restored = self._undo.pop()
-        self._undo_bytes -= len(restored.pcm)
+        self._undo_bytes -= _cost(restored)
         self._redo.append(current)
-        self._redo_bytes += len(current.pcm)
+        self._redo_bytes += _cost(current)
         self._evict(self._redo, "_redo_bytes")
         return restored
 
-    def redo(self, current: SampleFieldSnapshot) -> Optional[SampleFieldSnapshot]:
+    def redo(self, current):
         if not self._redo:
             return None
         restored = self._redo.pop()
-        self._redo_bytes -= len(restored.pcm)
+        self._redo_bytes -= _cost(restored)
         self._undo.append(current)
-        self._undo_bytes += len(current.pcm)
+        self._undo_bytes += _cost(current)
         self._evict(self._undo, "_undo_bytes")
         return restored
 
-    def _evict(self, stack: Deque[SampleFieldSnapshot], bytes_attr: str) -> None:
-        while getattr(self, bytes_attr) > self.byte_cap and stack:
+    def _evict(self, stack: Deque, bytes_attr: str) -> None:
+        while stack and (getattr(self, bytes_attr) > self.byte_cap or len(stack) > self.max_steps):
             oldest = stack.popleft()
-            setattr(self, bytes_attr, getattr(self, bytes_attr) - len(oldest.pcm))
+            setattr(self, bytes_attr, getattr(self, bytes_attr) - _cost(oldest))
             self.evicted_since_last_check += 1
 
 
@@ -161,17 +202,30 @@ class SampleZoneUndo:
     @property
     def can_redo(self) -> bool: return bool(self._redo)
 
+    @property
+    def undo_count(self) -> int: return len(self._undo)
+    @property
+    def redo_count(self) -> int: return len(self._redo)
+
+    def _trim(self, stack: Deque[ZoneListSnapshot]) -> None:
+        # Both directions are capped: neither side ever holds more than `step_cap` steps, oldest dropped first.
+        while len(stack) > self.step_cap:
+            stack.popleft()
+
+    def clear_redo(self) -> None:
+        self._redo.clear()
+
     def record_before_edit(self, pre_edit: ZoneListSnapshot) -> None:
         self._redo.clear()
         self._undo.append(pre_edit)
-        if len(self._undo) > self.step_cap:
-            self._undo.popleft()
+        self._trim(self._undo)
 
     def undo(self, current: ZoneListSnapshot) -> Optional[ZoneListSnapshot]:
         if not self._undo:
             return None
         restored = self._undo.pop()
         self._redo.append(current)
+        self._trim(self._redo)
         return restored
 
     def redo(self, current: ZoneListSnapshot) -> Optional[ZoneListSnapshot]:
@@ -179,6 +233,7 @@ class SampleZoneUndo:
             return None
         restored = self._redo.pop()
         self._undo.append(current)
+        self._trim(self._undo)
         return restored
 
 
@@ -266,6 +321,41 @@ def _selftest() -> None:
     for i in range(4):
         zu3.record_before_edit(ZoneListSnapshot.of([KmpZone(i, i, "x")]))
     check("zone-step-cap", len(zu3._undo) == 2)
+    # redo/undo keep both sides inside the cap, even from a state the public API cannot build
+    zu4 = SampleZoneUndo(step_cap=2)
+    one = [KmpZone(1, 1, "x")]
+    zu4._undo.extend([ZoneListSnapshot.of(one)] * 2); zu4._redo.extend([ZoneListSnapshot.of(one)] * 2)
+    zu4.redo(ZoneListSnapshot.of(one))
+    check("zone-redo-capped", zu4.undo_count == 2)
+    zu4._redo.extend([ZoneListSnapshot.of(one)] * 2)
+    zu4.undo(ZoneListSnapshot.of(one))
+    check("zone-undo-capped-redo-side", zu4.redo_count == 2)
+
+    # the step ceiling evicts even zero-cost steps (header-only samples)
+    u = SampleEditUndo(byte_cap=1000, max_steps=3)
+    for i in range(10):
+        u.record_before_edit(snap(0, loop_start=i))
+    check("step-ceiling", u.undo_count == 3 and u._undo[0].loop_start == 7 and u.take_evicted_count() == 7)
+    u._redo.extend([snap(0)] * 3)                       # a full redo side: undo() must trim it, not grow it
+    u.undo(snap(0))
+    check("step-ceiling-redo-side", u.redo_count == 3 and u.undo_count == 2)
+
+    # a StereoStep costs both halves and evicts as ONE entry
+    u = SampleEditUndo(byte_cap=45)
+    for i in range(3):
+        u.record_before_edit(StereoStep(snap(10, loop_start=i), snap(10, loop_start=i)))   # 20 bytes each
+    check("stereo-step-cost-both-halves", u.undo_count == 2 and u._undo_bytes == 40)
+    u2 = SampleEditUndo(byte_cap=1000)
+    u2.record_before_edit(snap(10, loop_start=1)); u2.record_before_edit(snap(10, loop_start=2))
+    u2.discard_top(True)
+    check("discard-top-undo", u2.undo_count == 1 and u2.redo_count == 0 and u2._undo_bytes == 10
+          and u2.peek_undo().loop_start == 1)
+    u2.undo(snap(10, loop_start=9)); u2.discard_top(False)
+    check("discard-top-redo", u2.redo_count == 0 and u2._redo_bytes == 0)
+    top = u.peek_undo()
+    check("peek-is-top", top is u._undo[-1] and top.primary.loop_start == 2)
+    r = u.undo(StereoStep(snap(10), None))
+    check("stereo-undo-roundtrip", r is top and u._redo_bytes == 10 and u.peek_redo() is not None)
 
     if fails:
         print("FAIL:", ", ".join(fails))

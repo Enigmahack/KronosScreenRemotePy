@@ -9,9 +9,6 @@ from typing import Optional
 
 import numpy as np
 
-from Core.sample_edit_undo import SampleFieldSnapshot
-from Core.sample_editor_model.core import DOMAIN_SAMPLE
-
 
 class SampleMarkerKind(enum.Enum):
     SAMPLE_START = "SampleStart"
@@ -49,11 +46,7 @@ def nearest_zero_crossing(pcm: np.ndarray, frame: int) -> Optional[int]:
 
 class MarkerMixin:
     def _begin_sample_field_edit(self, mirror: bool) -> None:
-        self._sample_undo.record_before_edit(SampleFieldSnapshot.of(self._selected_sample))
-        self._undo_domains.append(DOMAIN_SAMPLE)
-        self._redo_domains.clear()
-        if mirror:
-            self._partner_undo.record_before_edit(SampleFieldSnapshot.of(self._partner_sample))
+        self._record_sample_step(True, mirror)
 
     def _end_sample_field_edit(self) -> None:
         self._load_sample_detail_state(self._selected_sample, reload_waveform=False)

@@ -5,8 +5,9 @@ and the multi-domain undo/redo. Port of ViewModels/SampleEditorViewModel.cs line
 Three rules this file lives by (each cost a real bug in C#, see SamplePhase7/8/9/13SelfTests):
   * Every PCM edit goes through `_apply_effect`, which replays the SAME effect instance against the stereo
     partner in Combine mode — never an ad-hoc splice on one channel (Cut/Paste once did, and L/R drifted).
-  * An edit RECORDS its pre-state first, on the sample's own stack, and pushes a domain marker so Ctrl+Z walks
-    sample/zone/partner edits in the order they actually happened.
+  * An edit RECORDS its pre-state first, as ONE step for every channel it touches (`_record_sample_step`: the
+    selected sample and/or its stereo partner), and pushes a domain marker so Ctrl+Z walks sample/zone edits in
+    the order they actually happened. One entry per step is what keeps the marker lists exact under eviction.
   * Length-changing edits clamp the three markers back into range (`_clamp_markers_to_buffer`): to_bytes
     deliberately writes them verbatim, and nothing else re-derives them.
 """
@@ -20,9 +21,8 @@ import numpy as np
 from Core.sample_dsp import (
     CropEffect, DcOffsetEffect, DeleteRangeEffect, GainAdjustEffect, GainNormalizeEffect, InsertSilenceEffect,
     PasteRangeEffect, ReverseEffect, SampleEffect, SilenceEffect, SilenceTrimEffect, change_tempo_and_pitch)
-from Core.sample_edit_undo import SampleFieldSnapshot, ZoneListSnapshot
-from Core.sample_editor_model.core import (
-    DOMAIN_PARTNER, DOMAIN_SAMPLE, DOMAIN_ZONE, cascade_top_keys, zone_index)
+from Core.sample_edit_undo import SampleFieldSnapshot, StereoStep, ZoneListSnapshot
+from Core.sample_editor_model.core import DOMAIN_SAMPLE, DOMAIN_ZONE, cascade_top_keys, zone_index
 from Core.sample_support import SampleClipboard
 from Data.kmp_multisample import KmpMultisample, KmpZone
 from Data.ksf_sample import KsfSample
@@ -31,6 +31,7 @@ log = logging.getLogger(__name__)
 
 MIN_TEMPO_RATIO, MAX_TEMPO_RATIO = 0.25, 4.0
 MAX_PITCH_SEMITONES = 24.0
+HEAVY_TEMPO_PITCH_FRAMES = 44100 * 5        # ~75 ms of WSOLA: below this, run inline rather than via the worker
 
 
 def _g(x: float) -> str:
@@ -86,8 +87,7 @@ class EditMixin:
                                                   if bounds is not None else (None, None, None))
         if bounds is not None:
             self._zone_undo.record_before_edit(ZoneListSnapshot.of(bounds, sibling_zones))
-            self._undo_domains.append(DOMAIN_ZONE)
-            self._redo_domains.clear()
+            self._push_undo_marker(DOMAIN_ZONE)
 
         old_top = zone.top_key
         zone.original_key, zone.top_key = new_orig, new_top
@@ -120,11 +120,7 @@ class EditMixin:
         if s is None:
             return
         mirror = self.should_mirror_to_partner
-        self._sample_undo.record_before_edit(SampleFieldSnapshot.of(s))
-        self._undo_domains.append(DOMAIN_SAMPLE)
-        self._redo_domains.clear()
-        if mirror:
-            self._partner_undo.record_before_edit(SampleFieldSnapshot.of(self._partner_sample))
+        self._record_sample_step(True, mirror)
 
         self._apply_sample_fields_to(s, sample_rate, loop_enabled, sample_start, loop_start, loop_end)
         self._sample_dirty = True
@@ -170,16 +166,13 @@ class EditMixin:
             return
         mirror = self.should_mirror_to_partner
 
-        self._sample_undo.record_before_edit(SampleFieldSnapshot.of(s))
-        self._undo_domains.append(DOMAIN_SAMPLE)
-        self._redo_domains.clear()
+        self._record_sample_step(True, mirror)
         s.set_samples(effect.apply(s.samples(), int(s.sample_rate)))
         clamp_markers_to_buffer(s)
         self._sample_dirty = True
 
         if mirror:
             p = self._partner_sample
-            self._partner_undo.record_before_edit(SampleFieldSnapshot.of(p))
             p.set_samples(effect.apply(p.samples(), int(p.sample_rate)))
             clamp_markers_to_buffer(p)
             self.partner_sample_waveform = None if p.is_header_only else p.samples()
@@ -260,13 +253,12 @@ class EditMixin:
             self.status_text = "Select a range in the waveform first."
             return
         mirror = self.should_mirror_to_partner
-        self._apply_fade_to(s, self._sample_undo, self.selection_start_frame, self.selection_end_frame, fade_in)
-        self._undo_domains.append(DOMAIN_SAMPLE)
-        self._redo_domains.clear()
+        self._record_sample_step(True, mirror)
+        self._apply_fade_to(s, self.selection_start_frame, self.selection_end_frame, fade_in)
         self._sample_dirty = True
         if mirror:
             p = self._partner_sample
-            self._apply_fade_to(p, self._partner_undo, self.selection_start_frame, self.selection_end_frame, fade_in)
+            self._apply_fade_to(p, self.selection_start_frame, self.selection_end_frame, fade_in)
             self.partner_sample_waveform = None if p.is_header_only else p.samples()
         self._load_sample_detail_state(s, reload_waveform=True)
         self._refresh_undo_redo_state()
@@ -274,8 +266,7 @@ class EditMixin:
                             f"{' (both L/R channels)' if mirror else ''} (unsaved - use Save Sample).")
 
     @staticmethod
-    def _apply_fade_to(sample: KsfSample, undo, sel_start: int, sel_end: int, fade_in: bool) -> None:
-        undo.record_before_edit(SampleFieldSnapshot.of(sample))
+    def _apply_fade_to(sample: KsfSample, sel_start: int, sel_end: int, fade_in: bool) -> None:
         host = sample.samples().astype(np.float64)
         start = max(0, min(sel_start, len(host)))
         end = max(start, min(sel_end, len(host)))
@@ -297,11 +288,7 @@ class EditMixin:
             self.status_text = "Select a range in the waveform first."
             return
         mirror = self.should_mirror_to_partner
-        self._sample_undo.record_before_edit(SampleFieldSnapshot.of(s))
-        self._undo_domains.append(DOMAIN_SAMPLE)
-        self._redo_domains.clear()
-        if mirror:
-            self._partner_undo.record_before_edit(SampleFieldSnapshot.of(self._partner_sample))
+        self._record_sample_step(True, mirror)
         a, b = self.selection_start_frame, self.selection_end_frame
         self._apply_sample_fields_to(s, int(s.sample_rate), self.sample_loop_enabled, self.sample_start, a, b)
         self._sample_dirty = True
@@ -408,27 +395,18 @@ class EditMixin:
             return
 
         effect = InsertSilenceEffect(at, frame_count)
-        self._redo_domains.clear()
+        self._record_sample_step(apply_primary, apply_partner)
         if apply_primary:
-            self._sample_undo.record_before_edit(SampleFieldSnapshot.of(s))
-            self._undo_domains.append(DOMAIN_SAMPLE)
             s.set_samples(effect.apply(s.samples(), int(s.sample_rate)))
             clamp_markers_to_buffer(s)
             self._sample_dirty = True
         if apply_partner:
             p = self._partner_sample
-            self._partner_undo.record_before_edit(SampleFieldSnapshot.of(p))
-            self._undo_domains.append(DOMAIN_PARTNER)
             p.set_samples(effect.apply(p.samples(), int(p.sample_rate)))
             clamp_markers_to_buffer(p)
             self._register_dirty_partner_sample()
             self.partner_sample_waveform = None if p.is_header_only else p.samples()
             self._refresh_partner_markers()
-        elif apply_primary and has_partner and self.should_mirror_to_partner:
-            # Primary only, but the ambient mirror condition is ON: undo's Sample branch ALWAYS also pops the
-            # partner stack when that condition holds. Push the partner's CURRENT (unedited) state so that
-            # automatic pop restores exactly what's already there instead of reverting an earlier partner edit.
-            self._partner_undo.record_before_edit(SampleFieldSnapshot.of(self._partner_sample))
 
         if apply_primary:
             self._load_sample_detail_state(s, reload_waveform=True)
@@ -464,9 +442,7 @@ class EditMixin:
             if applied == 0:
                 self.status_text = "Already at the earliest position for this channel - nothing left to move back."
                 return
-            self._sample_undo.record_before_edit(SampleFieldSnapshot.of(s))
-            self._undo_domains.append(DOMAIN_SAMPLE)
-            self._redo_domains.clear()
+            self._record_sample_step(True, False)
             self._shift_channel_edge(s, applied)
             self._sample_dirty = True
             self._load_sample_detail_state(s, reload_waveform=True)
@@ -482,9 +458,7 @@ class EditMixin:
             if applied == 0:
                 self.status_text = "Already at the earliest position for the sibling channel - nothing left to move back."
                 return
-            self._partner_undo.record_before_edit(SampleFieldSnapshot.of(p))
-            self._undo_domains.append(DOMAIN_PARTNER)
-            self._redo_domains.clear()
+            self._record_sample_step(False, True)
             self._shift_channel_edge(p, applied)
             self._register_dirty_partner_sample()
             self.partner_sample_waveform = None if p.is_header_only else p.samples()
@@ -556,16 +530,28 @@ class EditMixin:
             self.status_text = "Tempo x1 and pitch 0 - nothing to apply."
             return
         mirror = self.should_mirror_to_partner
-        self._sample_undo.record_before_edit(SampleFieldSnapshot.of(s))
-        self._undo_domains.append(DOMAIN_SAMPLE)
-        self._redo_domains.clear()
-        s.set_samples(change_tempo_and_pitch(s.samples(), int(s.sample_rate), tempo_ratio, pitch_semitones))
+        p = self._partner_sample if mirror else None
+        # Both channels are computed BEFORE anything is recorded or replaced: a failure (or MemoryError) then leaves
+        # no stranded undo step and never one channel changed without the other. WSOLA costs ~15 ms per second of
+        # audio, so a long sample goes to the window's worker thread (run_heavy).
+        jobs = [(s.samples(), int(s.sample_rate))] + ([(p.samples(), int(p.sample_rate))] if p is not None else [])
+
+        def compute():
+            return [change_tempo_and_pitch(pcm, rate, tempo_ratio, pitch_semitones) for pcm, rate in jobs]
+        frames = sum(len(pcm) for pcm, _ in jobs)
+        try:
+            results = (self.run_heavy("Changing tempo/pitch...", compute) if frames >= HEAVY_TEMPO_PITCH_FRAMES
+                       else compute())
+        except Exception as ex:
+            log.error("Sample Editor: tempo/pitch failed: %s", ex, exc_info=True)
+            self.status_text = f"Tempo/pitch failed: {ex}"
+            return
+        self._record_sample_step(True, p is not None)
+        s.set_samples(results[0])
         clamp_markers_to_buffer(s)          # a tempo change resizes the buffer
         self._sample_dirty = True
-        if mirror:
-            p = self._partner_sample
-            self._partner_undo.record_before_edit(SampleFieldSnapshot.of(p))
-            p.set_samples(change_tempo_and_pitch(p.samples(), int(p.sample_rate), tempo_ratio, pitch_semitones))
+        if p is not None:
+            p.set_samples(results[1])
             clamp_markers_to_buffer(p)
             self.partner_sample_waveform = None if p.is_header_only else p.samples()
         self._load_sample_detail_state(s, reload_waveform=True)
@@ -586,14 +572,85 @@ class EditMixin:
                 self._sync_multisample_node_children(node)
         self._tree_refreshed()
 
+    def _push_undo_marker(self, domain: str) -> None:
+        """A fresh edit in `domain`: its marker goes on the undo list and EVERY redo history is invalidated - both
+        stacks', not just the edited one's, or a stale redo entry of the other domain would outlive its marker."""
+        self._undo_domains.append(domain)
+        self._redo_domains.clear()
+        self._sample_undo.clear_redo()
+        self._zone_undo.clear_redo()
+
+    def _record_sample_step(self, primary: bool, partner: bool) -> None:
+        """Records the pre-edit state of the selected sample and/or its stereo partner as ONE undo step (call
+        BEFORE changing either). A mirrored edit is one entry, so the stack's byte-cap eviction drops both halves
+        together and Undo can never revert one channel of it without the other."""
+        s = self._selected_sample if primary else None
+        p = self._partner_sample if partner else None
+        self._sample_undo.record_before_edit(StereoStep(
+            SampleFieldSnapshot.of(s) if s is not None else None,
+            SampleFieldSnapshot.of(p) if p is not None else None, s, p))
+        self._push_undo_marker(DOMAIN_SAMPLE)
+
     def _refresh_undo_redo_state(self) -> None:
+        # The stacks evict on their own (sample: byte cap, FIFO; zone: step cap) without telling the marker lists.
+        # Each stack entry has exactly one marker and both evict oldest-first, so dropping the OLDEST surplus
+        # markers of a domain keeps the lists exact: never longer than the stacks, never an Undo that does nothing.
+        for domains, sample_n, zone_n in (
+                (self._undo_domains, self._sample_undo.undo_count, self._zone_undo.undo_count),
+                (self._redo_domains, self._sample_undo.redo_count, self._zone_undo.redo_count)):
+            for domain, limit in ((DOMAIN_SAMPLE, sample_n), (DOMAIN_ZONE, zone_n)):
+                surplus = domains.count(domain) - limit
+                i = 0
+                while surplus > 0 and i < len(domains):
+                    if domains[i] == domain:
+                        del domains[i]
+                        surplus -= 1
+                    else:
+                        i += 1
         self.can_undo = len(self._undo_domains) > 0
         self.can_redo = len(self._redo_domains) > 0
 
+    def _live_step_targets(self, step: StereoStep) -> Tuple[Optional[KsfSample], Optional[KsfSample]]:
+        """The samples a recorded step can still be applied to: each half only while its sample is still the
+        selected one / the partner (the stacks reset on navigation, so this is a guard, not a normal path)."""
+        s = step.primary_obj if step.primary is not None and step.primary_obj is self._selected_sample else None
+        p = step.partner_obj if step.partner is not None and step.partner_obj is self._partner_sample else None
+        return s, p
+
+    def _apply_sample_step(self, restored: StereoStep, s: Optional[KsfSample], p: Optional[KsfSample]) -> None:
+        if s is not None:
+            restored.primary.apply_to(s)
+            self._sample_dirty = True
+        if p is not None:
+            restored.partner.apply_to(p)
+            self._register_dirty_partner_sample()
+            self.partner_sample_waveform = None if p.is_header_only else p.samples()
+            self._refresh_partner_markers()
+        if s is not None:
+            self._load_sample_detail_state(s, reload_waveform=True)
+
+    def _step_sample_stack(self, undo: bool) -> Optional[str]:
+        """Pops one sample-domain step (undo or redo) and applies it. Returns the channel note for the status text,
+        or None when there was nothing to apply."""
+        stack = self._sample_undo
+        step = stack.peek_undo() if undo else stack.peek_redo()
+        if step is None:
+            return None
+        s, p = self._live_step_targets(step)
+        current = StereoStep(SampleFieldSnapshot.of(s) if s is not None else None,
+                             SampleFieldSnapshot.of(p) if p is not None else None, s, p)
+        if s is None and p is None:
+            # Nothing left to apply it to: drop the entry instead of moving it to the opposite stack (which would
+            # leave a marker-less entry there that blocks the real step beneath it).
+            stack.discard_top(undo)
+            return None
+        restored = stack.undo(current) if undo else stack.redo(current)
+        self._apply_sample_step(restored, s, p)
+        if s is not None and p is not None:
+            return " (both L/R channels)"
+        return "" if s is not None else " (sibling channel)"
+
     def undo(self) -> None:
-        """Also undoes the partner's own stack when one exists, the mirror condition holds, and that stack actually
-        has something — guarding on the partner's own can_undo rather than assuming lockstep means a mid-session
-        Combine/Split toggle degrades gracefully instead of throwing."""
         if not self._undo_domains:
             return
         # Any undo can hand a sample's PCM back to an earlier state, after which the tracked padding balance can
@@ -604,10 +661,12 @@ class EditMixin:
         if domain == DOMAIN_ZONE:
             zones = self.current_multisample_zones
             if zones is None:
+                self._refresh_undo_redo_state()
                 return
             sibling_zones, sibling_m, sibling_path = self._resolve_sibling_zones_for(zones)
             restored = self._zone_undo.undo(ZoneListSnapshot.of(zones, sibling_zones))
             if restored is None:
+                self._refresh_undo_redo_state()
                 return
             restored.apply_to()
             self._zone_dirty = True
@@ -621,50 +680,14 @@ class EditMixin:
             self.status_text = "Undid zone edit (unsaved - use Save Multisample)."
             return
 
-        if domain == DOMAIN_PARTNER:
-            p = self._partner_sample
-            if p is None:
-                self._refresh_undo_redo_state()
-                return
-            restored = self._partner_undo.undo(SampleFieldSnapshot.of(p))
-            if restored is None:
-                self._refresh_undo_redo_state()
-                return
-            restored.apply_to(p)
-            self._register_dirty_partner_sample()
-            self.partner_sample_waveform = None if p.is_header_only else p.samples()
-            self._refresh_partner_markers()
-            self._redo_domains.append(DOMAIN_PARTNER)
-            self._refresh_undo_redo_state()
-            self.status_text = "Undid sibling channel move (unsaved - use Save Sample)."
-            return
-
-        s = self._selected_sample
-        if s is None:
+        channels = self._step_sample_stack(undo=True)
+        if channels is None:
             self._refresh_undo_redo_state()
             return
-        restored = self._sample_undo.undo(SampleFieldSnapshot.of(s))
-        if restored is None:
-            self._refresh_undo_redo_state()
-            return
-        restored.apply_to(s)
-        self._sample_dirty = True
-
-        # (not split_lr or split_both_active) must track should_mirror_to_partner's condition exactly: it is what
-        # decided whether the forward edit pushed a partner-undo step to begin with. Skipping it here would strand
-        # that step and leave the partner's PCM un-reverted despite "both L/R channels" in the status text.
-        partner_also = (self.has_stereo_pair and (not self.split_lr or self.split_both_active)
-                        and self._partner_sample is not None and self._partner_undo.can_undo)
-        if partner_also:
-            pr = self._partner_undo.undo(SampleFieldSnapshot.of(self._partner_sample))
-            if pr is not None:
-                pr.apply_to(self._partner_sample)
-                self.partner_sample_waveform = None if self._partner_sample.is_header_only else self._partner_sample.samples()
-        self._load_sample_detail_state(s, reload_waveform=True)
         self._redo_domains.append(DOMAIN_SAMPLE)
         self._refresh_undo_redo_state()
         evicted = self._sample_undo.take_evicted_count()
-        self.status_text = (f"Undid last edit{' (both L/R channels)' if partner_also else ''} (unsaved - use Save Sample)."
+        self.status_text = (f"Undid last edit{channels} (unsaved - use Save Sample)."
                             + (f" ({evicted} earlier step(s) no longer available - undo history is capped.)" if evicted > 0 else ""))
 
     def redo(self) -> None:
@@ -676,10 +699,12 @@ class EditMixin:
         if domain == DOMAIN_ZONE:
             zones = self.current_multisample_zones
             if zones is None:
+                self._refresh_undo_redo_state()
                 return
             sibling_zones, sibling_m, sibling_path = self._resolve_sibling_zones_for(zones)
             restored = self._zone_undo.redo(ZoneListSnapshot.of(zones, sibling_zones))
             if restored is None:
+                self._refresh_undo_redo_state()
                 return
             restored.apply_to()
             self._zone_dirty = True
@@ -693,42 +718,10 @@ class EditMixin:
             self.status_text = "Redid zone edit (unsaved - use Save Multisample)."
             return
 
-        if domain == DOMAIN_PARTNER:
-            p = self._partner_sample
-            if p is None:
-                self._refresh_undo_redo_state()
-                return
-            restored = self._partner_undo.redo(SampleFieldSnapshot.of(p))
-            if restored is None:
-                self._refresh_undo_redo_state()
-                return
-            restored.apply_to(p)
-            self._register_dirty_partner_sample()
-            self.partner_sample_waveform = None if p.is_header_only else p.samples()
-            self._refresh_partner_markers()
-            self._undo_domains.append(DOMAIN_PARTNER)
-            self._refresh_undo_redo_state()
-            self.status_text = "Redid sibling channel move (unsaved - use Save Sample)."
-            return
-
-        s = self._selected_sample
-        if s is None:
+        channels = self._step_sample_stack(undo=False)
+        if channels is None:
             self._refresh_undo_redo_state()
             return
-        restored = self._sample_undo.redo(SampleFieldSnapshot.of(s))
-        if restored is None:
-            self._refresh_undo_redo_state()
-            return
-        restored.apply_to(s)
-        self._sample_dirty = True
-        partner_also = (self.has_stereo_pair and (not self.split_lr or self.split_both_active)
-                        and self._partner_sample is not None and self._partner_undo.can_redo)
-        if partner_also:
-            pr = self._partner_undo.redo(SampleFieldSnapshot.of(self._partner_sample))
-            if pr is not None:
-                pr.apply_to(self._partner_sample)
-                self.partner_sample_waveform = None if self._partner_sample.is_header_only else self._partner_sample.samples()
-        self._load_sample_detail_state(s, reload_waveform=True)
         self._undo_domains.append(DOMAIN_SAMPLE)
         self._refresh_undo_redo_state()
-        self.status_text = f"Redid edit{' (both L/R channels)' if partner_also else ''} (unsaved - use Save Sample)."
+        self.status_text = f"Redid edit{channels} (unsaved - use Save Sample)."

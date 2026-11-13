@@ -177,7 +177,7 @@ class MainWindowDialogMixin:
         from Views.sample_editor_window import SampleEditorWindow
         self._sample_editor_win = SampleEditorWindow(
             host, self._settings.ftp_port,
-            self._settings.ftp_username, self._settings.ftp_password, None)
+            self._settings.ftp_username, self._settings.ftp_password, None, settings=self._settings)
         self._sample_editor_win.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self._sample_editor_win.destroyed.connect(lambda: setattr(self, '_sample_editor_win', None))
         self._sample_editor_win.show()

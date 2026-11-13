@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -36,7 +36,7 @@ log = logging.getLogger(__name__)
 
 # Edit domains: which undo stack a logical edit belongs to, so Ctrl+Z walks a MIXED history of sample and
 # zone edits in the order they actually happened (two stacks, one arbitration list).
-DOMAIN_SAMPLE, DOMAIN_ZONE, DOMAIN_PARTNER = "Sample", "Zone", "PartnerSample"
+DOMAIN_SAMPLE, DOMAIN_ZONE = "Sample", "Zone"     # a stereo partner's steps ride on DOMAIN_SAMPLE (StereoStep)
 
 RECENT_FILES_MAX = 8
 
@@ -120,6 +120,8 @@ class ModelCore:
         for k, v in _OBSERVABLE_DEFAULTS.items():
             object.__setattr__(self, k, v)
         self.settings = settings
+        # Persists `settings` after a recent-files change; called on the GUI thread, so it must not block.
+        # Production passes Models.storage.save_settings_async; None (tests) means "do not persist".
         self._save_settings = save_settings
         cap_mb = getattr(settings, "sample_undo_byte_cap_mb", 256) if settings is not None else 256
         self.roots: List[SampleTreeNode] = []
@@ -137,8 +139,7 @@ class ModelCore:
         self.current_multisample_zones: Optional[List[KmpZone]] = None
 
         # undo
-        self._sample_undo = SampleEditUndo(cap_mb * 1024 * 1024)
-        self._partner_undo = SampleEditUndo(cap_mb * 1024 * 1024)
+        self._sample_undo = SampleEditUndo(cap_mb * 1024 * 1024)       # StereoStep entries: selected + partner
         self._zone_undo = SampleZoneUndo()
         self._zone_undo_scope: Optional[List[KmpZone]] = None
         self._undo_domains: List[str] = []
@@ -165,6 +166,10 @@ class ModelCore:
         self._remote_map: Dict[str, str] = {}
         self._last_rebuild_skipped: List[str] = []
         self.last_renamed_multisample_path: Optional[str] = None
+        # run_heavy(label, fn) -> fn(): the window swaps in a worker-thread runner with a busy dialog. `fn` must be a
+        # pure computation (no observable-state writes: their listeners repaint widgets); the caller applies the
+        # result. Inline by default so the model and its tests stay synchronous.
+        self.run_heavy: Callable[[str, Callable[[], Any]], Any] = lambda _label, fn: fn()
 
     # ── observable plumbing ─────────────────────────────────────────────────────────────────
 
@@ -531,8 +536,7 @@ class ModelCore:
         self._collection = None
         self._collection_path = None
         self._remote_map.clear()
-        self._sample_undo = SampleEditUndo(self._sample_undo.byte_cap)
-        self._partner_undo = SampleEditUndo(self._partner_undo.byte_cap)
+        self._sample_undo = SampleEditUndo(self._sample_undo.byte_cap, self._sample_undo.max_steps)
         self._zone_undo = SampleZoneUndo()
         self._zone_undo_scope = None
         self._undo_domains.clear()
@@ -605,8 +609,7 @@ class ModelCore:
 
         # Undo history is scoped to the loaded sample: switching zones starts a fresh history rather than
         # letting Undo reach into an unrelated sample's edits.
-        self._sample_undo = SampleEditUndo(self._sample_undo.byte_cap)
-        self._partner_undo = SampleEditUndo(self._partner_undo.byte_cap)
+        self._sample_undo = SampleEditUndo(self._sample_undo.byte_cap, self._sample_undo.max_steps)
         self._cursor_frame = -1
         # Drop only the Sample-domain entries (that stack always resets) — NOT a blanket clear, which would
         # also wipe Zone-domain entries for a multisample whose zone history survives this navigation.
