@@ -97,8 +97,12 @@ with tempfile.TemporaryDirectory(prefix="kr_sp7_") as tmp:
                     except ConnectionError:
                         mapping, failures = {}, ["raised"]
                         check(f"{tag}: entry-file failure raised cleanly", True)
-                    check(f"{tag}: failure reported", bool(failures))
                     local = snapshot(d)
+                    # a one-off drop on the worker's NOOP probe is absorbed by its reconnect (real _FtpWorker
+                    # behaviour): silent success is fine only when every file came down complete
+                    absorbed = (not dead and not failures and sorted(mapping.values()) == sorted(new)
+                                and all(Path(lp).read_bytes() == new[rp] for lp, rp in mapping.items()))
+                    check(f"{tag}: failure reported", bool(failures) or absorbed)
                     check(f"{tag}: no .part left", not [k for k in local if k.endswith(".part")])
                     for lp, rp in mapping.items():
                         check(f"{tag}: mapped file complete", Path(lp).read_bytes() == new[rp])
@@ -106,7 +110,7 @@ with tempfile.TemporaryDirectory(prefix="kr_sp7_") as tmp:
                         check(f"{tag}: local {k} complete", v == new[DEST + "/" + k.split("SSD2/Show/", 1)[-1]] if "SSD2/Show/" in k else True)
 
 
-print(f"{n_ops} push ops x4 server modes x2 modes, {pull_ops} pull ops x2 modes; {len(fails)} violations")
+print(f"{n_ops} push ops x{2 * len(SERVERS)} server modes x2 modes, {pull_ops} pull ops x2 modes; {len(fails)} violations")
 for n in fails[:12]:
     print("  FAIL " + n)
 sys.exit(1 if fails else 0)

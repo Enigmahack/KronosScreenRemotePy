@@ -12,8 +12,10 @@ import ftplib
 import logging
 import os
 import pathlib
+import re
 import shutil
 import threading
+import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from typing import List, Optional, Tuple
@@ -253,8 +255,20 @@ class FtpPathTooLongError(Exception):
 
 # ── FTP worker (runs blocking ftplib calls off the main thread) ───────────────
 
+def _serialized(fn):
+    """One ftplib.FTP connection cannot run two commands at once: parallel UI threads (a fast double-click
+    on Up, Refresh during a listing) would desync the control channel. Every public method takes the lock."""
+    import functools
+
+    @functools.wraps(fn)
+    def wrapper(self, *a, **kw):
+        with self._lock:
+            return fn(self, *a, **kw)
+    return wrapper
+
+
 class _FtpWorker:
-    """Wraps a single ftplib.FTP connection; all methods are blocking."""
+    """Wraps a single ftplib.FTP connection; all methods are blocking (and serialized by an RLock)."""
 
     def __init__(self, host: str, port: int, user: str, password: str):
         self._host = host
@@ -262,7 +276,9 @@ class _FtpWorker:
         self._user = user
         self._pass = password
         self._ftp: Optional[ftplib.FTP] = None
+        self._lock = threading.RLock()
 
+    @_serialized
     def connect(self):
         ftp = ftplib.FTP()
         ftp.connect(self._host, self._port, timeout=10)
@@ -270,6 +286,7 @@ class _FtpWorker:
         ftp.set_pasv(True)
         self._ftp = ftp
 
+    @_serialized
     def disconnect(self):
         if self._ftp:
             try:
@@ -281,6 +298,7 @@ class _FtpWorker:
                     pass
             self._ftp = None
 
+    @_serialized
     def ensure_connected(self):
         if self._ftp is None:
             self.connect()
@@ -290,8 +308,11 @@ class _FtpWorker:
         except Exception:
             self.connect()
 
-    def list_dir(self, path: str) -> List[FileEntry]:
+    @_serialized
+    def list_dir(self, path: str, include_hidden: bool = False) -> List[FileEntry]:
         self.ensure_connected()
+        if include_hidden:   # MLSD is refused by both instruments and would not list dotfiles reliably anyway
+            return self._list_dir_fallback(path, include_hidden=True)
         entries: List[FileEntry] = []
         try:
             for name, facts in self._ftp.mlsd(path):
@@ -316,11 +337,16 @@ class _FtpWorker:
             entries = self._list_dir_fallback(path)
         return entries
 
-    def _list_dir_fallback(self, path: str) -> List[FileEntry]:
-        """Parse LIST output when MLSD is not supported."""
+    @_serialized
+    def _list_dir_fallback(self, path: str, include_hidden: bool = False) -> List[FileEntry]:
+        """Parse LIST output when MLSD is not supported. `include_hidden` uses `LIST -a`: the instruments' plain LIST
+        hides dotfiles, which matters wherever 'is something there?' decides a delete or an overwrite."""
         self.ensure_connected()
         lines: List[str] = []
-        self._ftp.dir(path, lines.append)
+        if include_hidden:
+            self._ftp.dir("-a", path, lines.append)
+        else:
+            self._ftp.dir(path, lines.append)
         entries: List[FileEntry] = []
         for line in lines:
             parts = line.split(None, 8)
@@ -337,16 +363,45 @@ class _FtpWorker:
             entries.append(FileEntry(name, full, is_dir, size, None, read_only=ro))
         return entries
 
+    @_serialized
     def upload(self, local_path: str, remote_path: str):
         self.ensure_connected()
-        with open(local_path, "rb") as f:
-            self._ftp.storbinary(f"STOR {remote_path}", f)
+        if re.search(r"\.[0-9a-f]{8}\.part$", remote_path):   # the caller (sample push) already stages
+            with open(local_path, "rb") as f:
+                self._ftp.storbinary(f"STOR {remote_path}", f)
+            return
+        # Stage to a sibling and rename over the target, so a dropped connection mid-transfer can't
+        # truncate a previously-valid remote file (both instruments accept RNTO over an existing file).
+        part = f"{remote_path}.{uuid.uuid4().hex[:8]}.part"
+        if len(part) > _MAX_REMOTE_PATH_LENGTH:
+            raise FtpPathTooLongError(part)
+        try:
+            with open(local_path, "rb") as f:
+                self._ftp.storbinary(f"STOR {part}", f)
+            self.rename(part, remote_path)
+        except BaseException:
+            try:
+                self._ftp.delete(part)
+            except Exception:
+                pass
+            raise
 
+    @_serialized
     def download(self, remote_path: str, local_path: str):
         self.ensure_connected()
-        with open(local_path, "wb") as f:
-            self._ftp.retrbinary(f"RETR {remote_path}", f.write)
+        tmp = f"{local_path}.{uuid.uuid4().hex[:8]}.part"   # unique: never clobbers a user's own .part; never leave a truncated/partial file under the real name
+        try:
+            with open(tmp, "wb") as f:
+                self._ftp.retrbinary(f"RETR {remote_path}", f.write)
+            os.replace(tmp, local_path)
+        except BaseException:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            raise
 
+    @_serialized
     def retrieve(self, remote_path: str, on_chunk, blocksize: int = 65536):
         """Stream a remote file to a callback instead of to a local path.
 
@@ -359,12 +414,14 @@ class _FtpWorker:
         self.ensure_connected()
         self._ftp.retrbinary(f"RETR {remote_path}", on_chunk, blocksize)
 
+    @_serialized
     def delete_file(self, path: str):
         if _is_top_level_ftp_path(path):
             raise FtpTopLevelPathError(path, "delete")
         self.ensure_connected()
         self._ftp.delete(path)
 
+    @_serialized
     def delete_dir(self, path: str):
         """Belt-and-suspenders on top of _on_remote_delete's UI-level check
         (C# only gates this at the UI level; this app additionally guards the
@@ -376,13 +433,14 @@ class _FtpWorker:
             raise FtpTopLevelPathError(path, "delete")
         self.ensure_connected()
         # list_dir, not MLSD: the Kronos' FTP server answers MLSD with "500 Unknown command".
-        for entry in self.list_dir(path):
+        for entry in self.list_dir(path, include_hidden=True):   # a lone dotfile would make RMD fail (550)
             if entry.is_directory:
                 self.delete_dir(entry.full_path)
             else:
                 self._ftp.delete(entry.full_path)
         self._ftp.rmd(path)
 
+    @_serialized
     def rename(self, old: str, new: str):
         """The ONE chokepoint every FTP rename/move goes through — see the
         module-level FTP-path-safety block above. Ported from C#'s
@@ -394,12 +452,14 @@ class _FtpWorker:
         self.ensure_connected()
         self._ftp.rename(old, new)
 
+    @_serialized
     def mkdir(self, path: str):
         if len(path) > _MAX_REMOTE_PATH_LENGTH:
             raise FtpPathTooLongError(path)
         self.ensure_connected()
         self._ftp.mkd(path)
 
+    @_serialized
     def file_exists(self, path: str) -> bool:
         """True when `path` is listed in its parent folder. Goes through list_dir, which falls back to LIST
         because the Kronos answers MLSD with 500 (an MLSD-only check was always False there, so the File
@@ -410,9 +470,16 @@ class _FtpWorker:
         parent = _ftp_parent(path)
         name = path.rstrip("/").rsplit("/", 1)[-1]
         try:
-            return any(e.name == name for e in self.list_dir(parent))
-        except ftplib.error_perm:
-            return False
+            # Exact match: the instruments' volumes are case-sensitive ('a.txt' and 'A.TXT' coexist), and plain LIST
+            # hides dotfiles, so list with -a or a hidden file would read as absent and be overwritten by RNTO.
+            return any(e.name == name for e in self.list_dir(parent, include_hidden=True))
+        except ftplib.error_perm as ex:
+            # Only a definite "no such folder" means absent. A permission/other refusal says nothing about the
+            # file, and answering "absent" here lets RNTO silently overwrite it.
+            msg = str(ex).lower()
+            if msg.startswith("550") and not any(w in msg for w in ("permission", "denied", "not allowed")):
+                return False
+            raise
 
 
 def _safe_local_join(local_dir: str, name: str) -> Optional[str]:
@@ -433,6 +500,107 @@ def _safe_local_join(local_dir: str, name: str) -> Optional[str]:
                            os.path.abspath(dest))) != os.path.abspath(local_dir):
         return None
     return dest
+
+
+def _same_local_path(a: str, b: str) -> bool:
+    """True when two local paths name the same item ("Foo" and "foo" are one folder on Windows)."""
+    try:
+        if os.path.exists(a) and os.path.exists(b) and os.path.samefile(a, b):
+            return True
+    except OSError:
+        pass
+    return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+
+
+def _local_is_inside(path: str, folder: str) -> bool:
+    """True when `path` is `folder` itself or anywhere below it."""
+    p = os.path.normcase(os.path.abspath(path))
+    f = os.path.normcase(os.path.abspath(folder))
+    return p == f or p.startswith(f.rstrip(os.sep) + os.sep)
+
+
+def _temp_sibling(dest: str) -> str:
+    return os.path.join(os.path.dirname(dest), f".{os.path.basename(dest)}.{uuid.uuid4().hex[:8]}.part")
+
+
+def _put_local_file(src: str, dest: str, move: bool) -> None:
+    """Copy/move one file onto `dest`, replacing whatever file is there without ever leaving `dest` half-written:
+    a move within one volume is a single os.replace; otherwise the bytes go to a temp sibling first and are
+    renamed over `dest` only once complete (the previous file survives any failure before that)."""
+    if move:
+        try:
+            os.replace(src, dest)
+            return
+        except OSError:
+            pass   # another volume (or a locked source): fall back to copy + delete
+    tmp = _temp_sibling(dest)
+    try:
+        shutil.copy2(src, tmp)
+        os.replace(tmp, dest)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+    if move:
+        try:
+            os.remove(src)
+        except OSError as ex:
+            raise OSError(f"copied, but the original couldn't be removed ({ex})") from ex
+
+
+def _put_local_dir(src: str, dest: str, move: bool) -> None:
+    """Copy/move a folder to a `dest` that does not exist yet. A copy is built under a temp sibling and renamed
+    into place, so a failure part-way never leaves a half-copied folder under the real name."""
+    if move:
+        try:
+            os.rename(src, dest)   # same volume: atomic, nothing is copied
+            return
+        except OSError:
+            pass                   # another volume: stage a copy, then remove the original
+    tmp = _temp_sibling(dest)
+    try:
+        shutil.copytree(src, tmp)
+        os.rename(tmp, dest)   # refuses to replace an existing folder on both Windows and POSIX
+    except BaseException:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
+    if move:
+        try:
+            shutil.rmtree(src)
+        except OSError as ex:
+            raise OSError(f"copied, but the original folder couldn't be fully removed ({ex})") from ex
+
+
+def _merge_local_dir(src: str, dest: str, move: bool, errors: List[str]) -> None:
+    """Overwrite chosen for a folder: merge `src` into the existing `dest`, replacing same-named files (each one
+    via _put_local_file) and recursing into same-named folders. A file/folder type clash is reported, never
+    resolved by deleting either side. After a move the emptied source folders are removed (rmdir only, so
+    nothing that failed to move is ever lost)."""
+    for child in sorted(os.listdir(src)):
+        s = os.path.join(src, child)
+        d = os.path.join(dest, child)
+        try:
+            if os.path.isdir(s) and not os.path.islink(s):
+                if os.path.isdir(d):
+                    _merge_local_dir(s, d, move, errors)
+                elif os.path.lexists(d):
+                    errors.append(f"{d}: a file with that name is in the way of the folder")
+                else:
+                    _put_local_dir(s, d, move)
+            else:
+                if os.path.isdir(d):
+                    errors.append(f"{d}: a folder with that name is in the way of the file")
+                else:
+                    _put_local_file(s, d, move)
+        except Exception as ex:
+            errors.append(f"{s}: {ex}")
+    if move and not errors:
+        try:
+            os.rmdir(src)
+        except OSError as ex:
+            errors.append(f"{src}: moved its contents but couldn't remove it ({ex})")
 
 
 def _ftp_parent(path: str) -> str:
@@ -915,7 +1083,11 @@ class FileManagerWindow(QMainWindow):
         self._remote_entries = _sort_entries(entries, self._remote_sort_col, self._remote_sort_asc)
         self._remote_path_box.setText(self._remote_path)
         self._populate_tree(self._remote_tree, self._remote_entries)
-        self._set_status(f"{sum(not e.is_parent for e in entries)} item(s) in {self._remote_path}")
+        count = f"{sum(not e.is_parent for e in entries)} item(s) in {self._remote_path}"
+        note = getattr(self, "_result_note", None)
+        self._result_note = None
+        # Keep a transfer's outcome (incl. failures) visible instead of replacing it with the item count.
+        self._set_status(f"{note}  ·  {count}" if note else count)
 
     def _populate_tree(self, tree: QTreeWidget, entries: List[FileEntry]):
         tree.clear()
@@ -942,6 +1114,7 @@ class FileManagerWindow(QMainWindow):
         done, cancelled = self._do_upload_batch(items, self._remote_path, delete_source)
         status = "Upload cancelled." if cancelled else f"Uploaded {done}/{total} file(s) → {self._remote_path}"
         self._status_signal.emit(status)
+        self._result_note = status
         self._busy_signal.emit(False, "")
         if delete_source:
             self._refresh_local_signal.emit()
@@ -967,11 +1140,14 @@ class FileManagerWindow(QMainWindow):
         self._busy_signal.emit(False, "")
         self._refresh_local_signal.emit()
         if delete_source:
+            self._result_note = status
             self._bg_refresh_remote()
 
     # ── New Folder ────────────────────────────────────────────────────────────
 
     def _on_local_new_folder(self):
+        if self._busy:
+            return
         name, ok = QInputDialog.getText(self, "New Folder", "Folder name:", text="NewFolder")
         if not ok or not name.strip():
             return
@@ -1005,6 +1181,8 @@ class FileManagerWindow(QMainWindow):
     # ── Delete ────────────────────────────────────────────────────────────────
 
     def _on_local_delete(self):
+        if self._busy:
+            return
         items = self._selected_entries(self._local_tree, self._local_entries)
         if not items:
             self._set_status("Select items to delete.")
@@ -1016,18 +1194,33 @@ class FileManagerWindow(QMainWindow):
                                  QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if r != QMessageBox.Yes:
             return
+        # On a worker thread: rmtree of a big folder (or any delete on a slow network drive) would freeze the window.
+        self._set_busy(True, f"Deleting {len(items)} item(s)…")
+        self._run_bg(self._bg_local_delete, items)
+
+    def _bg_local_delete(self, items: List[FileEntry]):
+        msg = ""
         done = 0
-        for entry in items:
-            try:
-                if entry.is_directory:
-                    shutil.rmtree(entry.full_path)
-                else:
-                    os.remove(entry.full_path)
-                done += 1
-            except Exception as e:
-                self._set_status(f"Failed {entry.name}: {e}")
-        self._refresh_local()
-        self._set_status(f"Deleted {done}/{len(items)} item(s).")
+        failed: List[str] = []
+        try:
+            for i, entry in enumerate(items):
+                self._progress_signal.emit(int((i / len(items)) * 100))
+                try:
+                    if entry.is_directory:
+                        shutil.rmtree(entry.full_path)
+                    else:
+                        os.remove(entry.full_path)
+                    done += 1
+                except Exception as e:
+                    failed.append(f"{entry.name}: {e}")
+            msg = f"Deleted {done}/{len(items)} item(s)."
+            if failed:
+                msg += f" Failed {failed[0]}" + (" …" if len(failed) > 1 else "")
+        finally:
+            self._busy_signal.emit(False, "")
+            self._refresh_local_signal.emit()
+            if msg:
+                self._status_signal.emit(msg)
 
     def _on_remote_delete(self):
         if self._busy:
@@ -1076,6 +1269,8 @@ class FileManagerWindow(QMainWindow):
     # ── Rename ────────────────────────────────────────────────────────────────
 
     def _on_local_rename(self):
+        if self._busy:
+            return
         items = self._selected_entries(self._local_tree, self._local_entries)
         if len(items) != 1:
             self._set_status("Select exactly one item to rename.")
@@ -1086,7 +1281,14 @@ class FileManagerWindow(QMainWindow):
         new_name, ok = QInputDialog.getText(self, "Rename", "New name:", text=entry.name)
         if not ok or not new_name.strip() or new_name.strip() == entry.name:
             return
-        new_path = os.path.join(os.path.dirname(entry.full_path), new_name.strip())
+        new_path = _safe_local_join(os.path.dirname(entry.full_path), new_name.strip())
+        if new_path is None or new_name.strip() != os.path.basename(new_path):
+            self._set_status("Rename cancelled — the new name can't contain a folder path.")
+            return
+        # os.rename silently replaces an existing file on Linux/macOS; a case-only rename of the same item is fine.
+        if os.path.lexists(new_path) and not _same_local_path(entry.full_path, new_path):
+            self._set_status(f"Rename cancelled — '{new_name.strip()}' already exists here.")
+            return
         try:
             os.rename(entry.full_path, new_path)
             self._refresh_local()
@@ -1121,6 +1323,11 @@ class FileManagerWindow(QMainWindow):
 
     def _bg_remote_rename(self, old_path: str, new_path: str, display_name: str):
         try:
+            # Both instruments accept RNTO over an existing file, which would silently destroy it.
+            if self._ftp.file_exists(new_path):
+                self._status_signal.emit(f"Rename cancelled — '{display_name}' already exists here.")
+                self._busy_signal.emit(False, "")
+                return
             self._ftp.rename(old_path, new_path)
             self._status_signal.emit(f"Renamed → {display_name}")
         except Exception as e:
@@ -1266,37 +1473,129 @@ class FileManagerWindow(QMainWindow):
                 self._clipboard = None
 
     def _move_local(self, items: List[FileEntry], dest_folder: str):
-        done = 0
-        for entry in items:
-            dest = os.path.join(dest_folder, entry.name)
-            try:
-                shutil.move(entry.full_path, dest)
-                done += 1
-            except Exception as e:
-                self._set_status(f"Failed {entry.name}: {e}")
-        self._refresh_local()
-        self._set_status(f"Moved {done}/{len(items)} item(s) → {dest_folder}")
+        self._start_local_transfer(items, dest_folder, is_move=True)
 
     def _copy_local(self, items: List[FileEntry], dest_folder: str):
+        self._start_local_transfer(items, dest_folder, is_move=False)
+
+    def _start_local_transfer(self, items: List[FileEntry], dest_folder: str, is_move: bool):
+        """Local copy/move runs on a worker thread (a big folder tree would otherwise freeze the window) and
+        prompts on every name collision exactly like the cross-pane transfers do."""
+        if self._busy or not items:
+            return
+        self._set_busy(True, f"{'Moving' if is_move else 'Copying'} {len(items)} item(s)…")
+        self._run_bg(self._bg_local_transfer, items, dest_folder, is_move)
+
+    def _bg_local_transfer(self, items: List[FileEntry], dest_folder: str, is_move: bool):
+        msg = ""
+        try:
+            done, cancelled, failures = self._do_local_batch(items, dest_folder, is_move)
+            verb = "Move" if is_move else "Copy"
+            msg = (f"{verb} cancelled after {done} item(s)." if cancelled else
+                   f"{'Moved' if is_move else 'Copied'} {done}/{len(items)} item(s) → {dest_folder}")
+            if failures:
+                msg += f" — {len(failures)} not done: {failures[0]}" + (" …" if len(failures) > 1 else "")
+        finally:
+            self._busy_signal.emit(False, "")
+            self._refresh_local_signal.emit()   # queued before the result, which the listing's count would replace
+            if msg:
+                self._status_signal.emit(msg)
+
+    def _do_local_batch(self, items: List[FileEntry], dest_folder: str,
+                        is_move: bool) -> Tuple[int, bool, List[str]]:
+        """Copies/moves items into dest_folder on the calling (worker) thread, prompting on name collisions
+        (Rename / Overwrite / Skip / Cancel, with apply-to-all) the way _do_upload_batch does. Overwrite
+        replaces a file via a temp sibling + os.replace and merges a folder into the existing one. Returns
+        (done_count, cancelled, messages for the items that were skipped or failed)."""
+        total = len(items)
         done = 0
-        for entry in items:
-            dest = os.path.join(dest_folder, entry.name)
+        forced_action: Optional[str] = None
+        cancelled = False
+        verb = "move" if is_move else "copy"
+        failures: List[str] = []
+
+        def note(msg: str):
+            failures.append(msg)
+            self._status_signal.emit(msg)
+
+        for i, entry in enumerate(items):
+            src = entry.full_path
+            name = entry.name
+            dest = _safe_local_join(dest_folder, name)
+            if dest is None:
+                note(f"Skipped {name}: unsafe file name")
+                continue
+            if entry.is_directory and _local_is_inside(dest_folder, src):
+                note(f"Skipped {name}: can't {verb} a folder into itself")
+                continue
+            onto_itself = _same_local_path(src, dest)
+            if onto_itself and is_move:
+                continue   # already there: nothing to do (and "overwrite" would delete it)
+            overwrite = False
+            if onto_itself or os.path.lexists(dest):
+                exists_fn = lambda n, d=dest_folder: os.path.lexists(os.path.join(d, n))
+                action = forced_action
+                new_name = None
+                if action is None:
+                    req = self._resolve_conflict(name, self._suggest_name(name, exists_fn))
+                    if req.action == "cancel":
+                        cancelled = True
+                        break
+                    action = req.action
+                    new_name = req.new_name
+                    if req.apply_all:
+                        forced_action = action
+                if action == "skip":
+                    continue
+                if action == "rename":
+                    if not new_name or exists_fn(new_name):
+                        new_name = self._suggest_name(name, exists_fn)
+                    dest = _safe_local_join(dest_folder, new_name)
+                    if dest is None:
+                        note(f"Skipped {name}: unsafe replacement name")
+                        continue
+                elif action == "overwrite":
+                    if onto_itself:
+                        note(f"Skipped {name}: it can't overwrite itself — choose Rename to make a copy")
+                        continue
+                    if entry.is_directory != os.path.isdir(dest):
+                        note(f"Skipped {name}: a {'file' if entry.is_directory else 'folder'} with that name "
+                             "is already there")
+                        continue
+                    if entry.is_directory and _local_is_inside(src, dest):
+                        note(f"Skipped {name}: the destination folder contains it")
+                        continue
+                    overwrite = True
             try:
+                self._status_signal.emit(f"[{i+1}/{total}] {'Moving' if is_move else 'Copying'} "
+                                         f"{os.path.basename(dest)}…")
+                self._progress_signal.emit(int((i / total) * 100))
                 if entry.is_directory:
-                    shutil.copytree(entry.full_path, dest, dirs_exist_ok=True)
+                    if overwrite:
+                        errors: List[str] = []
+                        _merge_local_dir(src, dest, is_move, errors)
+                        if errors:
+                            raise OSError(f"{len(errors)} problem(s), first: {errors[0]}")
+                    else:
+                        _put_local_dir(src, dest, is_move)
                 else:
-                    shutil.copy2(entry.full_path, dest)
+                    _put_local_file(src, dest, is_move)
                 done += 1
             except Exception as e:
-                self._set_status(f"Failed {entry.name}: {e}")
-        self._refresh_local()
-        self._set_status(f"Copied {done}/{len(items)} item(s) → {dest_folder}")
+                note(f"Failed {entry.name}: {e}")
+        self._progress_signal.emit(100)
+        if failures and not cancelled:
+            log.warning("Local %s: %s", verb, failures)
+        return done, cancelled, failures
 
     def _bg_move_remote(self, items: List[FileEntry], dest_folder: str):
         done = 0
         for entry in items:
             dest = f"{dest_folder.rstrip('/')}/{entry.name}"
             try:
+                if self._ftp.file_exists(dest):   # RNTO would silently replace it
+                    self._status_signal.emit(f"Skipped {entry.name}: already exists in {dest_folder}")
+                    continue
                 self._ftp.rename(entry.full_path, dest)
                 done += 1
             except Exception as e:
@@ -1359,6 +1658,7 @@ class FileManagerWindow(QMainWindow):
         done, cancelled = self._do_upload_batch(items, dest_folder)
         status = "Upload cancelled." if cancelled else f"Uploaded {done}/{total} file(s) → {dest_folder}"
         self._status_signal.emit(status)
+        self._result_note = status
         self._busy_signal.emit(False, "")
         self._bg_refresh_remote()
 
@@ -1725,5 +2025,10 @@ class FileManagerWindow(QMainWindow):
             self._move_local(items, parent)
 
     def closeEvent(self, event):
+        if self._busy:
+            # A transfer/rename is mid-flight; QUIT now would cut it off.
+            self._set_status("A transfer is still running — wait for it to finish before closing.")
+            event.ignore()
+            return
         threading.Thread(target=self._ftp.disconnect, daemon=True).start()
         event.accept()

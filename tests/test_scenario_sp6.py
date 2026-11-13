@@ -4,8 +4,10 @@ with plain, case-varied, relative, double-slash and dot-segment spellings, and w
 produce, against a recording fake connection. Legitimate nested paths must still work (no over-blocking)."""
 import os, sys, tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ.setdefault("KRONOS_DATA_DIR", tempfile.mkdtemp(prefix="kr_data_"))
-from Tools.file_manager import _FtpWorker, FtpTopLevelPathError, _ftp_parent
+from Tools.file_manager import FtpTopLevelPathError, _ftp_parent
+from ftp_fake import FakeFtpWorker
 
 fails = []
 
@@ -16,31 +18,17 @@ def check(name, cond):
         fails.append(name)
 
 
-class Rec:
-    def __init__(self, listing=None):
-        self.calls, self.listing = [], listing or {}
-
-    def rename(self, a, b): self.calls.append(("rename", a, b))
-    def delete(self, p): self.calls.append(("delete", p))
-    def rmd(self, p): self.calls.append(("rmd", p))
-    def mkd(self, p): self.calls.append(("mkd", p))
-    def mlsd(self, p):
-        return iter(self.listing.get(p, []))
-
-
-def worker(listing=None):
-    w = _FtpWorker("h", 21, "u", "p")
-    w._ftp = Rec(listing)
-    w.ensure_connected = lambda: None
-    return w
+def worker(files=None, dirs=()):
+    """The real _FtpWorker over the instrument-faithful fake (tests/ftp_fake.py)."""
+    return FakeFtpWorker(files, dirs=dirs, volumes=["SSD1", "SSD2", "SSD3"])
 
 
 def refused(call):
-    w = worker()
+    w = worker({"/SSD1/Sub/x": b"x"})
     try:
         call(w)
     except FtpTopLevelPathError:
-        return not w._ftp.calls
+        return not w.server.log          # refused before anything reached the instrument
     except Exception:
         return False
     return False
@@ -60,17 +48,20 @@ for typed in ("..", ".", "../X", "../../X"):
     check(f"rename dialog name {typed!r} ({new_path}) refused", refused(lambda w: w.rename("/SSD1/Folder", new_path)))
 
 # legitimate nested paths still work
-w = worker()
+w = worker({"/SSD1/Sub/a.KSF": b"a"})
 w.rename("/SSD1/Sub/a.KSF", "/SSD1/Sub/b.KSF")
 w.delete_file("/SSD1/Sub/b.KSF")
-check("nested rename+delete allowed", w._ftp.calls == [("rename", "/SSD1/Sub/a.KSF", "/SSD1/Sub/b.KSF"), ("delete", "/SSD1/Sub/b.KSF")])
-w = worker({"/SSD1/Sub": [("In", {"type": "dir"})], "/SSD1/Sub/In": [("f.KSF", {"type": "file", "size": "1"})]})
+check("nested rename+delete allowed", w.server.mutations() == [("RNFR", "/SSD1/Sub/a.KSF"), ("RNTO", "/SSD1/Sub/b.KSF"),
+                                                               ("DELE", "/SSD1/Sub/b.KSF")] and not w.files)
+w = worker({"/SSD1/Sub/In/f.KSF": b"f"})
 w.delete_dir("/SSD1/Sub")
 check("nested delete_dir recurses to the leaf and removes the folder",
-      w._ftp.calls == [("delete", "/SSD1/Sub/In/f.KSF"), ("rmd", "/SSD1/Sub/In"), ("rmd", "/SSD1/Sub")])
-w = worker()
+      w.server.mutations() == [("DELE", "/SSD1/Sub/In/f.KSF"), ("RMD", "/SSD1/Sub/In"), ("RMD", "/SSD1/Sub")]
+      and "/SSD1/Sub" not in w.dirs and "/SSD1" in w.dirs)
+w = worker({"/SSD1/a.b/c": b"c"})
 w.rename("/SSD1/a.b/c", "/SSD1/a.b/d")
-check("dotted folder names are not mistaken for dot segments", w._ftp.calls == [("rename", "/SSD1/a.b/c", "/SSD1/a.b/d")])
+check("dotted folder names are not mistaken for dot segments",
+      w.server.mutations() == [("RNFR", "/SSD1/a.b/c"), ("RNTO", "/SSD1/a.b/d")] and "/SSD1/a.b/d" in w.files)
 
 print(f"{len(TOP)} volume spellings x4 operations + dialog names; {len(fails)} violations")
 sys.exit(1 if fails else 0)

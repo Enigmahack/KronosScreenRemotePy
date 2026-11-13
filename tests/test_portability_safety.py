@@ -222,30 +222,10 @@ class PortabilitySafetyTests(unittest.TestCase):
         bare = [entry for entry in collection.entries if entry.upper().endswith(".KSF")]
         self.assertTrue(bare, "hardware fixture must include standalone samples")
 
-        class MemoryFtp:
-            def __init__(self):
-                self.files = {}
-                self.dirs = set()
+        sys.path.insert(0, str(ROOT / "tests"))
+        from ftp_fake import FakeFtpWorker   # behaves like the instruments' FTP server (tests/ftp_contract.py)
 
-            def file_exists(self, path):
-                return path in self.files or path in self.dirs
-
-            def mkdir(self, path):
-                self.dirs.add(path)
-
-            def upload(self, local, remote):
-                self.files[remote] = Path(local).read_bytes()
-
-            def rename(self, old, new):
-                self.files[new] = self.files.pop(old)
-
-            def delete_file(self, path):
-                del self.files[path]
-
-            def download(self, remote, local):
-                Path(local).write_bytes(self.files[remote])
-
-        backend = MemoryFtp()
+        backend = FakeFtpWorker(volumes=["SSD2"])
         self.assertEqual(ftp.push_closure(backend, str(fixture), collection, "/SSD2/Test"), [])
         with tempfile.TemporaryDirectory() as tmp:
             _, mapping, failures = ftp.pull(backend, "/SSD2/Test/" + fixture.name, tmp)
