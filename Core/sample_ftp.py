@@ -211,6 +211,10 @@ def pull(ftp: _FtpWorker, remote_entry_path: str, local_root: str,
     .KMP, every non-skipped zone's .KSF, and every bare .KSF) into local_root.
 
     Returns (local_path_of_the_entry, {local_path: remote_path, ...}, failures).
+
+    The collection's `<name>_UserBank.KSC` is deliberately NOT pulled: on the instruments it is a read-only,
+    streaming reference repository of links the audio engine loads into RAM, not content this application edits.
+    It is written (regenerated from the collection) whenever the .KSC is saved or pushed - see push_closure.
     """
     remote_map: Dict[str, str] = {}
     failures: List[str] = []
@@ -245,6 +249,24 @@ def pull(ftp: _FtpWorker, remote_entry_path: str, local_root: str,
         _pull_zones(ftp, data, remote_entry_path, local_root, remote_map, on_progress, failures)
 
     return local_path_for(local_root, remote_entry_path), remote_map, failures
+
+
+def _refresh_stale_user_bank(local_ksc_path: str, user_bank_path: str, collection: KscCollection) -> None:
+    """The .KSC being pushed must travel with a _UserBank.KSC that matches it. Every save in this application
+    rewrites both together; if the local sibling is older than the .KSC (the .KSC was changed by something that did
+    not also write it), regenerate it from the collection now. A missing sibling is left alone (an unedited,
+    pulled collection has none - the instrument already holds its own). Failure keeps the existing file."""
+    try:
+        if not os.path.isfile(user_bank_path):
+            return
+        if os.path.getmtime(user_bank_path) >= os.path.getmtime(local_ksc_path) - 2.0:   # FAT/SMB timestamp slack
+            return
+        same = os.path.normcase(os.path.abspath(collection.path or "")) == os.path.normcase(os.path.abspath(local_ksc_path))
+        if not same or collection.bank_uuid is None:
+            return
+        collection.save_user_bank()
+    except (OSError, ValueError) as ex:
+        log.warning("could not refresh %s: %s", user_bank_path, ex)
 
 
 def push_closure(ftp: _FtpWorker, local_ksc_path: str, collection: KscCollection,
@@ -297,6 +319,7 @@ def push_closure(ftp: _FtpWorker, local_ksc_path: str, collection: KscCollection
     user_bank_local_path = os.path.join(
         os.path.dirname(local_ksc_path),
         os.path.splitext(ksc_name)[0] + "_UserBank.KSC")
+    _refresh_stale_user_bank(local_ksc_path, user_bank_local_path, collection)
     tops: List[Tuple[str, str]] = [(local_ksc_path, ksc_remote_path)]
     if os.path.isfile(user_bank_local_path):
         tops.append((user_bank_local_path, f"{remote_dest_trimmed}/{os.path.basename(user_bank_local_path)}"))

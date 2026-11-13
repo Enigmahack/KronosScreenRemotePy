@@ -5,61 +5,51 @@ any parity/bug-fixing work here.
 
 ## What this is
 
-`KronosScreenRemotePy` is a Python/Qt (PySide6) port of `../KronosScreenRemote`
-(C#/WPF) — a remote-control client for a Korg Kronos/Nautilus synthesizer. It
-streams the instrument's screen over a proprietary TCP protocol, forwards
-touch/keyboard/button input back to it, and manages the instrument's Local
-Library (Programs/Combis/Set Lists) and sample content over FTP.
+`KronosScreenRemotePy` is a Python/Qt (PySide6) remote-control client for a Korg
+Kronos/Nautilus synthesizer. It streams the instrument's screen over a
+proprietary TCP protocol, forwards touch/keyboard/button input back to it, and
+manages the instrument's Local Library (Programs/Combis/Set Lists/Drum Kits/Wave
+Sequences/Songs) and sample content over FTP and SysEx. It began as a port of a
+C#/WPF app, but that app is no longer a reference: **this repository is the
+source of truth for behavior** (what a feature does, what it is called, where it
+lives in the menu). Do not consult or compare against the C# code.
 
-**Three sibling repos matter for this work:**
-- `../KronosScreenRemote` — the C# app. **Source of truth for behavior**: what
-  a feature is supposed to do, what it's called, where it lives in the menu.
+**Two external references matter:**
 - `../KronosScreenRemoteDaemon/docs/api.md` — the wire-protocol reference (the
-  daemon that runs on the Kronos itself). **Source of truth for the protocol**:
-  outranks both apps when they disagree. Every ctrl-port command, the stream
-  handshake, frame format, etc. is documented here byte-for-byte.
+  daemon that runs on the instrument itself). **Source of truth for the
+  protocol**: every ctrl-port command, the stream handshake, frame format, etc.
+  is documented here byte-for-byte.
 - `/home/share/kronosology/docs/` — hardware reverse-engineering docs, ground-
   truth decompiled from the Kronos's own firmware. For anything involving the
-  on-disk sample/library file formats (`.KSC`/`.KMP`/`.KSF`, `.PCG`), read
-  `kronosology/docs/interfaces/ksc_kmp_ksf_file_format.md` (and its
-  `pcg_file_format.md` sibling) **before** trusting the C# port's own
-  comments — the C# port was itself written from these docs, and they contain
-  hard-won hardware landmines (silent data loss, unit hangs) that aren't
-  visible from reading code alone.
+  on-disk sample/library file formats (`.KSC`/`.KMP`/`.KSF`, `.PCG`, `.SNG`),
+  read `kronosology/docs/interfaces/ksc_kmp_ksf_file_format.md` (and its
+  `pcg_file_format.md` / `sng_file_format.md` siblings) before changing a
+  parser or writer — they contain hard-won hardware landmines (silent data
+  loss, unit hangs) that aren't visible from reading code alone.
 
 ## Working method that has actually worked here
 
-This branch spent a long stretch fixing real bugs by comparing Python against
-C# line-by-line rather than trusting either codebase's own comments/docs.
-Repeat this pattern:
+Fix real bugs by reading the code against hard evidence (the daemon API, the
+hardware docs, real captured files, a live unit, the tests), not against anyone's
+comments or status reports. Repeat this pattern:
 
-1. **Fork a read-only audit** comparing a specific Python file/feature against
-   its real C# counterpart, hunting for *concrete correctness bugs* (wrong
-   protocol bytes, dead code, a control that changes UI state but never
-   reaches the daemon/disk) — not a feature inventory. Be explicit that it's
-   audit-only and must not edit/commit anything, and ask it to confirm "no
-   edits made" in its final message. (One fork this session ignored a softer
-   "report only" instruction and committed a fix anyway — the fix happened to
-   be correct after independent verification, but don't rely on that.)
+1. **Fork a read-only audit** of a specific file/feature, hunting for *concrete
+   correctness bugs* (wrong protocol bytes, dead code, a control that changes UI
+   state but never reaches the daemon/disk, a write path that can lose data) —
+   not a feature inventory. Be explicit that it's audit-only and must not
+   edit/commit anything, and ask it to confirm "no edits made" in its final
+   message. (A fork once ignored a softer "report only" instruction and
+   committed a fix anyway; don't rely on that.)
 2. **Independently verify every finding** before fixing it — read the actual
-   C# source yourself, don't trust the fork's paraphrase. Twice this session
-   a flagged "bug" turned out to be wrong on closer reading: once a
-   mischaracterized code path, and once — more importantly — **a whole
-   feature (the Palette Editor) that C# has actually retired**
-   (`KronosScreenRemote/Views/MainWindow.xaml.cs:49-60`: `EffectiveOverrides`
-   always returns empty, the menu item is unconditionally hidden). Building
-   the "missing" undo/redo for it would have been real, wasted effort. Before
-   implementing a fix for something flagged as missing, check whether the C#
-   feature itself is still live and reachable — an `=> alwaysEmpty`/
-   `Visibility.Collapsed`-unconditionally pattern in C# means it's retired,
-   not a parity gap.
-3. **Never trust a self-authored status report.** The branch's early history
-   includes a prior agent's "Phase 1-6" work that claimed "100% C# parity
-   achieved!" while shipping literal `# TODO: pass` stubs wired to real menu
-   items, and invented an entire local audio-workstation feature set with no
-   connection to the real app. Those docs were deleted (`adb8d72`). Don't
-   write new ones either — this file gets updated in place instead (see
-   below), and commit messages carry the "why," not standalone status files.
+   code yourself, don't trust the fork's paraphrase; several flagged "bugs" have
+   turned out to be a mischaracterized code path. Prefer measuring the real
+   instrument over reasoning about it: more than one assumption about the FTP
+   servers was wrong until it was tested live.
+3. **Never trust a self-authored status report.** An early agent's "100% parity
+   achieved!" report shipped literal `# TODO: pass` stubs wired to real menu
+   items. Don't write standalone status docs; this file gets updated in place
+   with the current state only (no dated history), and commit messages carry the
+   "why".
 4. **Verify against real data, not just synthetic fixtures.** For file-format
    work, `KronosScreenRemote/SampleFixtures/` and `PCG EXAMPLES`-style
    directories hold real, hardware-captured files. Round-trip your parser
@@ -106,6 +96,12 @@ Pre-commit runs tier 0: enable with `git config core.hooksPath pipeline/hooks`.
 - **Sample push (`Core/sample_ftp.py`).** Children before parents: every `.KSF`, then each `.KMP`, then the `.KSC`; a
   parent is skipped (and reported) when a child it needs did not arrive. Entry and zone names are validated
   (`unsafe_name_reason`, `path_guard.ensure_under`) before anything is sent, on push and pull.
+- **`_UserBank.KSC`.** On the instruments it is a read-only, streaming reference repository (links the audio engine
+  loads into RAM), so `sample_ftp.pull` never fetches it. Every local save of a `.KSC` rewrites it
+  (`_save_collection_with_user_bank`), push uploads the local sibling after the `.KSC`, and regenerates it first if it
+  is older than the `.KSC`. A collection with no local sibling is pushed without one; the instrument's copy is left as is.
+- **Bank names follow the connected instrument.** `Conversion.push.bank_label/dest_label(..., nautilus)`: Nautilus
+  user banks are G..T, Kronos user banks are U-A..U-GG (`restore_from_backup` and push messages use the service's family).
 - **Conversion push (`Conversion/push.py`).** Programs, Drum Kits and Wave Sequences are written and Stored first. A Combi
   or Song Timbre Set is written only if every Program it points at in the same run was committed (written and its
   bank Stored); otherwise it is skipped with a warning naming the Program.
@@ -144,6 +140,9 @@ Pre-commit runs tier 0: enable with `git config core.hooksPath pipeline/hooks`.
 
 ## Current state (as of the last work on this file — check `git log` for
 anything more recent than this)
+
+_Background only: the pass-by-pass notes below record how the code got here and mention the retired C# app and
+dated verifications. They are context, not a reference - the Architecture invariants above and the code are current._
 
 The `ParityUpdate` branch (53 commits ahead of `main` as of this writing) has
 had two focused work passes:
