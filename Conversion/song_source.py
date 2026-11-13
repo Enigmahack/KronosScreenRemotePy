@@ -28,7 +28,10 @@ def read_songs(path: str) -> Tuple[List[SongData], List[str]]:
             return [], [f"Not a usable .SNG file: {ex}"]
         if sng.model not in TIMBRE_SET_SIZE:
             return [], [f"Unknown instrument type 0x{sng.model:02X} in the .SNG file."]
-        return [from_sng_song(s, sng.model) for s in sng.songs], []
+        try:
+            return [from_sng_song(s, sng.model) for s in sng.songs], []
+        except SongError as ex:
+            return [], [f"Not a usable .SNG file: {ex}"]
     songs: List[SongData] = []
     notes: List[str] = []
     for chunk in raw.split(b"\xf7"):

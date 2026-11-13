@@ -26,6 +26,7 @@ SNG1_GAP = 36                       # SNG1 starts this far past the header-lengt
 CONTAINERS = {"SNG1", "SGS1", "SDT1", "TRK1", "MDT1", "MTK1", "TMA1", "ADT1", "ATK1", "KTA1"}
 MODEL_KRONOS, MODEL_NAUTILUS = 0x68, 0xDD
 AUDIO_RECORD_SIZE = 10
+MAX_DEPTH = 16                      # real files nest about 6 containers deep; deeper is a damaged/hostile file
 
 
 class SngError(ValueError):
@@ -47,7 +48,10 @@ class Node:
         return self.tag.encode() + struct.pack(">II", len(body), self.dwx) + body
 
 
-def _parse_nodes(data: bytes, off: int, end: int) -> List[Node]:
+def _parse_nodes(data: bytes, off: int, end: int, depth: int = 0) -> List[Node]:
+    # The depth limit also bounds every recursive walk of a parsed tree (Node.serialize, the writer).
+    if depth > MAX_DEPTH:
+        raise SngError(f"Chunks nested more than {MAX_DEPTH} deep at {off}.")
     out: List[Node] = []
     while off < end:
         if off + 12 > end:
@@ -60,7 +64,7 @@ def _parse_nodes(data: bytes, off: int, end: int) -> List[Node]:
             raise SngError(f"Chunk {tag.decode()} at {off} runs past its container.")
         name = tag.decode()
         if name in CONTAINERS:
-            out.append(Node(name, dwx, children=_parse_nodes(data, off + 12, off + 12 + size)))
+            out.append(Node(name, dwx, children=_parse_nodes(data, off + 12, off + 12 + size, depth + 1)))
         else:
             out.append(Node(name, dwx, payload=data[off + 12:off + 12 + size]))
         off += 12 + size
@@ -185,6 +189,9 @@ def read_sng(data: bytes) -> SngFile:
         adt = trk.find("ADT1")
         atk, kta = (adt.find("ATK1"), adt.find("KTA1")) if adt is not None else (None, None)
         audio = tuple(_audio(n, f"song {i} audio track {j}") for j, n in enumerate(atk.children or ())) if atk else ()
+        for j, n in enumerate(kta.children or ()) if kta else ():
+            if len(n.payload) < 12:
+                raise SngError(f"song {i} pattern {j}: chunk too short")
         patterns = tuple((struct.unpack(">I", n.payload[8:12])[0], tuple(_events(n, False, f"song {i} pattern {j}")))
                          for j, n in enumerate(kta.children or ())) if kta else ()
         songs.append(SngSong(sdt, _body(spr, "Song Control"), _body(bmt1, "Song Timbre Set"),

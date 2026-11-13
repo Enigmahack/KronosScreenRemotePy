@@ -73,7 +73,10 @@ def convert_sng(data: bytes, target: int, tables: ConvertTables,
     parts: List[SongParts] = []
     warnings: List[str] = []
     for i in picks:
-        song = from_sng_song(sng.songs[i], sng.model)
+        try:
+            song = from_sng_song(sng.songs[i], sng.model)
+        except ValueError as ex:   # SongError
+            return None, warnings, [f"Song {i}: not a usable song: {ex}"]
         new, w, refused = convert_song(song, target, tables)
         warnings += [f"Song {i} ({song.name}): {m}" for m in w]
         if new is None:

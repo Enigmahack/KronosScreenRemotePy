@@ -30,6 +30,34 @@ def raises(data):
 check("not-korg", raises(b"RIFF" + bytes(1000)))
 check("pcg-is-not-sng", raises(b"KORG\xdd\x00\x02\x01" + bytes(1000)))
 
+
+def _nested(depth):
+    """A header with no songs followed by `depth` nested SNG1 containers (a crafted, hostile file)."""
+    import struct
+    body = b""
+    for _ in range(depth):
+        body = b"SNG1" + struct.pack(">II", len(body), 0x400) + body
+    head = bytearray(0x50)
+    head[:6] = b"KORG\x68\x01"
+    struct.pack_into(">I", head, 0x20, 0x50 - 36)
+    struct.pack_into(">I", head, 0x18, len(head) + len(body))
+    return bytes(head) + body
+
+
+def raises_cleanly(data):
+    """SngError, not RecursionError (callers catch only SngError)."""
+    try:
+        read_sng(data)
+    except SngError as e:
+        return "nested" in str(e)
+    except RecursionError:
+        return False
+    return False
+
+
+check("deep-nesting-5000", raises_cleanly(_nested(5000)))
+check("deep-nesting-18", raises_cleanly(_nested(18)))
+
 files = sorted(glob.glob(os.path.join(SNG_EXAMPLES, "*", "*.SNG")))
 if not files:
     print("SKIP real files: fixtures not found in", SNG_EXAMPLES)

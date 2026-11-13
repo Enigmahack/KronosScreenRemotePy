@@ -6,6 +6,7 @@ import logging
 import threading
 from typing import Callable, List, Optional
 
+import shiboken6
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QDialog, QFileDialog, QHBoxLayout, QInputDialog, QLabel,
                                QMessageBox, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout)
@@ -33,6 +34,7 @@ def _is_placeholder(name: str) -> bool:
 class SongLibraryWindow(QDialog):
     _pulled = Signal(list, str)          # [SongData], status
     _progress = Signal(str)
+    _bg_done = Signal(object, object, object)     # callback, result, exception
 
     def __init__(self, library: SongLibrary, get_service: Callable[[], object],
                  send_to_nautilus: Optional[Callable[[list], None]] = None, parent=None) -> None:
@@ -41,6 +43,7 @@ class SongLibraryWindow(QDialog):
         self._get_service = get_service
         self._send = send_to_nautilus
         self._busy = False
+        self._closed = False             # set once the C++ window is gone; workers then stop emitting
         self._cancel = threading.Event()
         self.setWindowTitle("Song Library")
         self.resize(900, 460)
@@ -74,8 +77,52 @@ class SongLibraryWindow(QDialog):
         root.addLayout(row)
         self._pulled.connect(self._on_pulled)
         self._progress.connect(self._set_status)
+        self._bg_done.connect(self._on_bg_done)
         self._table.itemSelectionChanged.connect(self._refresh_enable)
+        self.destroyed.connect(self._on_destroyed)
         self.refresh()
+        note = getattr(self._lib, "recovered_note", None)
+        if note:
+            self._set_status(note)
+
+    # ── worker plumbing ──
+    def _on_destroyed(self, *_a) -> None:
+        self._closed = True
+        self._cancel.set()
+
+    def _safe_emit(self, signal, *args) -> None:
+        """Emit from a worker only while this window exists (it dies with the Librarian)."""
+        if self._closed:
+            return
+        try:
+            signal.emit(*args)
+        except RuntimeError:
+            self._closed = True
+            self._cancel.set()
+
+    def _run_bg(self, status: str, fn, on_done) -> None:
+        """Run `fn()` on a worker thread with the buttons disabled; `on_done(result, exc)` runs on the GUI thread.
+        Reading, converting and building .SNG files takes seconds for big songs: on the GUI thread the window
+        stopped repainting for that long."""
+        self._busy = True
+        self._refresh_enable()
+        self._set_status(status)
+
+        def worker() -> None:
+            result, exc = None, None
+            try:
+                result = fn()
+            except Exception as ex:          # noqa: BLE001 - reported in the window
+                log.exception("Song Library: %s failed", status)
+                exc = ex
+            self._safe_emit(self._bg_done, on_done, result, exc)
+
+        threading.Thread(target=worker, daemon=True, name="SongLibraryWork").start()
+
+    def _on_bg_done(self, on_done, result, exc) -> None:
+        self._busy = False
+        self._refresh_enable()
+        on_done(result, exc)
 
     def _button(self, layout, text: str, tip: str, slot) -> QPushButton:
         b = QPushButton(text)
@@ -120,20 +167,43 @@ class SongLibraryWindow(QDialog):
 
     # ── import ──
     def import_file(self) -> None:
+        if self._busy:
+            return
         paths, _ = QFileDialog.getOpenFileNames(self, "Import songs", "", "Songs (*.SNG *.sng *.syx);;All files (*)")
-        added_total, notes = 0, []
-        for path in paths:
-            songs, n = read_songs(path)
-            notes += [f"{path}: {m}" for m in n]
-            added, n2 = self._lib.add(songs, path.replace("\\", "/").rsplit("/", 1)[-1])
-            added_total += len(added)
-            notes += n2
-        self.refresh()
-        self._set_status(f"Imported {added_total} song(s)." + (f" {len(notes)} note(s): see Details." if notes else ""))
-        if notes:
-            self._show("Import", f"Imported {added_total} song(s).", notes)
+        if not paths:
+            return
+        lib = self._lib
+
+        def work():
+            added_total, notes = 0, []
+            for path in paths:
+                try:
+                    songs, n = read_songs(path)
+                except (OSError, ValueError) as ex:
+                    notes.append(f"{path}: cannot be read: {ex}")
+                    continue
+                notes += [f"{path}: {m}" for m in n]
+                added, n2 = lib.add(songs, path.replace("\\", "/").rsplit("/", 1)[-1])
+                added_total += len(added)
+                notes += n2
+            return added_total, notes
+
+        def done(result, exc) -> None:
+            self.refresh()
+            if exc is not None:
+                self._set_status(f"Import stopped: {exc}")
+                self._show("Import", f"Import stopped: {type(exc).__name__}: {exc}", [])
+                return
+            added_total, notes = result
+            self._set_status(f"Imported {added_total} song(s)." + (f" {len(notes)} note(s): see Details." if notes else ""))
+            if notes:
+                self._show("Import", f"Imported {added_total} song(s).", notes)
+
+        self._run_bg(f"Reading {len(paths)} file(s)...", work, done)
 
     def import_instrument(self) -> None:
+        if self._busy:
+            return
         service = self._get_service()
         if service is None or not service.can_dump:
             self._set_status("Connect to an instrument first.")
@@ -148,10 +218,12 @@ class SongLibraryWindow(QDialog):
             status = "Done."
             try:
                 for i in range(SONG_SLOTS):
-                    if self._cancel.is_set():
+                    # isValid: the window can be deleted with its parent without destroyed() reaching
+                    # this Python object; a dead window must not keep the instrument busy.
+                    if self._cancel.is_set() or self._closed or not shiboken6.isValid(self):
                         status = "Cancelled."
                         break
-                    self._progress.emit(f"Reading song {i} of {SONG_SLOTS}...")
+                    self._safe_emit(self._progress, f"Reading song {i} of {SONG_SLOTS}...")
                     d = service.dump_object_parsed(SONG_OBJECT, 0, i, no_response_ms=4000)
                     if d is None:
                         empty += 1
@@ -169,17 +241,27 @@ class SongLibraryWindow(QDialog):
             except Exception as ex:
                 log.exception("Reading songs failed")
                 status = f"Stopped: {type(ex).__name__}: {ex}"
-            self._pulled.emit(songs, status)
+            self._safe_emit(self._pulled, songs, status)
 
         threading.Thread(target=worker, daemon=True, name="SongLibraryPull").start()
 
     def _on_pulled(self, songs: list, status: str) -> None:
         self._busy = False
-        added, notes = self._lib.add(songs, "instrument")
+        try:
+            added, notes = self._lib.add(songs, "instrument")
+        except OSError as ex:
+            added, notes = [], [f"The songs could not be stored: {ex}"]
         self.refresh()
         self._set_status(f"{status} Read {len(songs)} song(s), added {len(added)}.")
-        if notes:
+        # Closed (Esc / X) while reading: what was read is kept, but no message box pops up out of nowhere.
+        if notes and self.isVisible():
             self._show("Import from instrument", f"Added {len(added)} of {len(songs)} song(s).", notes)
+
+    def done(self, result: int) -> None:
+        """Esc / reject finish a QDialog without closeEvent: stop an instrument read here too, or it carried on
+        talking to the instrument behind a hidden window."""
+        self._cancel.set()
+        super().done(result)
 
     def closeEvent(self, event) -> None:
         self._cancel.set()
@@ -197,27 +279,53 @@ class SongLibraryWindow(QDialog):
         if not ok:
             return
         target = MODEL_KRONOS if choice == MODEL_NAMES[MODEL_KRONOS] else MODEL_NAUTILUS
-        data, warnings, refusals = self._lib.export_sng([e.id for e in sel], target, ConvertTables.load())
-        if data is None:
-            self._show("Export .SNG", "Nothing was written.", refusals + warnings)
-            return
-        path, _ = QFileDialog.getSaveFileName(self, "Export .SNG", "songs.SNG", "Song files (*.SNG)")
-        if not path:
-            return
-        try:
-            with open(path, "wb") as f:
-                f.write(data)
-        except OSError as ex:
-            self._show("Export .SNG", f"Could not write the file: {ex}", [])
-            return
-        self._set_status(f"Wrote {len(sel)} song(s) for the {choice} to {path}")
-        self._show("Export .SNG", f"Wrote {len(sel)} song(s) for the {choice}.", warnings)
+        ids, lib = [e.id for e in sel], self._lib
+
+        def done(result, exc) -> None:
+            if exc is not None:
+                self._set_status(f"Export failed: {exc}")
+                self._show("Export .SNG", f"Export failed: {type(exc).__name__}: {exc}", [])
+                return
+            data, warnings, refusals = result
+            if not self.isVisible():
+                return                 # closed while converting: do not pop a save dialog out of nowhere
+            if data is None:
+                self._set_status("Nothing was exported.")
+                self._show("Export .SNG", "Nothing was written.", refusals + warnings)
+                return
+            path, _ = QFileDialog.getSaveFileName(self, "Export .SNG", "songs.SNG", "Song files (*.SNG)")
+            if not path:
+                self._set_status("Export cancelled.")
+                return
+            try:
+                with open(path, "wb") as f:
+                    f.write(data)
+            except OSError as ex:
+                self._show("Export .SNG", f"Could not write the file: {ex}", [])
+                return
+            self._set_status(f"Wrote {len(sel)} song(s) for the {choice} to {path}")
+            self._show("Export .SNG", f"Wrote {len(sel)} song(s) for the {choice}.", warnings)
+
+        self._run_bg(f"Converting {len(ids)} song(s) for the {choice}...",
+                     lambda: lib.export_sng(ids, target, ConvertTables.load()), done)
 
     def send_timbre_sets(self) -> None:
-        if self._send is None:
+        if self._send is None or self._busy:
             return
-        songs = [self._lib.get(e.id) for e in self._selected()]
-        self._send(convert_items(songs))
+        ids, lib = [e.id for e in self._selected()], self._lib
+        if not ids:
+            return
+
+        def done(result, exc) -> None:
+            if exc is not None:
+                self._set_status(f"Could not read the songs: {exc}")
+                return
+            if not self.isVisible():
+                return
+            self._set_status(f"{len(ids)} song(s) handed to the Librarian.")
+            self._send(result)
+
+        self._run_bg(f"Reading {len(ids)} song(s)...", lambda: convert_items([lib.get(i) for i in ids]), done)
 
     def remove_selected(self) -> None:
         sel = self._selected()
@@ -227,13 +335,21 @@ class SongLibraryWindow(QDialog):
         if QMessageBox.question(self, "Remove songs", f"Remove {len(sel)} song(s) from the library?\n{names}") \
                 != QMessageBox.StandardButton.Yes:
             return
-        self._lib.remove([e.id for e in sel])
+        try:
+            self._lib.remove([e.id for e in sel])
+        except OSError as ex:
+            self._show("Remove songs", f"The library could not be saved: {ex}", [])
         self.refresh()
 
     def _show(self, title: str, text: str, details: List[str]) -> None:
+        if not self.isVisible():
+            return                     # finished after the window was closed: the status line has it
         box = QMessageBox(self)
         box.setWindowTitle(title)
         box.setText(text)
         if details:
             box.setDetailedText("\n".join(details))
-        box.exec()
+        try:
+            box.exec()
+        finally:
+            box.deleteLater()          # parented to this long-lived window: one leaked box per message otherwise

@@ -66,10 +66,13 @@ class FakeInstrument:
 sent = []
 lib = SongLibrary(pathlib.Path(tempfile.mkdtemp(prefix="kr_songlibui_store_")))
 w = SongLibraryWindow(lib, lambda: FakeInstrument(), sent.extend)
+w.show()
 
 # import a Kronos .SNG
 QFileDialog.getOpenFileNames = staticmethod(lambda *a, **k: ([kr[0]], ""))
 w.import_file()
+check("import-file-threaded", w._busy)          # the read runs off the GUI thread
+check("import-file-done", wait(lambda: not w._busy))
 check("import-file", w._table.rowCount() == 6 and any("plays audio" not in w._table.item(r, 6).text() and
       w._table.item(r, 6).text() == "Yes" for r in range(6)))
 check("columns", {w._table.item(r, 1).text() for r in range(6)} == {"Kronos"})
@@ -88,6 +91,7 @@ out = os.path.join(tempfile.mkdtemp(), "out.SNG")
 QInputDialog.getItem = staticmethod(lambda *a, **k: ("Nautilus", True))
 QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: (out, ""))
 w.export_sng()
+check("export-done", wait(lambda: not w._busy))
 conv = read_sng(open(out, "rb").read())
 check("export", conv.model == MODEL_NAUTILUS and [s.name for s in conv.songs] == ["CHRISTMAS CANON"]
       and len(conv.songs[0].timbre_set) == 5640)
@@ -98,16 +102,58 @@ row = next(r for r in range(w._table.rowCount()) if w._table.item(r, 6).text() =
 w._table.selectRow(row)
 shown.clear()
 w.export_sng()
+wait(lambda: not w._busy)
 check("sysex-only-export-refused", shown and "no MIDI data" in shown[-1][1])
 
 # send Timbre Sets to the Nautilus hands ConvertItems to the callback
 w.send_timbre_sets()
+wait(lambda: not w._busy)
 check("send", len(sent) == 1 and sent[0].obj_type == 0x02 and sent[0].native)
 
 # remove
 n = w._table.rowCount()
 w.remove_selected()
 check("remove", w._table.rowCount() == n - 1)
+
+# Esc (reject -> done, no closeEvent) must stop an instrument read instead of letting it run on hidden
+class SlowInstrument(FakeInstrument):
+    def dump_object_parsed(self, obj, bank, index, **kw):
+        time.sleep(0.05)
+        return super().dump_object_parsed(obj, bank, index, **kw)
+
+
+w2 = SongLibraryWindow(lib, lambda: SlowInstrument(), sent.extend)
+w2.show()
+shown.clear()
+w2.import_instrument()
+w2.reject()
+check("esc-cancels-pull", w2._cancel.is_set())
+check("esc-pull-finishes", wait(lambda: not w2._busy))
+check("esc-no-popup", not shown and "Cancelled" in w2._status.text())
+w2.deleteLater()
+
+# the parent (the Librarian) is destroyed while a read runs: the worker stops promptly
+from PySide6.QtWidgets import QDialog
+
+
+class CountingInstrument(SlowInstrument):
+    calls = 0
+
+    def dump_object_parsed(self, obj, bank, index, **kw):
+        CountingInstrument.calls += 1
+        return super().dump_object_parsed(obj, bank, index, **kw)
+
+
+parent = QDialog()
+w3 = SongLibraryWindow(lib, lambda: CountingInstrument(), sent.extend, parent)
+w3._cancel.clear()
+w3.import_instrument()
+time.sleep(0.12)
+import shiboken6
+shiboken6.delete(parent)                          # the C++ windows go, as when the Librarian is deleted
+n_at_close = CountingInstrument.calls
+time.sleep(0.4)
+check("parent-destroyed-stops-read", CountingInstrument.calls <= n_at_close + 1)
 w.close()
 
 if fails:
