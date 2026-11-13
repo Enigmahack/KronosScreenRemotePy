@@ -13,7 +13,7 @@ from Conversion.setlist import convert_setlist
 from Data.librarian_sysex import (OBJ_COMBI, OBJ_PROGRAM, OBJ_SET_LIST, SETLIST_KRONOS_SIZE, SETLIST_NAUTILUS_SIZE,
                                   func33_to_obj_bank, set_setlist_slot_ref, setlist_slot_base, setlist_slot_ref,
                                   setlist_slot_pc)
-from Data.pcg_file import FAMILY_KRONOS, FAMILY_NAUTILUS, open_pcg
+from Data.pcg_file import FAMILY_KRONOS, FAMILY_NAUTILUS, MODEL_KRONOS, MODEL_NAUTILUS, open_pcg
 from fixture_paths import PCG_EXAMPLES
 from Tools.dependency_scanner import walk_object_references
 
@@ -93,6 +93,10 @@ def pcgs(family):
     for root in roots:
         for f in glob.glob(os.path.join(root, "**", "*"), recursive=True):
             if f.lower().endswith(".pcg"):
+                with open(f, "rb") as fh:
+                    head = fh.read(6)
+                if len(head) > 5 and head[4] != (MODEL_NAUTILUS if family == FAMILY_NAUTILUS else MODEL_KRONOS):
+                    continue                              # product id: skip the other family without reading it
                 p = open_pcg(open(f, "rb").read())
                 if p is not None and p.family == family:
                     yield f, p

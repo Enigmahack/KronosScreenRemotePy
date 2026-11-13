@@ -61,7 +61,7 @@ from enum import Enum
 from typing import Callable, Dict, List, Optional, Set, Tuple
 
 import Core.kronos_sysex as ksx
-from Data.librarian_sysex import OBJ_VERSION
+from Data.librarian_sysex import object_version
 import Models.storage as _storage
 from Data.local_library_store import BlobStore, local_library_dir
 
@@ -464,7 +464,7 @@ class MergeCache:
         entry = MergeEntry(
             content_hash=content_hash, obj_type=obj_type, body=body,
             display_name=_extract_display_name(body), is_top_level_pull=is_top_level,
-            version=OBJ_VERSION.get(obj_type, 0),
+            version=object_version(obj_type, body),
         )
         entry.origins.append(MergeOrigin(source, address))
         self._by_hash[content_hash] = entry

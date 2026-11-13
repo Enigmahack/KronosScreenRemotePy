@@ -63,6 +63,17 @@ OBJ_VERSION = {
     OBJ_PROGRAM: 5,
 }
 
+# The version byte a live Nautilus answers with for the objects whose body differs from the Kronos one (measured on a real
+# Nautilus, read-only: Combi 4, Song Timbre Set 4, Set List 2; the Kronos answers 3 / 3 / 0). Drum Kits and Wave Sequences
+# answer the same on both. The table above is only a fallback; prefer the version of the object actually dumped.
+_NAUTILUS_VERSION_BY_SIZE = {(OBJ_COMBI, 5640): 4, (OBJ_SONG_TIMBRE, 5640): 4, (OBJ_SET_LIST, 69544): 2}
+
+
+def object_version(obj_type: int, body: bytes) -> int:
+    """Fallback version byte for writing `body` (a Nautilus-format body gets the Nautilus version)."""
+    return _NAUTILUS_VERSION_BY_SIZE.get((obj_type, len(body)), OBJ_VERSION.get(obj_type, 0))
+
+
 # Combi timbre reference layout (CombiAndSongTimbreSet.txt, obj 0x01/0x02).
 _TIMBRE_COUNT = 16
 _TIMBRE0_PROG_NUM_OFS = 4802     # timbre 0 program NUMBER byte

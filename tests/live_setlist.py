@@ -37,7 +37,7 @@ if d is None:
     print("no Set List reply")
     sys.exit(2)
 b = d.body
-print(f"Set List {number}: len={len(b)} (Kronos 69416 / Nautilus 69544) stride={setlist_stride(b)} name={ksx._ascii_trim(b, 0, 24)!r}")
+print(f"Set List {number}: version={d.version} len={len(b)} (Kronos 69416 / Nautilus 69544) stride={setlist_stride(b)} name={ksx._ascii_trim(b, 0, 24)!r}")
 shown = ok = bad = 0
 for s in range(128):
     base = setlist_slot_base(b, s)

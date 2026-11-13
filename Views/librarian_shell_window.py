@@ -209,7 +209,8 @@ from Data.librarian_model import (
     _READONLY_PROGRAM_BANKS, apply_ref_patch, encode_ref, plan_batch_move, plan_move, resolve_sequential_fill,
 )
 from Data.librarian_sysex import (
-    OBJ_COMBI, OBJ_DRUM_KIT, OBJ_PROGRAM, OBJ_SET_LIST, OBJ_SONG_TIMBRE, OBJ_VERSION, OBJ_WAVE_SEQ, ObjectDump,
+    OBJ_COMBI, OBJ_DRUM_KIT, OBJ_PROGRAM, OBJ_SET_LIST, OBJ_SONG_TIMBRE, OBJ_WAVE_SEQ, ObjectDump,
+    object_version,
     obj_bank_to_func33, set_combi_timbre_ref, set_setlist_slot_ref,
 )
 import Data.library_pull_pipeline as pull_pipeline
@@ -3701,7 +3702,7 @@ class LibrarianShellWindow(QDialog):
         if body is None:
             return None
         origin = ObjLoc(obj_type, bank, index)
-        dump = ObjectDump(obj_type, bank, index, OBJ_VERSION.get(obj_type, 0), body)
+        dump = ObjectDump(obj_type, bank, index, object_version(obj_type, body), body)
         label = e.name or origin.label()
         return SequentialFillItem(origin, dump, label)
 
@@ -4830,7 +4831,7 @@ class LibrarianShellWindow(QDialog):
         if not self.hardware_transaction_active:
             raise RuntimeError("Hardware writes require a prepared Librarian transaction")
         version = self._pending_write_versions.get(
-            (obj_type, bank, number), OBJ_VERSION.get(obj_type, 0))
+            (obj_type, bank, number), object_version(obj_type, body))
         op = WriteOp(obj_type, bank, number, version, body)
         return self._service.write_object(op) == 0
 
