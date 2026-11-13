@@ -130,7 +130,11 @@ n_before = w._deps_list.count()
 
 QFileDialog.getOpenFileName = staticmethod(lambda *a, **k: (pcg_path, ""))
 w._deps_list.setCurrentRow(0)
-w._search_pcg_for_row(w._deps_list.item(0)); pump()
+w._search_pcg_for_row(w._deps_list.item(0))
+end = time.time() + 60
+while w._bg_jobs and time.time() < end:      # the PCG is read + parsed on a worker
+    pump(50)
+pump()
 status = w._merge_status_label.text()
 print("search status:", status)
 assert status.startswith("Found"), status

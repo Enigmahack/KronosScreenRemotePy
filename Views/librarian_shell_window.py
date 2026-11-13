@@ -805,6 +805,34 @@ class _ConvertConfirmDialog(QDialog):
             self._arp_line.setText(f"Arp patterns overwrite {span} (bank B).")
 
 
+def _exec_modal(widget, *args):
+    """exec() a dialog / message box / context menu parented to this long-lived window, then schedule it
+    for deletion. Without that every right-click menu, Properties box, picker and progress dialog stayed
+    alive as a hidden child until the Librarian closed. deleteLater is deferred to the outer event loop,
+    so the caller can still read the dialog's results (selected(), clickedButton(), ...) afterwards; a
+    nested exec() started later in the same handler does not run the deletion early."""
+    try:
+        return widget.exec(*args)
+    finally:
+        try:
+            widget.deleteLater()
+        except RuntimeError:          # already gone
+            pass
+
+
+def _unique_backup_path(tag: str) -> str:
+    """A backup .syx path that never names an existing file. The stamp carries microseconds plus a
+    random suffix: backup_objects replaces its target, so two backups in the same second (a quick
+    retry, two windows) must not share a name - the second would silently destroy the first's
+    pre-images. Shape stays `<stamp>_<tag>.syx`."""
+    directory = Models.storage.backup_dir()
+    while True:
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f") + "_" + uuid.uuid4().hex[:6]
+        path = directory / f"{stamp}_{tag}.syx"
+        if not path.exists():
+            return str(path)
+
+
 class _TransferCancelled(Exception):
     """Raised inside an FTP retrieve callback to abort the transfer when the user
     cancels. Caught by the worker that started it — never escapes to the UI."""
@@ -969,10 +997,13 @@ class _RemoteFilePickerDialog(QDialog):
 
         def worker() -> None:
             try:
-                entries = self._ftp.list_dir(path)
-                self._listing_ready.emit(path, entries, None)
+                entries, error = self._ftp.list_dir(path), None
             except Exception as e:  # pragma: no cover - defensive
-                self._listing_ready.emit(path, None, e)
+                entries, error = None, e
+            try:
+                self._listing_ready.emit(path, entries, error)
+            except RuntimeError:
+                pass    # the picker was closed (and deleted) while this listing was in flight
 
         threading.Thread(target=worker, daemon=True, name="PcgPickerList").start()
 
@@ -1137,6 +1168,51 @@ def _msg_conflict_banner(count: int) -> str:
             "push your copy over what's on the instrument.")
 
 
+def _slot_list_text(incomplete: Dict[str, Dict[int, int]], pick, limit: int = 8) -> str:
+    """'Program I-A slot 3, Program I-A slot 5' for the record's slots whose fail count passes `pick`."""
+    keys = [f"{bk}:{n}" for bk, rec in incomplete.items() for n, c in rec.items() if pick(c)]
+    return pull_pipeline.unread_slots_text({}, keys, limit=limit)
+
+
+def _msg_incomplete_banner(incomplete: Dict[str, Dict[int, int]]) -> str:
+    """Standing, quiet line: retryable unread slots, then unreadable ones."""
+    limit = LocalLibraryIndex.UNREADABLE_AFTER
+    lines = []
+    retry = _slot_list_text(incomplete, lambda c: c < limit)
+    if retry:
+        lines.append(f"Not read yet: {retry} - asked for again on the next Sync; local changes to "
+                     "these slots are held back until then.")
+    dead = _slot_list_text(incomplete, lambda c: c >= limit)
+    if dead:
+        lines.append(f"Unreadable: {dead} - no answer {limit} pulls in a row; asked for again only when "
+                     "the bank changes or on Re-check. Changes to these slots are held back (they cannot "
+                     "be backed up or verified).")
+    return "\n".join(lines)
+
+
+def _msg_incomplete_force_prompt(count: int, slots: str) -> str:
+    return (f"{count} pending change(s) were NOT pushed because the slots they target could not be read "
+            f"from the instrument:\n\n{slots}\n\n"
+            "Those slots may hold changes made on the instrument that this library has never seen. "
+            "Writing now overwrites them without that check.\n\n"
+            "Note: every push first backs up the slots it overwrites; a slot that still does not answer "
+            "cannot be backed up, and the push is then refused as a whole.\n\n"
+            "Write them to the instrument anyway? (No keeps them pending - run Sync Library or Re-check "
+            "first.)")
+
+
+def _msg_resolve_incomplete_refused(count: int, slots: str) -> str:
+    return (f"CHECK: {count} conflicted object(s) are in slots the instrument has not answered for "
+            f"({slots}). Their conflicts were left in place - their live content has never been read. "
+            "Run Sync Library (or Re-check unreadable slots) first; once a slot answers, Resolve "
+            "Conflicts works for it.")
+
+
+def _msg_recheck_result(asked: int, recovered: int, still: int) -> str:
+    return (f"Re-checked {asked} unread slot(s): {recovered} answered"
+            + (f", {still} still unreadable." if still else "."))
+
+
 def _msg_conflicts_resolved(objects: int, rebased: int, banks: int) -> str:
     return f"Resolved {objects} conflict(s) across {rebased}/{banks} bank(s) - Push Only to push them."
 
@@ -1267,6 +1343,7 @@ class LibrarianShellWindow(QDialog):
     _progress = Signal(str)
     _convert_done = Signal(object, str)                   # [ItemReport], backup path
     _songs_backup_done = Signal(str, int)                 # path, objects saved (-1 = failed)
+    _bg_done = Signal(object, object, object)             # on_done callback, result, exception
     _sysex_probe_done = Signal(bool)                      # True = the Kronos answered a digest
     # PCG-from-Kronos pull, emitted from the FTP worker thread — Qt marshals both
     # to the GUI thread, which is the only thread allowed to touch the dialogs.
@@ -1328,6 +1405,8 @@ class LibrarianShellWindow(QDialog):
         self._pcg_conv_refused: Dict[Tuple[int, int, int], str] = {}
         self._pcg_conv_replaced: List[Tuple[str, List[str]]] = []   # (object name, zones that now play the default piano)
         self._convert_tables: Optional[ConvertTables] = None
+        self._bg_jobs = 0          # _run_bg workers in flight (file reads, parsing, digests)
+        self._pcg_load_gen = 0     # newest Open PCG from computer; older reads finishing later are dropped
         self._exs_index: Optional[ExsOptionIndex] = None
         self._busy = False
         # True = the Kronos answered no SysEx (probe / aborted pull). Browsing and staging still
@@ -1405,6 +1484,7 @@ class LibrarianShellWindow(QDialog):
         self._sync_done.connect(self._on_sync_done)
         self._convert_done.connect(self._on_convert_done)
         self._songs_backup_done.connect(self._on_songs_backup_done)
+        self._bg_done.connect(self._on_bg_done)
         self._merge_pull_done.connect(self._on_merge_pull_done)
         self._progress.connect(self._log)
         self._progress.connect(self._status_label.setText)
@@ -1484,6 +1564,11 @@ class LibrarianShellWindow(QDialog):
             mode_group.addAction(act)
             act.triggered.connect(lambda checked, m=mode: self._set_sync_mode(m))
             self._sync_mode_actions[mode] = act
+        mode_menu.addSeparator()
+        # Not part of the exclusive mode group: a one-shot read of the unread slots only.
+        self._act_recheck_unread = mode_menu.addAction("Re-check unreadable slots")
+        self._act_recheck_unread.setToolTip("Ask the instrument again for slots that did not answer. Nothing is written.")
+        self._act_recheck_unread.triggered.connect(self._start_recheck_unread)
         self._btn_sync_mode.setMenu(mode_menu)
         sync_row.addWidget(self._btn_sync_mode)
         sync_row.addSpacing(8)
@@ -1522,7 +1607,15 @@ class LibrarianShellWindow(QDialog):
         self._btn_resolve.setToolTip(_MSG_RESOLVE_TOOLTIP)
         self._brd_warning, self._lbl_warning, self._btn_dismiss_warning = self._make_banner(
             "", "#4A3410", "#C08A20", "\u2715", self._clear_warning)
-        for brd in (self._brd_sysex, self._brd_destructive, self._brd_conflict, self._brd_warning):
+        # Standing: banks whose last pull left slots unread (persisted in the index, so it is
+        # shown again after a restart, and in Push Only, which has no pull result of its own).
+        # Quiet: a muted line, not a warning colour - an unreadable slot is a standing fact, not news.
+        self._brd_incomplete, self._lbl_incomplete, self._btn_recheck_unread = self._make_banner(
+            "", "#2A2A2A", "#555555", "Re-check unreadable slots", self._start_recheck_unread)
+        self._btn_recheck_unread.setToolTip("Ask the instrument again for the slots that did not answer "
+                                            "(including ones marked unreadable). Nothing is written.")
+        for brd in (self._brd_sysex, self._brd_destructive, self._brd_conflict, self._brd_incomplete,
+                    self._brd_warning):
             root.addWidget(brd)
 
         # Overall live status line (req 7) - between the Sync row and the three panes,
@@ -1827,7 +1920,7 @@ class LibrarianShellWindow(QDialog):
         menu.addAction("Move to Merge Window", self._pull_pcg_selected_into_merge)
         self._add_convert_action(menu, "pcg")
         self._add_expand_collapse(menu, self._tree_pcg, item)
-        menu.exec(self._tree_pcg.viewport().mapToGlobal(local_pos))
+        _exec_modal(menu, self._tree_pcg.viewport().mapToGlobal(local_pos))
 
     def _build_history_pane(self) -> QWidget:
         box = QGroupBox("History")
@@ -2055,7 +2148,7 @@ class LibrarianShellWindow(QDialog):
         row = self._dep_row(item)
         if row is None:
             return
-        _ObjectInfoDialog(row.description, row.parent_info, row.describe_children(), self).exec()
+        _exec_modal(_ObjectInfoDialog(row.description, row.parent_info, row.describe_children(), self))
 
     def _show_dependency_menu(self, pos) -> None:
         item = self._deps_list.itemAt(pos)
@@ -2069,7 +2162,7 @@ class LibrarianShellWindow(QDialog):
         # already accounted for locally, in the loaded PCG, or in the Merge Window.
         a_scan = menu.addAction("Search a PCG for this object...", lambda: self._search_pcg_for_row(item))
         a_scan.setEnabled(row is not None and row.is_missing)
-        menu.exec(self._deps_list.viewport().mapToGlobal(pos))
+        _exec_modal(menu, self._deps_list.viewport().mapToGlobal(pos))
 
     def _search_pcg_for_row(self, item) -> None:
         """One file pick, then EVERY still-missing address listed is looked for in that file (a .pcg
@@ -2083,21 +2176,29 @@ class LibrarianShellWindow(QDialog):
             r = self._dep_row(self._deps_list.item(i))
             if r is not None and r.missing_ref is not None and r.missing_ref not in targets:
                 targets.append(r.missing_ref)
-        found, status = self._search_pcg_for_missing_objects(targets)
-        if status:
-            self._merge_status_label.setText(status)
+        self._search_pcg_for_missing_objects(
+            targets, lambda found, status: status and self._merge_status_label.setText(status))
 
-    def _search_pcg_for_missing_objects(self, missing: List[ObjLoc]) -> Tuple[List[ObjLoc], str]:
+    def _search_pcg_for_missing_objects(self, missing: List[ObjLoc],
+                                        on_done: Callable[[List[ObjLoc], str], None]) -> None:
+        """Pick a PCG, read and parse it on a worker (a multi-megabyte file, often over a network share),
+        then stage every listed address it holds in the Merge Window. `on_done(found, status)` runs on
+        the GUI thread when that is finished (status "" = the user cancelled the file pick)."""
         if not missing:
-            return [], ""
+            on_done([], "")
+            return
         path, _ = QFileDialog.getOpenFileName(self, _MSG_SCAN_DIALOG_TITLE, "",
                                               "PCG Files (*.pcg *.PCG);;All Files (*)")
         if not path:
-            return [], ""
+            on_done([], "")
+            return
+        self._load_pcg_bg(path, lambda pcg, err: on_done(*self._stage_missing_from_pcg(missing, path, pcg, err)))
+
+    def _stage_missing_from_pcg(self, missing: List[ObjLoc], path: str, pcg, err) -> Tuple[List[ObjLoc], str]:
         file_name = os.path.basename(path)
         try:
-            with open(path, "rb") as fh:
-                pcg = open_pcg(fh.read())
+            if err is not None:
+                raise err
             if pcg is None:
                 return [], _MSG_SEARCH_FAILED(f"{file_name} is not a recognizable instrument .pcg file.")
             by_addr = {(e.obj_type, e.bank.obj_bank if e.bank is not None else 0, e.index): e
@@ -2611,7 +2712,7 @@ class LibrarianShellWindow(QDialog):
                                 category_names=self._category_names, obj_type=obj_type,
                                 dependencies=dependencies, on_scan_pcg=on_scan_pcg,
                                 parent=self)
-        if dlg.exec() == QDialog.DialogCode.Accepted:
+        if _exec_modal(dlg) == QDialog.DialogCode.Accepted:
             self._apply_local_properties_edit(loc, obj_type, entry.display_name, dlg)
 
     def _write_local_body_edit(self, loc: ObjLoc, new_body: bytes, description: str) -> None:
@@ -2955,7 +3056,7 @@ class LibrarianShellWindow(QDialog):
                     "their references unresolved.\n\n" + "\n".join(lines))
         box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         box.setDefaultButton(QMessageBox.StandardButton.No)
-        return box.exec() == QMessageBox.StandardButton.Yes
+        return _exec_modal(box) == QMessageBox.StandardButton.Yes
 
     def _toggle_delete_local_selected(self) -> None:
         """Port of LocalLibraryPaneViewModel.ToggleDelete/ToggleDeleteMany - "Delete" marks
@@ -3045,7 +3146,7 @@ class LibrarianShellWindow(QDialog):
             return
         obj_type = self._batch_clip.entries[0].loc.obj_type
         dlg = _DestinationDialog(obj_type, "Paste at…", self)
-        if dlg.exec() != QDialog.DialogCode.Accepted:
+        if _exec_modal(dlg) != QDialog.DialogCode.Accepted:
             return
         dest_bank, dest_number = dlg.selected()
         if self._batch_clip.mode == ClipboardMode.CUT:
@@ -3138,7 +3239,7 @@ class LibrarianShellWindow(QDialog):
             else:
                 menu.addAction("Unstage Bank Conversion", lambda: self._unstage_bank_type_change(bank))
         self._add_expand_collapse(menu, self._tree_local, item)
-        menu.exec(self._tree_local.viewport().mapToGlobal(local_pos))
+        _exec_modal(menu, self._tree_local.viewport().mapToGlobal(local_pos))
 
     def _show_merge_context_menu(self, local_pos) -> None:
         """Port of MergeNodeTemplate's context menu (MI_RemoveFromMerge) — Remove is a
@@ -3151,7 +3252,7 @@ class LibrarianShellWindow(QDialog):
         menu.addSeparator()
         menu.addAction("Remove", self._remove_merge_selected)
         self._add_expand_collapse(menu, self._tree_merge, item)
-        menu.exec(self._tree_merge.viewport().mapToGlobal(local_pos))
+        _exec_modal(menu, self._tree_merge.viewport().mapToGlobal(local_pos))
 
     # ── Local pane: staged whole-bank HD-1/EXi conversion (requirement 3) ────────
     # A standalone Stage/Unstage action, not the C# source's own "side effect of a specific
@@ -3175,35 +3276,16 @@ class LibrarianShellWindow(QDialog):
         if not missing:
             self._local_status_label.setText("Nothing missing - every dependency already resolves.")
             return
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Scan a PCG for missing dependencies", "", "PCG Files (*.pcg *.PCG)")
-        if not path:
-            return
-        try:
-            data = open(path, "rb").read()
-        except OSError as e:
-            QMessageBox.warning(self, "Scan PCG", f"Could not read {path}: {e}")
-            return
-        pcg = open_pcg(data)
-        if pcg is None:
-            QMessageBox.warning(self, "Scan PCG", f"{os.path.basename(path)} is not a "
-                                "recognizable instrument .pcg file.")
-            return
-        wanted = {(r.ref.obj_type, r.ref.bank, r.ref.number) for r in missing}
-        found = 0
-        for e in pcg.objects:
-            addr = (e.obj_type, e.bank.obj_bank if e.bank is not None else 0, e.index)
-            if addr in wanted:
-                self._pull_pcg_address_into_merge(addr)
-                found += 1
-        if found:
-            self._local_status_label.setText(
-                f"Found {found} of {len(missing)} missing dependency(ies) in "
-                f"{os.path.basename(path)} - staged in the Merge Window, ready to place.")
-        else:
-            self._local_status_label.setText(
-                f"{os.path.basename(path)} has none of the {len(missing)} missing "
-                "dependency(ies) - try another PCG.")
+        # Staged from the SCANNED file. This used to pull each found address through the PCG pane's own
+        # resolver (_pull_pcg_address_into_merge), i.e. from whatever PCG happened to be loaded there -
+        # wrong objects, or nothing at all when none was loaded - and it read + parsed the file on the
+        # GUI thread.
+        refs: List[ObjLoc] = []
+        for r in missing:
+            if r.ref not in refs:
+                refs.append(r.ref)
+        self._search_pcg_for_missing_objects(
+            refs, lambda found, status: status and self._local_status_label.setText(status))
 
     def _stage_bank_type_change(self, bank: int) -> None:
         box = QMessageBox(self)
@@ -3218,7 +3300,7 @@ class LibrarianShellWindow(QDialog):
         btn_exi = box.addButton("Convert to EXi", QMessageBox.ButtonRole.AcceptRole)
         btn_hd1 = box.addButton("Convert to HD-1", QMessageBox.ButtonRole.AcceptRole)
         box.addButton(QMessageBox.StandardButton.Cancel)
-        box.exec()
+        _exec_modal(box)
         clicked = box.clickedButton()
         if clicked is btn_exi:
             to_exi = True
@@ -3259,7 +3341,7 @@ class LibrarianShellWindow(QDialog):
                                 location=f"Type: {_ROOT_LABEL.get(entry.obj_type, str(entry.obj_type))}",
                                 flag_lines=[], extra_lines=extra + obj_extra, list_rows=list_rows,
                                 parent=self)
-        dlg.exec()
+        _exec_modal(dlg)
 
     def _place_merge_entry_at(self, entry: MergeEntry, dst_bank: int, dst_number: int) -> None:
         """The actual Merge->Local single-item placement — reachable from the Merge
@@ -3767,18 +3849,23 @@ class LibrarianShellWindow(QDialog):
         if not path.lower().endswith(".pcg"):
             QMessageBox.information(self, "Open PCG", "Only .pcg files can be loaded here.")
             return
-        # A PCG is multi-megabyte; read + scan behind a wait cursor so the window
-        # doesn't just stop repainting with no explanation.
-        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-        try:
-            with open(path, "rb") as f:
-                data = f.read()
-            pcg = open_pcg(data)
-        except OSError as e:
-            QMessageBox.warning(self, "Open PCG", f"Could not read {path}: {e}")
+        # A PCG is up to ~50 MB, often on a network share: read + parse on a worker (it froze the
+        # window for seconds on the GUI thread, wait cursor or not).
+        self._pcg_status_label.setText(f"Reading {os.path.basename(path)}...")
+        self._pcg_load_gen += 1
+        gen = self._pcg_load_gen
+        self._load_pcg_bg(path, lambda pcg, err: self._on_pcg_from_computer(path, pcg, err, gen))
+
+    def _on_pcg_from_computer(self, path: str, pcg, err, gen: int = 0) -> None:
+        if gen and gen != self._pcg_load_gen:
+            return          # a later Open PCG superseded this one while it was being read
+        if err is not None or pcg is None:
+            # The previous PCG (if any) stays loaded: put its status line back over "Reading...".
+            self._pcg_status_label.setText("No PCG loaded" if self._pcg is None else
+                                           f"{self._pcg_source_label} - {len(self._pcg.objects)} object(s)")
+        if err is not None:
+            QMessageBox.warning(self, "Open PCG", f"Could not read {path}: {err}")
             return
-        finally:
-            QApplication.restoreOverrideCursor()
         if pcg is None:
             QMessageBox.warning(self, "Open PCG", f"{os.path.basename(path)} is not a recognizable "
                                 "instrument .pcg file.")
@@ -3834,7 +3921,7 @@ class LibrarianShellWindow(QDialog):
         # worker finished first.
         self._pcg_pull_step.connect(progress.done_step)
         threading.Thread(target=connect_worker, daemon=True, name="PcgPullConnect").start()
-        progress.exec()
+        _exec_modal(progress)
         try:
             self._pcg_pull_step.disconnect(progress.done_step)
         except (RuntimeError, TypeError):
@@ -3848,7 +3935,7 @@ class LibrarianShellWindow(QDialog):
 
         try:
             picker = _RemoteFilePickerDialog(worker, "/", self)
-            if picker.exec() != QDialog.DialogCode.Accepted or not picker.selected_remote_path:
+            if _exec_modal(picker) != QDialog.DialogCode.Accepted or not picker.selected_remote_path:
                 worker.disconnect()
                 return
             remote_path = picker.selected_remote_path
@@ -3897,7 +3984,7 @@ class LibrarianShellWindow(QDialog):
         self._pcg_pull_progress.connect(dlg.set_progress)
         self._pcg_pull_step.connect(dlg.done_step)
         threading.Thread(target=download_worker, daemon=True, name="PcgPullDownload").start()
-        dlg.exec()
+        _exec_modal(dlg)
         for sig, slot in ((self._pcg_pull_progress, dlg.set_progress),
                           (self._pcg_pull_step, dlg.done_step)):
             try:
@@ -4085,7 +4172,7 @@ class LibrarianShellWindow(QDialog):
             self._log("Fill Sequentially: nothing resolvable from the selected PCG items.")
             return
         dlg = _DestinationDialog(obj_type, "Fill Sequentially starting at…", self)
-        if dlg.exec() != QDialog.DialogCode.Accepted:
+        if _exec_modal(dlg) != QDialog.DialogCode.Accepted:
             return
         dest_bank, start_slot = dlg.selected()
         self._run_sequential_fill(seq_items, obj_type, dest_bank, start_slot)
@@ -4168,14 +4255,13 @@ class LibrarianShellWindow(QDialog):
                     continue
                 dlg = _DestinationDialog(obj_type, f"Convert {n} {label}(s) - start at", self, default=default,
                                          bank_label=lambda b, t=obj_type: nautilus_bank_label(t, b))
-                if dlg.exec() != QDialog.DialogCode.Accepted:
+                if _exec_modal(dlg) != QDialog.DialogCode.Accepted:
                     return
                 dest[dkey] = dlg.selected()
-        tables = ConvertTables.load()
-        stamp = time.strftime("%Y%m%d_%H%M%S")
-        backup_path = str(Models.storage.backup_dir() / f"{stamp}_nautilus_convert.syx")
+        tables = self._conversion_tables()
+        backup_path = _unique_backup_path("nautilus_convert")
         confirm = _ConvertConfirmDialog(self, items, dest, tables, self._settings.convert_arp_next_slot, backup_path)
-        if confirm.exec() != QDialog.DialogCode.Accepted:
+        if _exec_modal(confirm) != QDialog.DialogCode.Accepted:
             return
         arp_start = confirm.arp_start()
         # The same protection a Sync push gets: MainWindow refuses to disconnect, reconnect, change the connection
@@ -4269,16 +4355,23 @@ class LibrarianShellWindow(QDialog):
         path, _ = QFileDialog.getOpenFileName(self, "Convert a .SNG file", "", "Song files (*.SNG *.sng)")
         if not path:
             return
-        try:
+
+        def work():
             with open(path, "rb") as f:
                 data = f.read()
-            model = read_sng(data).model
-        except (OSError, SngError) as ex:
-            self._log(f"Convert .SNG: cannot read {path}: {ex}")
-            self._set_status(f"Cannot read that file: {ex}")
+            target = MODEL_NAUTILUS if read_sng(data).model == MODEL_KRONOS else MODEL_KRONOS
+            return (target,) + tuple(convert_sng(data, target, self._conversion_tables()))
+
+        # A big .SNG takes a few seconds to read and convert: the window keeps repainting meanwhile.
+        self._run_bg(f"Converting {os.path.basename(path)}...", work,
+                     lambda result, exc: self._on_sng_converted(path, result, exc))
+
+    def _on_sng_converted(self, path: str, result, exc) -> None:
+        if exc is not None:
+            self._log(f"Convert .SNG: cannot read {path}: {exc}")
+            self._set_status(f"Cannot read that file: {exc}")
             return
-        target = MODEL_NAUTILUS if model == MODEL_KRONOS else MODEL_KRONOS
-        out, warnings, refusals = convert_sng(data, target, ConvertTables.load())
+        target, out, warnings, refusals = result
         if out is None:
             self._log("Convert .SNG: " + " ".join(refusals))
             QMessageBox.warning(self, "Convert .SNG", "Nothing was written.\n\n" + "\n".join(refusals))
@@ -4305,7 +4398,7 @@ class LibrarianShellWindow(QDialog):
         box.setInformativeText("The original file was not changed. Not yet checked on a real instrument.")
         if warnings:
             box.setDetailedText("\n".join(warnings))
-        box.exec()
+        _exec_modal(box)
 
     def _send_song_items(self, items) -> None:
         reason = self._song_convert_block_reason()
@@ -4325,10 +4418,19 @@ class LibrarianShellWindow(QDialog):
         path, _ = QFileDialog.getOpenFileName(self, "Songs", "", "Songs (*.SNG *.sng *.syx);;Song files (*.SNG *.sng);;SysEx (*.syx)")
         if not path:
             return
-        try:
-            items, notes = read_song_timbre_sets(path)
-        except OSError as ex:
-            self._log(f"Convert to Nautilus: cannot read {path}: {ex}")
+        self._run_bg(f"Reading {os.path.basename(path)}...", lambda: read_song_timbre_sets(path),
+                     lambda result, exc: self._on_song_timbre_sets_read(path, result, exc))
+
+    def _on_song_timbre_sets_read(self, path: str, result, exc) -> None:
+        if exc is not None:
+            self._log(f"Convert to Nautilus: cannot read {path}: {exc}")
+            self._set_status(f"Cannot read that file: {exc}")
+            return
+        items, notes = result
+        reason = self._song_convert_block_reason()      # the instrument may have gone while reading
+        if reason:
+            self._log(f"Convert to Nautilus: {reason}")
+            self._set_status(reason)
             return
         for n in notes:
             self._log(f"Convert to Nautilus: {n}")
@@ -4343,7 +4445,7 @@ class LibrarianShellWindow(QDialog):
         used = getattr(reports, "arp_used", None)
         if used:
             self._settings.convert_arp_next_slot = max(used) + 1
-            Models.storage.save_settings(self._settings)
+            Models.storage.save_settings_async(self._settings)
         lines = []
         for r in reports:
             lines.append(f"[{r.status.upper()}] {r.name} -> {r.dest}")
@@ -4369,7 +4471,7 @@ class LibrarianShellWindow(QDialog):
         box.setInformativeText(f"Details lists what happened to each object. The previous contents of the target "
                                f"slots are in:\n{backup_path}")
         box.setDetailedText("\n".join(lines))
-        box.exec()
+        _exec_modal(box)
 
     def _show_pcg_properties(self) -> None:
         payload = self._leaf_payload(self._tree_pcg)
@@ -4386,7 +4488,7 @@ class LibrarianShellWindow(QDialog):
         dlg = _PropertiesDialog(f"PCG object — {loc.label()}", e.name, editable_name=False,
                                 location=f"Location: {loc.label()}", flag_lines=[],
                                 extra_lines=extra + obj_extra, list_rows=list_rows, parent=self)
-        dlg.exec()
+        _exec_modal(dlg)
 
     # ── Drag-and-drop routing (real gestures, same placement methods as the buttons) ──
 
@@ -4571,7 +4673,7 @@ class LibrarianShellWindow(QDialog):
             "Place them locally (from the Merge Window or a PCG), or continue anyway and "
             "leave those references dangling.",
             rows, allow_continue=True, parent=self)
-        proceed = dlg.exec() == QDialog.DialogCode.Accepted
+        proceed = _exec_modal(dlg) == QDialog.DialogCode.Accepted
         if proceed:
             self._dangling_ack = True   # the plan builder must not re-refuse what was just accepted
             self._refresh_local_tree()
@@ -4592,6 +4694,10 @@ class LibrarianShellWindow(QDialog):
                                   else _SYNC_TOOLTIP[self._sync_mode()])
         self._btn_sync_mode.setEnabled(not self._busy)
         self._btn_resolve.setEnabled(sync_ok and self._conflict_count() > 0)
+        unread = bool(self._index.incomplete_banks)
+        self._btn_recheck_unread.setVisible(self._index.has_unreadable())
+        self._btn_recheck_unread.setEnabled(sync_ok and unread)
+        self._act_recheck_unread.setEnabled(sync_ok and unread)
         self._btn_recheck.setEnabled(not self._busy and not self._probe_running)
         self._btn_pull_kronos.setEnabled(not self._busy and not auto_filling and not pulling_pcg)
         self._btn_paste.setEnabled(not self._batch_clip.is_empty and not self._busy)
@@ -4682,16 +4788,43 @@ class LibrarianShellWindow(QDialog):
         d = self._service.bank_digest(obj_type, bank)
         return d.hex() if d is not None else None
 
-    def _get_bank_objects(self, obj_type: int, bank: int) -> Dict[int, Tuple[int, bytes]]:
+    def _get_bank_objects(self, obj_type: int, bank: int,
+                          slots: Optional[List[int]] = None) -> "pull_pipeline.BankObjects":
+        """Every slot of one bank, or only `slots` (the pull's re-fetch of a bank's unread slots).
+        Every slot of an editable bank always holds an object on the instrument, so a slot that
+        does not answer is a timeout, not an empty slot: it is retried once and then reported in
+        `missing` (the pull records it per slot and asks for it again). A cancel stops the sweep
+        part-way and reports the slots it never asked as `skipped`, which are remembered as unread
+        but not counted as failed attempts."""
         slot_count = object_types.slot_count(obj_type, bank)
+        wanted = list(range(slot_count)) if slots is None else [n for n in slots if 0 <= n < slot_count]
         out: Dict[int, Tuple[int, bytes]] = {}
+        missing: List[int] = []
+        skipped: List[int] = []
         # Set Lists (69 KB) and Drum Kits (38 KB) are big replies; the rest are a few KB.
         timeout_ms = 6000 if obj_type in (OBJ_SET_LIST, OBJ_DRUM_KIT) else 3000
-        for number in range(slot_count):
+        # A subset smaller than the bank is a re-fetch in a bank that has answered before, so its
+        # slots get their retry from the start.
+        known_served = slots is not None and len(wanted) < slot_count
+        for i, number in enumerate(wanted):
+            if self._sync_cancelled():
+                skipped.extend(wanted[i:])
+                break
             d = self._service.dump_object_parsed(obj_type, bank, number, no_response_ms=timeout_ms)
+            # One retry, but only in a bank that has answered already: a bank the instrument does
+            # not serve at all (or one whose every slot is dead) would otherwise cost two timeouts
+            # per slot.
+            if d is None and (out or known_served) and not self._sync_cancelled():
+                d = self._service.dump_object_parsed(obj_type, bank, number, no_response_ms=timeout_ms)
             if d is not None:
                 out[number] = (d.version, d.body)
-        return out
+            else:
+                missing.append(number)
+        if missing:
+            (log.warning if out or known_served else log.info)(
+                "Pull: %d of %d asked slot(s) of bank %02X:%02X did not answer",
+                len(missing), len(wanted), obj_type, bank)
+        return pull_pipeline.BankObjects(out, missing=missing, skipped=skipped)
 
     def _write_to_hardware(self, obj_type: int, bank: int, number: int, body: bytes) -> bool:
         """Only the volatile 0x73 write; backups/gating precede the entire burst."""
@@ -4731,8 +4864,7 @@ class LibrarianShellWindow(QDialog):
                         f"Cannot back up {ObjLoc(obj_type, bank, number).label()}; no object reply")
                 pre_images.append(WriteOp(obj_type, bank, number, dump.version, dump.body))
             if pre_images:
-                stamp = _now_iso().replace(":", "").replace("-", "").replace(".", "")
-                backup_path = str(Models.storage.backup_dir() / f"{stamp}_sync.syx")
+                backup_path = _unique_backup_path("sync")
                 self._service.backup_objects(pre_images, backup_path)
                 self._log(f"Backed up {len(pre_images)} pre-image object(s) to {backup_path}.")
             if self._sync_cancelled():
@@ -4843,6 +4975,12 @@ class LibrarianShellWindow(QDialog):
             return
         self._closed = True
         self._auto_fill_timer.stop()
+        # The Song Library window is a child: it dies with this one, so stop an instrument read it is
+        # running now rather than relying on its destroyed() signal.
+        songs = getattr(self, "_song_library_win", None)
+        if songs is not None:
+            songs._cancel.set()
+        self._pcg_load_gen = getattr(self, "_pcg_load_gen", 0) + 1     # drop a PCG read still in flight
         super().done(result)
 
     def closeEvent(self, event) -> None:   # noqa: N802 - Qt override
@@ -4898,7 +5036,7 @@ class LibrarianShellWindow(QDialog):
 
     def _set_sync_mode(self, mode: str) -> None:
         self._settings.librarian_sync_mode = mode
-        Models.storage.save_settings(self._settings)
+        Models.storage.save_settings_async(self._settings)
         self._refresh_sync_button()
 
     def _refresh_sync_button(self) -> None:
@@ -4932,6 +5070,9 @@ class LibrarianShellWindow(QDialog):
         n = self._conflict_count()
         self._lbl_conflict.setText(_msg_conflict_banner(n))
         self._brd_conflict.setVisible(n > 0)
+        incomplete = {k: dict(v) for k, v in self._index.incomplete_banks.items()}
+        self._lbl_incomplete.setText(_msg_incomplete_banner(incomplete) if incomplete else "")
+        self._brd_incomplete.setVisible(bool(incomplete))
         self._refresh_enable()
 
     def _recheck_sysex(self, launch_pull: bool = False) -> None:
@@ -5019,6 +5160,9 @@ class LibrarianShellWindow(QDialog):
         self._run_mode = mode
         self._run_force = force
         self._run_is_overwrite_retry = False   # _start_push_only sets it after this call
+        # Write into banks with unread slots: only ever set by _start_push_only(allow_incomplete=True)
+        # after the explicit confirm in _on_sync_done that names those slots.
+        self._run_allow_incomplete = False
         self._run_full = self._chk_force_full.isChecked()
         self._sync_cancel.clear()
         self._sync_thread_running = True
@@ -5039,13 +5183,14 @@ class LibrarianShellWindow(QDialog):
         self._begin_run(SYNC_TWO_WAY, "Syncing...", self._force_destructive())
         threading.Thread(target=self._sync_worker, daemon=False, name="LibShellSync").start()
 
-    def _start_push_only(self, force_override: bool = False) -> None:
+    def _start_push_only(self, force_override: bool = False, allow_incomplete: bool = False) -> None:
         if not force_override and not self._show_sync_gate_dialog_if_blocked():
             self._set_status(_MSG_CANCELLED_PENDING_DEPS)
             return
         force = force_override or self._force_destructive()
         self._begin_run(SYNC_PUSH_ONLY, _MSG_PUSH_OVERWRITING if force_override else "Committing...", force)
         self._run_is_overwrite_retry = force_override
+        self._run_allow_incomplete = allow_incomplete
         threading.Thread(target=self._sync_worker, daemon=False, name="LibShellCommit").start()
 
     def _discard_pending_for_pull(self) -> int:
@@ -5094,6 +5239,18 @@ class LibrarianShellWindow(QDialog):
         self._refresh_local_tree()
         threading.Thread(target=self._sync_worker, daemon=True, name="LibShellPull").start()
 
+    def _start_recheck_unread(self) -> None:
+        """Ask the instrument again for every unread slot (unreadable ones included). Read-only:
+        no digest sweep, no push, and nothing pending is discarded (unlike Pull Only)."""
+        if self._busy or self._sysex_unavailable or not self._index.incomplete_banks:
+            return
+        if not self._require_connected():
+            return
+        self._recheck_asked = sum(len(v) for v in self._index.incomplete_banks.values())
+        self._begin_run(SYNC_PULL_ONLY, "Re-checking unread slots...")
+        self._run_mode = "Recheck"
+        threading.Thread(target=self._sync_worker, daemon=True, name="LibShellRecheck").start()
+
     def _start_launch_pull(self) -> None:
         """Settings > Librarian > Full sync on launch: a FULL pull, never the push half — an
         unattended launch action must not write to the instrument."""
@@ -5123,7 +5280,8 @@ class LibrarianShellWindow(QDialog):
                 write_bank_type_change=self._write_bank_type_change,
                 cancel=self._sync_cancelled,
                 prepare_hardware=self._prepare_hardware,
-                store_bank=self._store_hardware_bank)
+                store_bank=self._store_hardware_bank,
+                allow_incomplete=bool(getattr(self, "_run_allow_incomplete", False)))
             if mode == SYNC_TWO_WAY:
                 pull_result, plan, result = sync_library(
                     self._index, self._blobs, self._clipboard,
@@ -5144,6 +5302,11 @@ class LibrarianShellWindow(QDialog):
                 pull_result = pull_pipeline.pull(
                     self._index, self._blobs, self._get_live_digest, self._get_bank_objects,
                     full=full, progress=self._emit_progress, cancel=self._sync_cancelled)
+                plan = ChangesetPlan()
+            elif mode == "Recheck":
+                pull_result = pull_pipeline.recheck_unread(
+                    self._index, self._blobs, self._get_bank_objects,
+                    progress=self._emit_progress, cancel=self._sync_cancelled)
                 plan = ChangesetPlan()
             else:
                 plan, result = commit_changes(
@@ -5168,7 +5331,10 @@ class LibrarianShellWindow(QDialog):
                     for obj_type, bank in result.committed_banks:
                         if obj_type == OBJ_PROGRAM and bank in result.completed_bank_type_changes:
                             continue
-                        fresh = self._get_live_digest(LocalLibraryIndex.bank_key(obj_type, bank))
+                        # Banks with unread slots are re-baselined too: the per-slot record (not the
+                        # baseline) keeps those slots unread and re-fetched; skipping them would leave
+                        # a stale baseline that makes the next lazy Sync re-read the whole bank.
+                        fresh =self._get_live_digest(LocalLibraryIndex.bank_key(obj_type, bank))
                         if fresh is not None:
                             self._index.set_bank_digest_baseline(obj_type, bank, fresh)
             self._index.save()
@@ -5227,6 +5393,8 @@ class LibrarianShellWindow(QDialog):
                       f"{pull_result.objects_fetched} object(s) fetched, "
                       f"{pull_result.conflicts} new conflict(s)."
                       + (" (cancelled early)" if pull_result.cancelled else ""))
+            if pull_result.incomplete_banks:
+                self._log("  ! " + pull_result.incomplete_warning)
         if result is not None and result.cancelled:
             self._log("Sync/Commit was cancelled. Anything already written to the "
                       "instrument is written; everything else still has its pending "
@@ -5261,7 +5429,14 @@ class LibrarianShellWindow(QDialog):
                 warning = ""
             else:
                 status_text = _msg_sync_result(pull_result.objects_fetched, pull_result.conflicts,
-                                               written, removed, len(plan.conflicted))
+                                               written, removed, len(plan.conflicted) + len(plan.incomplete))
+        elif mode == "Recheck" and pull_result is not None:
+            still = sum(len(self._index.unreadable_slots(k)) for k in self._index.incomplete_banks)
+            status_text = ("CANCELLED" if pull_result.cancelled else
+                           _msg_recheck_result(getattr(self, "_recheck_asked", 0),
+                                               pull_result.recovered_slots, still))
+            if pull_result.conflicts:
+                status_text += f" {pull_result.conflicts} new conflict(s)."
         elif mode == "LaunchPull" and pull_result is not None:
             status_text = _msg_launch_pull_complete(pull_result.objects_fetched, pull_result.conflicts)
         elif mode == SYNC_PULL_ONLY and pull_result is not None:
@@ -5281,14 +5456,53 @@ class LibrarianShellWindow(QDialog):
                     self._refresh_local_tree()
                     self._start_push_only(force_override=True)
                     return
-            status_text = (_msg_commit_result(written, removed, len(plan.conflicted))
+            status_text = (_msg_commit_result(written, removed, len(plan.conflicted) + len(plan.incomplete))
                            if ok else _MSG_COMMIT_FAILED)
             if result.failed:
                 warning = (warning + "; " if warning else "") + f"{result.failed} object(s) failed to write"
 
+        # Force destructive write (Settings, or the Push Only overwrite retry) still never writes into
+        # a bank with unread slots on its own: that takes this separate confirm naming the slots.
+        def _all_unreadable(keys) -> bool:
+            # A write into a slot that cannot be backed up is refused regardless of the answer, so asking on
+            # every sync about slots already known to be unreadable would only be noise.
+            for k in keys:
+                o, b, n = _parse_key(k)
+                if self._index.incomplete_banks.get(LocalLibraryIndex.bank_key(o, b), {}).get(int(n), 0)                         < LocalLibraryIndex.UNREADABLE_AFTER:
+                    return False
+            return True
+
+        if (plan.incomplete and not _all_unreadable(plan.incomplete)
+                and self._run_force and not getattr(self, "_run_allow_incomplete", False)
+                and mode in (SYNC_TWO_WAY, SYNC_PUSH_ONLY) and not aborted and not plan.is_refusable
+                and not (result is not None and (result.cancelled or result.failed))
+                and not (pull_result is not None and pull_result.cancelled)):
+            slots_text = pull_pipeline.unread_slots_text(self._index.incomplete_banks, plan.incomplete, limit=40)
+            r = QMessageBox.warning(self, "Write into slots that could not be read?",
+                                    _msg_incomplete_force_prompt(len(plan.incomplete), slots_text),
+                                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                    QMessageBox.StandardButton.No)
+            if r == QMessageBox.StandardButton.Yes:
+                self._refresh_local_tree()
+                # Carry the user's earlier acceptance of dangling references: this run's plan no longer
+                # reports them as refused, so the retry would otherwise refuse what was just confirmed.
+                self._dangling_ack = bool(getattr(self, "_dangling_ack", False)
+                                          or getattr(self, "_run_is_overwrite_retry", False))
+                self._start_push_only(force_override=True, allow_incomplete=True)
+                return
         if plan.conflicted:
             banks = ", ".join(sorted({self._bank_display(k) for k in plan.conflicted}))
             warning = (warning + "\n" if warning else "") + _msg_conflicted_not_pushed(len(plan.conflicted), banks)
+        incomplete = pull_result.incomplete_warning if pull_result is not None else None
+        if incomplete and not aborted:
+            # Appended after every mode's branch (the clean two-way branch clears `warning`).
+            warning = (warning + "\n" if warning else "") + incomplete
+            bits = []
+            if pull_result.missing_slots:
+                bits.append(f"{pull_result.missing_slots} slot(s) did not answer")
+            if pull_result.newly_unreadable:
+                bits.append(f"{len(pull_result.newly_unreadable)} slot(s) now marked unreadable")
+            status_text = (status_text + " " if status_text else "") + f"({'; '.join(bits)} - see warning.)"
         if not aborted:
             self._set_status(status_text)
             self._set_warning(warning or None)
@@ -5309,9 +5523,24 @@ class LibrarianShellWindow(QDialog):
         ('take theirs') already exists as a 2-Way / Pull Only sync."""
         if self._busy or self._sysex_unavailable:
             return
-        stuck = [k for k, e in self._index.entries.items() if e.conflicted]
-        if not stuck:
+        all_stuck = [k for k, e in self._index.entries.items() if e.conflicted]
+        if not all_stuck:
             return
+        # A conflict ON an unread slot stays: its live content has never been read, so there is
+        # nothing to resolve against. Readable slots of the same bank resolve normally - the bank
+        # is re-baselined, which cannot make the unread slots look pulled (the per-slot record in
+        # index.incomplete_banks, untouched here, is what keeps them unread and re-fetched).
+        held = [k for k in all_stuck if self._index.is_slot_unread(*_parse_key(k))]
+        stuck = [k for k in all_stuck if k not in held]
+        held_msg = None
+        if held:
+            held_msg = _msg_resolve_incomplete_refused(
+                len(held), pull_pipeline.unread_slots_text(self._index.incomplete_banks, held))
+            self._log("  ! " + held_msg)
+        if not stuck:
+            self._set_warning(held_msg)
+            return
+        self._resolve_held_msg = held_msg
         banks = sorted({LocalLibraryIndex.bank_key(*_parse_key(k)[:2]) for k in stuck})
         bank_list = ", ".join(sorted({self._bank_display(k) for k in stuck}))
         r = QMessageBox.warning(self, "Resolve Conflicts", _msg_resolve_confirm(len(stuck), bank_list),
@@ -5321,13 +5550,32 @@ class LibrarianShellWindow(QDialog):
             return
         self._set_warning(None)
         self._set_busy(True)
+        self._set_status(f"Reading {len(banks)} bank digest(s) from the instrument...")
+        # One SysEx round trip per bank (seconds each on a timeout): on a worker, so the window keeps
+        # repainting. Only the digests are fetched there; the index is changed back on the GUI thread.
+        service = self._service
+
+        def work() -> Dict[str, Optional[str]]:
+            out: Dict[str, Optional[str]] = {}
+            for bank_key in banks:
+                if self._closed or self._service is not service:
+                    break
+                out[bank_key] = self._get_live_digest(bank_key)
+            return out
+
+        self._run_bg(None, work, lambda digests, exc: self._apply_resolved_conflicts(stuck, banks, digests, exc))
+
+    def _apply_resolved_conflicts(self, stuck: List[str], banks: List[str], digests, exc) -> None:
         rebased = 0
         try:
+            if exc is not None:
+                self._set_warning(_msg_operation_failed(str(exc)))
+                return
             for bank_key in banks:
                 # A bank we cannot get a digest for keeps its stale baseline AND its conflicts:
                 # re-baselining on a timeout would clear the flag while the pre-scan still
                 # excluded the bank, which looks like the resolve silently did nothing.
-                fresh = self._get_live_digest(bank_key)
+                fresh = (digests or {}).get(bank_key)
                 if fresh is None:
                     continue
                 obj_type, bank = (int(x) for x in bank_key.split(":"))
@@ -5335,12 +5583,15 @@ class LibrarianShellWindow(QDialog):
                 rebased += 1
                 for k in stuck:
                     ot, b, n = _parse_key(k)
-                    if (ot, b) == (obj_type, bank):
+                    # Re-checked here too: a slot may have become unread while the digests were read.
+                    if (ot, b) == (obj_type, bank) and not self._index.is_slot_unread(ot, b, n):
                         self._index.mark_conflicted(ot, b, n, False)
             self._index.save()
             self._set_status(_msg_conflicts_resolved(len(stuck), rebased, len(banks)))
-            if rebased < len(banks):
-                self._set_warning(_MSG_CHECK_RESOLVE_NO_DIGEST)
+            notes = [m for m in (_MSG_CHECK_RESOLVE_NO_DIGEST if rebased < len(banks) else None,
+                                 getattr(self, "_resolve_held_msg", None)) if m]
+            if notes:
+                self._set_warning("\n".join(notes))
         finally:
             self._set_busy(False)
             self._refresh_local_tree()
@@ -5350,6 +5601,61 @@ class LibrarianShellWindow(QDialog):
     def _on_merge_pull_done(self, added: int, gaps: int, status: str) -> None:
         self._log(status)
         self._refresh_merge_tree()
+
+    # ── Background work (file reads, parsing, conversion, SysEx round trips) ────────────────────
+
+    def _run_bg(self, status: Optional[str], fn: Callable[[], object],
+                on_done: Callable[[object, Optional[BaseException]], None]) -> None:
+        """Run `fn()` on a worker; `on_done(result, exception)` runs on the GUI thread afterwards (never
+        once the window is gone). For work that only reads (files, parsing, conversion, digests): the
+        result is applied to the library by `on_done`, so nothing here touches the index off-thread."""
+        self._bg_jobs += 1
+        if status:
+            self._set_status(status)
+        if self._bg_jobs == 1:
+            # The window's own cursor, not an application override: if the window closes mid-job the
+            # GUI-side callback never runs, and an override would then stay on for the whole app.
+            self.setCursor(Qt.CursorShape.BusyCursor)
+
+        def worker() -> None:
+            result, exc = None, None
+            try:
+                result = fn()
+            except Exception as ex:          # noqa: BLE001 - handed to on_done
+                log.warning("Librarian background task failed: %s: %s", type(ex).__name__, ex)
+                log.debug("background task traceback", exc_info=True)
+                exc = ex
+            self._safe_emit(self._bg_done, on_done, result, exc)
+
+        try:
+            threading.Thread(target=worker, daemon=True, name="LibShellBg").start()
+        except Exception:
+            self._bg_finished()
+            raise
+
+    def _bg_finished(self) -> None:
+        self._bg_jobs = max(0, self._bg_jobs - 1)
+        if self._bg_jobs == 0:
+            self.unsetCursor()
+
+    def _on_bg_done(self, on_done, result, exc) -> None:
+        self._bg_finished()
+        if self._closed:
+            return
+        on_done(result, exc)
+
+    def _load_pcg_bg(self, path: str, on_loaded: Callable[[object, Optional[BaseException]], None]) -> None:
+        """Read + parse a .pcg on a worker; on_loaded(PcgFile | None, exception) on the GUI thread."""
+        def work():
+            with open(path, "rb") as fh:
+                return open_pcg(fh.read())
+        self._run_bg(f"Reading {os.path.basename(path)}...", work, on_loaded)
+
+    def _conversion_tables(self) -> ConvertTables:
+        """ConvertTables.load() costs a quarter to half a second; load once per window."""
+        if self._convert_tables is None:
+            self._convert_tables = ConvertTables.load()
+        return self._convert_tables
 
 
 # ── Self-test (python librarian_shell_window.py) — pure grouping logic only,

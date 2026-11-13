@@ -3,6 +3,7 @@ import glob
 import os
 import sys
 import tempfile
+import time
 from unittest.mock import MagicMock
 
 os.environ["KRONOS_DATA_DIR"] = tempfile.mkdtemp(prefix="kr_sngconvui_")
@@ -32,6 +33,17 @@ def check(name, cond):
         fails.append(name)
 
 
+def settle(w, timeout=30):
+    """The read + conversion runs on a worker; wait for its GUI-side completion."""
+    end = time.time() + timeout
+    while time.time() < end:
+        app.processEvents()
+        if not w._bg_jobs:
+            return True
+        time.sleep(0.02)
+    return False
+
+
 class Fake:
     can_dump = True
     is_nautilus = False
@@ -50,6 +62,8 @@ QFileDialog.getOpenFileName = staticmethod(lambda *a, **k: (kr[0], ""))
 QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: (out, ""))
 before = open(kr[0], "rb").read()
 w._convert_sng_file()
+check("threaded", w._bg_jobs == 1)
+check("settled", settle(w))
 orig = read_sng(before)
 conv = read_sng(open(out, "rb").read())
 check("converted-for-the-other-instrument", orig.model == MODEL_KRONOS and conv.model == MODEL_NAUTILUS)
@@ -65,6 +79,7 @@ QFileDialog.getOpenFileName = staticmethod(lambda *a, **k: (bad, ""))
 out2 = os.path.join(os.path.dirname(bad), "never.SNG")
 QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: (out2, ""))
 w._convert_sng_file()
+settle(w)
 check("garbage-refused", not os.path.exists(out2))
 
 # the Song Library window opens from the menu action and is reused

@@ -115,6 +115,53 @@ check("batch-repoint-second", _timbre(out, 1) == (17 + 0x4C - 0x40, 6))
 check("unplaced-user-bank-keeps-wire-bank", _timbre(out, 2) == (19, 7))
 check("batch-repoint-reported", any("written in this run" in m for m in rep[2].messages))
 
+calls = [c for c in svc.calls if c[0] in ("write", "store")]
+check("programs-stored-before-combi-written",
+      calls.index(("store", OBJ_PROGRAM, 0x4C)) < calls.index(("write", 0x40, 0)))
+
+
+# ---- a Combi is written only when every Program of this run it points at was written AND Stored
+class PickyNautilus(FakeNautilus):
+    def __init__(self, sizes, write_codes=None, store_codes=None):
+        super().__init__(sizes)
+        self.write_codes = write_codes or {}   # (obj, bank) -> reply code
+        self.store_codes = store_codes or {}
+
+    def write_object(self, op):
+        self.write_code = self.write_codes.get((op.obj, op.bank), 0)
+        return super().write_object(op)
+
+    def store_bank(self, obj, bank):
+        super().store_bank(obj, bank)
+        return self.store_codes.get((obj, bank), 0)
+
+
+exi_ref = ConvertItem(OBJ_PROGRAM, "EXI-A", bytes(4960), is_exi=True, src_ref=(18, 10))   # refused: HD-1 bank
+dep = ConvertItem(OBJ_COMBI, "DEP", _combi_refs((18, 10)))
+indep = ConvertItem(OBJ_COMBI, "INDEP", _combi_refs((20, 7)))
+svc = PickyNautilus({(OBJ_PROGRAM, 0x4C): 3700, (OBJ_COMBI, 0x40): 5640})
+rep = push_converted(svc, [exi_ref, dep, indep], {OBJ_PROGRAM: (0x4C, 5), OBJ_COMBI: (0x40, 0)}, tables, bk)
+check("dep-program-refused", rep[0].status == "refused")
+check("dep-combi-skipped", rep[1].status == "failed" and (OBJ_COMBI, 0x40, 0) not in svc.slots
+      and ("write", 0x40, 0) not in svc.calls)
+check("dep-combi-warning-names-program", any('"EXI-A"' in m and "S005" in m and "refused" in m for m in rep[1].messages)
+      and any(m.startswith("Not written") for m in rep[1].messages))
+check("indep-combi-written", rep[2].status == "written" and (OBJ_COMBI, 0x40, 1) in svc.slots)
+check("skipped-combi-still-backed-up", svc.calls[0] == ("backup", 2))
+
+for label, kw in (("write-refused", {"write_codes": {(OBJ_PROGRAM, 0x4C): 5}}),
+                  ("store-failed", {"store_codes": {(OBJ_PROGRAM, 0x4C): 3}}),
+                  ("store-no-reply", {"store_codes": {(OBJ_PROGRAM, 0x4C): -1}})):
+    svc = PickyNautilus({(OBJ_PROGRAM, 0x4C): 3700, (OBJ_COMBI, 0x40): 5640}, **kw)
+    rep = push_converted(svc, [p_a, dep, indep], {OBJ_PROGRAM: (0x4C, 5), OBJ_COMBI: (0x40, 0)}, tables, bk)
+    check(f"{label}-combi-skipped", rep[1].status == "failed" and ("write", 0x40, 0) not in svc.calls
+          and any('"A"' in m and "S005" in m for m in rep[1].messages))
+    check(f"{label}-indep-written", rep[2].status == "written")
+
+svc = PickyNautilus({(OBJ_COMBI, 0x40): 5640})   # Program's target slot doesn't answer
+rep = push_converted(svc, [p_a, dep], {OBJ_PROGRAM: (0x4C, 5), OBJ_COMBI: (0x40, 0)}, tables, bk)
+check("no-read-reply-combi-not-written", (OBJ_COMBI, 0x40, 0) not in svc.slots and rep[1].status != "written")
+
 lone = ConvertItem(OBJ_COMBI, "C", _combi_refs((18, 10)))
 svc = FakeNautilus({(OBJ_COMBI, 0x40): 5640})
 push_converted(svc, [lone], {OBJ_COMBI: (0x40, 0)}, tables, bk)

@@ -20,7 +20,10 @@ BuildAsync's four steps, ported as build_changeset():
      passed since the object was last pulled or edited, and a bank can drift
      between edit-time and push-time even though it looked clean at the last
      pull. Skipping this and trusting the stale baseline is exactly the bug
-     this step exists to catch.
+     this step exists to catch. Entries for a SLOT a pull could not read
+     (index.incomplete_banks, per slot) are taken out BEFORE this step into plan.incomplete:
+     its live content is unknown, so neither "Conflicted" nor a push is right (see
+     build_changeset's allow_incomplete). Other slots of that bank are unaffected.
   3. Defense-in-depth referential check — every surviving dirty Combi/Set
      List is walked via dependency_scanner against `resolver`; ANY missing
      reference REFUSEs the WHOLE plan (not just that entry) — mirrors
@@ -106,7 +109,7 @@ from typing import Callable, List, Optional, Tuple
 import Tools.dependency_scanner as depscan
 from Core.kronos_sysex import program_label
 from Data.librarian_model import ObjLoc
-from Data.librarian_sysex import OBJ_COMBI, OBJ_PROGRAM, OBJ_SET_LIST
+from Data.librarian_sysex import OBJ_COMBI, OBJ_DRUM_KIT, OBJ_PROGRAM, OBJ_SET_LIST, OBJ_WAVE_SEQ
 from Data.library_pull_pipeline import GetBankObjects, GetLiveDigest, PullResult
 import Data.library_pull_pipeline as pull_pipeline
 from Data.local_library_store import BlobStore, LocalLibraryIndex
@@ -152,6 +155,10 @@ class ChangesetPlan:
     entries: List[ChangesetEntry] = field(default_factory=list)
     local_only_deletes: List[str] = field(default_factory=list)   # never had a hardware baseline — remove locally only
     conflicted: List[str] = field(default_factory=list)           # keys excluded by the digest pre-scan
+    # Keys held back because a pull could not read THEIR slot (index.incomplete_banks): NOT
+    # conflicted (a timeout, not a front-panel change) and NOT pushed until the slot answers,
+    # unless the caller passed allow_incomplete after an explicit confirm.
+    incomplete: List[str] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
     # Whole-bank HD-1<->EXi reformats (func 0x7C) to issue before this plan's Program entry
     # writes — (bank, to_exi) pairs, port of ChangesetModel.cs's BankTypeChanges. Distinct from
@@ -167,6 +174,17 @@ class ChangesetPlan:
     @property
     def banks(self) -> List[Tuple[int, int]]:
         return list(dict.fromkeys((e.obj_type, e.bank) for e in self.entries))
+
+
+# Referenced objects are persisted before their referrers: Programs point at Drum Kits / Wave Sequences, Combis at
+# Programs, Set Lists at Programs and Combis. A failed Store stops the sweep, so a Combi bank is never Stored
+# while a Program bank it depends on was not.
+_STORE_RANK = {OBJ_WAVE_SEQ: 0, OBJ_DRUM_KIT: 1, OBJ_PROGRAM: 2, OBJ_COMBI: 3, OBJ_SET_LIST: 4}
+
+
+def store_order(banks: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
+    """`banks` in dependency order (stable within a type)."""
+    return sorted(banks, key=lambda b: _STORE_RANK.get(b[0], 5))
 
 
 def _add_bank_type_change(plan: ChangesetPlan, bank: int, is_exi: bool) -> None:
@@ -207,8 +225,15 @@ def build_changeset(index: LocalLibraryIndex, blobs: BlobStore,
                      force_destructive_write: bool = False,
                      allow_dangling: bool = False,
                      device_family: Optional[str] = None,
+                     allow_incomplete: bool = False,
                      ) -> ChangesetPlan:
-    """device_family ("kronos"/"nautilus"): a Program or Combi in the other family's format is refused, never
+    """allow_incomplete: the user explicitly confirmed writing into slots a pull could not read
+    (index.incomplete_banks). Without it - and force_destructive_write does NOT imply it - a
+    pending change targeting such a slot goes to plan.incomplete with a CHECK: it is neither
+    flagged Conflicted (a timeout, not a front-panel change) nor pushed. Changes to the bank's
+    other slots are planned normally.
+
+    device_family ("kronos"/"nautilus"): a Program or Combi in the other family's format is refused, never
     written; a Kronos body sent to a Nautilus is the right size for some banks but lays its parameters out differently.
 
     allow_dangling: the user explicitly accepted leaving references unresolved ("Continue
@@ -239,7 +264,62 @@ def build_changeset(index: LocalLibraryIndex, blobs: BlobStore,
     pending_delete_keys = [k for k, e in index.entries.items() if e.pending_delete]
     dirty_keys = [k for k, e in index.entries.items() if e.is_dirty and not e.pending_delete]
 
+    # An entry the pull just flagged Conflicted must not be written: the pull advances the
+    # bank digest baseline, so the pre-scan below would otherwise see the bank as unchanged
+    # and overwrite the front-panel change. "Resolve Conflicts" clears the flag.
+    if not force_destructive_write:
+        def _split_conflicted(keys: List[str]) -> List[str]:
+            keep: List[str] = []
+            for k in keys:
+                if index.entries[k].conflicted:
+                    plan.conflicted.append(k)
+                else:
+                    keep.append(k)
+            return keep
+        dirty_keys = _split_conflicted(dirty_keys)
+        pending_delete_keys = _split_conflicted(pending_delete_keys)
+
+    # Unread slots (index.incomplete_banks): a pull asked for these slots and they did not answer,
+    # so their live content has never been read - an edit there cannot be checked against it, and
+    # (being unreadable) the slot cannot be backed up or verified after the write either. Held back
+    # PER SLOT, before the pre-scan (no digest request, no flag change) and regardless of
+    # force_destructive_write. Every other slot of the same bank goes through the normal pre-scan:
+    # the pull advanced the bank's baseline to what the answered slots reflect.
+    if not allow_incomplete and index.incomplete_banks:
+        def _split_incomplete(keys: List[str]) -> List[str]:
+            keep: List[str] = []
+            for k in keys:
+                if index.is_slot_unread(*_parse_key(k)):
+                    plan.incomplete.append(k)
+                else:
+                    keep.append(k)
+            return keep
+        dirty_keys = _split_incomplete(dirty_keys)
+        pending_delete_keys = _split_incomplete(pending_delete_keys)
+        if plan.incomplete:
+            unreadable = [k for k in plan.incomplete
+                          if index.incomplete_banks.get(LocalLibraryIndex.bank_key(*_parse_key(k)[:2]), {})
+                          .get(_parse_key(k)[2], 0) >= LocalLibraryIndex.UNREADABLE_AFTER]
+            retry = [k for k in plan.incomplete if k not in unreadable]
+            if retry:
+                plan.warnings.append(
+                    f"CHECK: {len(retry)} pending change(s) NOT pushed - unread slot, re-sync first: "
+                    f"{pull_pipeline.unread_slots_text(index.incomplete_banks, retry)} did not answer the "
+                    "last pull, so this library has not read what is there. Run Sync Library again; they "
+                    "are pushed once the slot answers.")
+            if unreadable:
+                plan.warnings.append(
+                    f"CHECK: {len(unreadable)} pending change(s) NOT pushed - unreadable slot: "
+                    f"{pull_pipeline.unread_slots_text(index.incomplete_banks, unreadable)} never answered, so "
+                    "it cannot be backed up or verified. Use Re-check unreadable slots; once it answers the "
+                    "change is pushed.")
+
     if not dirty_keys and not pending_delete_keys:
+        if plan.incomplete:
+            return plan
+        if plan.conflicted:
+            plan.warnings.append("CHECK: only conflicted entries are pending — resolve the conflicts first")
+            return plan
         plan.warnings.append("CHECK: nothing to push — no local changes are pending")
         return plan
 
@@ -429,7 +509,7 @@ def build_changeset(index: LocalLibraryIndex, blobs: BlobStore,
     if plan.is_refusable:
         return plan
 
-    if not plan.entries and not plan.local_only_deletes:
+    if not plan.entries and not plan.local_only_deletes and (plan.conflicted or not plan.incomplete):
         plan.warnings.append("CHECK: every pending change conflicted or was rejected — nothing left to push")
 
     return plan
@@ -501,7 +581,8 @@ def execute_changeset(plan: ChangesetPlan, index: LocalLibraryIndex,
                 if entry.is_erase:
                     idx_entry.pending_delete = False
 
-    for entry in plan.entries:
+    for entry in (plan.entries if not transactional
+                  else sorted(plan.entries, key=lambda e: _STORE_RANK.get(e.obj_type, 5))):
         if not transactional and cancel is not None and cancel():
             cancelled = True
             break
@@ -521,7 +602,7 @@ def execute_changeset(plan: ChangesetPlan, index: LocalLibraryIndex,
 
     committed_banks = set()
     if transactional:
-        for obj_type, bank in plan.banks:
+        for obj_type, bank in store_order(plan.banks):
             if store_bank is not None and not store_bank(obj_type, bank):
                 failed = len(pending) - written - erased
                 plan.warnings.append(
@@ -568,13 +649,15 @@ def commit_changes(index: LocalLibraryIndex, blobs: BlobStore,
                     prepare_hardware: Optional[Callable[[ChangesetPlan], bool]] = None,
                     store_bank: Optional[Callable[[int, int], bool]] = None,
                     device_family: Optional[str] = None,
+                    allow_incomplete: bool = False,
                     ) -> Tuple[ChangesetPlan, SyncResult]:
     """Push-only — port of SyncPipeline.CommitChangesAsync. Deliberately
     skips pulling; pushes straight against whatever bank-digest baseline is
     already on record. `cancel` is forwarded to execute_changeset (see there)."""
     plan = build_changeset(index, blobs, clipboard, get_live_digest, resolver,
                             get_live_bank_type, pending_bank_type_change,
-                            force_destructive_write, allow_dangling, device_family)
+                            force_destructive_write, allow_dangling, device_family,
+                            allow_incomplete=allow_incomplete)
     result = execute_changeset(plan, index, write_to_hardware, write_bank_type_change,
                                 record_success, cancel=cancel,
                                 prepare_hardware=prepare_hardware, store_bank=store_bank)
@@ -596,6 +679,7 @@ def sync_library(index: LocalLibraryIndex, blobs: BlobStore,
                   prepare_hardware: Optional[Callable[[ChangesetPlan], bool]] = None,
                   store_bank: Optional[Callable[[int, int], bool]] = None,
                   device_family: Optional[str] = None,
+                  allow_incomplete: bool = False,
                   ) -> Tuple[PullResult, ChangesetPlan, SyncResult]:
     """Pull, then push — port of SyncPipeline.SyncLibraryAsync. See module
     docstring's pull-vs-commit invariant note for why the ordering is pull
@@ -618,7 +702,7 @@ def sync_library(index: LocalLibraryIndex, blobs: BlobStore,
                                   force_destructive_write=force_destructive_write,
                                   allow_dangling=allow_dangling,
                                   prepare_hardware=prepare_hardware, store_bank=store_bank,
-                                  device_family=device_family)
+                                  device_family=device_family, allow_incomplete=allow_incomplete)
     return pull_result, plan, result
 
 
@@ -1064,6 +1148,100 @@ def _selftest() -> None:
                                               full=True)
         check("sync-library-pulled", isinstance(pull_r, PullResult))
         check("sync-library-pushed", result8.written == 1 and not plan8.is_refusable)
+
+        # ── (10) a pull timeout in a bank with a dirty entry: NOT conflicted, NOT pushed, a
+        #    distinct "incomplete bank" CHECK; a later sync that reads every slot clears it and
+        #    pushes. The live digest differs from the old baseline - exactly what used to turn
+        #    the timeout into "N conflicted". ──
+        idx10 = LocalLibraryIndex(root / "s10")
+        idx10.set_entry(OBJ_PROGRAM, 0x00, 6, LocalIndexEntry(
+            version=1, baseline_hash=old_hash, current_hash=new_hash,
+            display_name="P6", created_utc=now(), modified_utc=now()))
+        # an edit to ANOTHER slot of the same bank, which answers: a dead slot must not block it
+        old7, new7 = blobs.put(b"OLD-7"), blobs.put(b"NEW-7")
+        idx10.set_entry(OBJ_PROGRAM, 0x00, 7, LocalIndexEntry(
+            version=1, baseline_hash=old7, current_hash=new7,
+            display_name="P7", created_utc=now(), modified_utc=now()))
+        idx10.set_bank_digest_baseline(OBJ_PROGRAM, 0x00, "bankdigest-old")
+        timeout10 = {"on": True}
+        writes10: List[Tuple[int, int, int]] = []
+
+        def digest10(bk):
+            return "bankdigest-new" if bk == LocalLibraryIndex.bank_key(OBJ_PROGRAM, 0x00) else f"d-{bk}"
+
+        def objects10(obj_type, bank, slots=None):
+            if (obj_type, bank) != (OBJ_PROGRAM, 0x00):
+                return {}
+            full_bank = {0: (1, b"OTHER-SLOT"), 6: (1, b"OLD-PROGRAM-BODY"), 7: (1, b"OLD-7")}
+            want = set(full_bank) | {9} if slots is None else set(slots)
+            dead = {6, 9} if timeout10["on"] else set()
+            return pull_pipeline.BankObjects({n: v for n, v in full_bank.items() if n in want and n not in dead},
+                                             missing=sorted(want & dead))
+
+        def write10(t, b, n, body):
+            writes10.append((t, b, n))
+            return True
+
+        pull10, plan10, res10 = sync_library(idx10, blobs, clip_empty, get_live_digest=digest10,
+                                             get_bank_objects=objects10, resolver=lambda t, b, n: True,
+                                             write_to_hardware=write10)
+        k10 = LocalLibraryIndex.key(OBJ_PROGRAM, 0x00, 6)
+        check("incomplete-not-conflicted", plan10.conflicted == [] and not idx10.get(OBJ_PROGRAM, 0x00, 6).conflicted)
+        check("incomplete-held-back", plan10.incomplete == [k10] and writes10 == [(OBJ_PROGRAM, 0x00, 7)]
+              and res10.written == 1)
+        check("dead-slot-does-not-block-bank", not idx10.get(OBJ_PROGRAM, 0x00, 7).is_dirty
+              and idx10.bank_digest_baseline.get(LocalLibraryIndex.bank_key(OBJ_PROGRAM, 0x00)) == "bankdigest-new")
+        check("incomplete-warning", any(w.startswith("CHECK:") and "unread slot" in w and "slot 6" in w
+                                        for w in plan10.warnings) and not plan10.is_refusable)
+        check("incomplete-recorded", idx10.incomplete_slots(LocalLibraryIndex.bank_key(OBJ_PROGRAM, 0x00)) == [6, 9])
+        writes10.clear()
+
+        # force_destructive_write alone does not write into the incomplete bank...
+        plan10f, res10f = commit_changes(idx10, blobs, clip_empty, get_live_digest=digest10,
+                                         resolver=lambda t, b, n: True, write_to_hardware=write10,
+                                         force_destructive_write=True)
+        check("incomplete-force-still-held", plan10f.incomplete == [k10] and writes10 == [])
+        # ...only an explicit allow_incomplete (the UI's confirm naming the unread slots) does.
+        idx10b = LocalLibraryIndex(root / "s10b")
+        idx10b.entries = {k: LocalIndexEntry.from_dict(e.to_dict()) for k, e in idx10.entries.items()}
+        idx10b.incomplete_banks = dict(idx10.incomplete_banks)
+        plan10a, res10a = commit_changes(idx10b, blobs, clip_empty, get_live_digest=digest10,
+                                         resolver=lambda t, b, n: True, write_to_hardware=write10,
+                                         force_destructive_write=True, allow_incomplete=True)
+        check("incomplete-allowed-pushes", plan10a.incomplete == [] and res10a.written == 1
+              and writes10 == [(OBJ_PROGRAM, 0x00, 6)])
+        writes10.clear()
+
+        # Every slot answers now: the record clears and the edit goes out.
+        timeout10["on"] = False
+        pull10c, plan10c, res10c = sync_library(idx10, blobs, clip_empty, get_live_digest=digest10,
+                                                get_bank_objects=objects10, resolver=lambda t, b, n: True,
+                                                write_to_hardware=write10)
+        check("incomplete-cleared-by-complete-pull", idx10.incomplete_banks == {}
+              and not pull10c.incomplete_banks)
+        check("incomplete-then-pushed", plan10c.incomplete == [] and plan10c.conflicted == []
+              and res10c.written == 1 and writes10 == [(OBJ_PROGRAM, 0x00, 6)])
+
+        # ── (11) an unreadable slot (3 strikes): its edit and a pending delete on it stay held with an
+        #    "unreadable" CHECK; a pending delete on a readable slot of the same bank goes out ──
+        idx11 = LocalLibraryIndex(root / "s11")
+        for n in (4, 5):
+            idx11.set_entry(OBJ_PROGRAM, 0x00, n, LocalIndexEntry(
+                version=1, baseline_hash=old_hash, current_hash=new_hash,
+                display_name=f"P{n}", created_utc=now(), modified_utc=now(), pending_delete=(n == 5)))
+        idx11.set_entry(OBJ_PROGRAM, 0x00, 8, LocalIndexEntry(
+            version=1, baseline_hash=old_hash, current_hash=new_hash,
+            display_name="P8", created_utc=now(), modified_utc=now(), pending_delete=True))
+        idx11.set_bank_digest_baseline(OBJ_PROGRAM, 0x00, "d11")
+        idx11.incomplete_banks = {LocalLibraryIndex.bank_key(OBJ_PROGRAM, 0x00): {4: 3, 5: 3}}
+        writes11: List[Tuple[int, int, int]] = []
+        plan11, res11 = commit_changes(idx11, blobs, clip_empty, get_live_digest=lambda bk: "d11",
+                                       resolver=lambda t, b, n: True,
+                                       write_to_hardware=lambda t, b, n, body: writes11.append((t, b, n)) or True)
+        check("unreadable-held", sorted(plan11.incomplete) == [LocalLibraryIndex.key(OBJ_PROGRAM, 0x00, 4),
+                                                              LocalLibraryIndex.key(OBJ_PROGRAM, 0x00, 5)])
+        check("unreadable-warning", any("unreadable slot" in w and "slot 4 (unreadable)" in w for w in plan11.warnings))
+        check("unreadable-other-slot-erased", writes11 == [(OBJ_PROGRAM, 0x00, 8)] and res11.erased == 1)
 
     finally:
         if root.exists():

@@ -298,6 +298,16 @@ class LocalLibraryIndex:
         # axis, matching bank_key's own Program-only bank-type convention elsewhere in this
         # subsystem (see changeset_sync.py's module docstring).
         self.bank_type_pending: Dict[int, bool] = {}
+        # Slots a pull asked for that did not answer (timeout / unparsable reply / cancel):
+        # bank_key -> {slot: consecutive failed pulls}. Maintained ONLY by library_pull_pipeline
+        # (record_slot_fetch). Per SLOT, independent of the bank's digest baseline: the baseline
+        # advances to what the answered slots reflect, and THIS record alone makes the pull
+        # re-fetch the unread slots (whatever the digest says) and makes build_changeset hold back
+        # edits to exactly those slots (plan.incomplete). After UNREADABLE_AFTER consecutive
+        # failures a slot is "unreadable": no longer re-fetched on every Sync, only on a digest
+        # change of its bank or an explicit Re-check. A slot skipped by a cancel is recorded with
+        # its count unchanged (0 when new) - a cancel is not a failure.
+        self.incomplete_banks: Dict[str, Dict[int, int]] = {}
         self._lock = threading.Lock()
         # defer_saves() batching — see that method.
         self._defer_lock = threading.RLock()
@@ -338,6 +348,8 @@ class LocalLibraryIndex:
             self.bank_type_pending = {
                 int(k): bool(v) for k, v in root.get("bank_type_pending", {}).items()
             }
+            # Absent from index files written before it existed: no incomplete banks.
+            self.incomplete_banks = self._load_incomplete(root.get("incomplete_banks"))
         except Exception as e:
             log.warning("index load failed: %s", e)
         return self
@@ -384,6 +396,10 @@ class LocalLibraryIndex:
                     "bank_digest_baseline": self.bank_digest_baseline,
                     # JSON object keys are always strings; int-ified back on load() above.
                     "bank_type_pending": {str(k): v for k, v in self.bank_type_pending.items()},
+                    # {bank_key: {"slot": fails}}. Iterating a slot dict yields its keys, so an
+                    # older build's loader (which read a list of slot numbers) still reads this.
+                    "incomplete_banks": {k: {str(n): int(c) for n, c in sorted(v.items())}
+                                         for k, v in self.incomplete_banks.items() if v},
                 }
                 _storage.atomic_write_text(self._path(), json.dumps(root, indent=2))
             self.last_save_error = None
@@ -455,6 +471,88 @@ class LocalLibraryIndex:
 
     def set_bank_digest_baseline(self, obj_type: int, bank: int, digest_hex: str) -> None:
         self.bank_digest_baseline[self.bank_key(obj_type, bank)] = digest_hex
+
+    # -- incomplete banks (a pull where some slots did not answer) ------------
+
+    #: Consecutive failed pulls after which an unread slot counts as "unreadable".
+    UNREADABLE_AFTER = 3
+
+    @staticmethod
+    def _load_incomplete(raw) -> Dict[str, Dict[int, int]]:
+        """Both on-disk forms: the current {bank_key: {"slot": fails}} and the first one,
+        {bank_key: [slot, ...]} (each slot then counts one failed pull)."""
+        out: Dict[str, Dict[int, int]] = {}
+        for k, v in (raw or {}).items():
+            if isinstance(v, dict):
+                slots = {int(n): max(0, int(c)) for n, c in v.items()}
+            else:
+                slots = {int(n): 1 for n in (v or ())}
+            if slots:
+                out[str(k)] = slots
+        return out
+
+    def set_incomplete_bank(self, obj_type: int, bank: int, missing: Iterable[int], fails: int = 1) -> None:
+        """Replace this bank's record with `missing`, each at `fails` consecutive failures."""
+        slots = {int(n): fails for n in missing}
+        key = self.bank_key(obj_type, bank)
+        if slots:
+            self.incomplete_banks[key] = slots
+        else:
+            self.incomplete_banks.pop(key, None)
+
+    def clear_incomplete_bank(self, obj_type: int, bank: int) -> None:
+        self.incomplete_banks.pop(self.bank_key(obj_type, bank), None)
+
+    def record_slot_fetch(self, obj_type: int, bank: int, asked: Optional[Iterable[int]],
+                          failed: Iterable[int] = (), skipped: Iterable[int] = ()) -> List[int]:
+        """Fold one fetch of this bank into the record. `asked` = the slots requested (None = the
+        whole bank). A requested slot that answered leaves the record; one in `failed` gets one
+        more consecutive failure; one in `skipped` (a cancel) is kept, its count unchanged (0 when
+        new). Slots NOT asked are left exactly as they were - a subset fetch must never clear the
+        others. Returns the slots that became unreadable with THIS fetch."""
+        key = self.bank_key(obj_type, bank)
+        rec = dict(self.incomplete_banks.get(key, {}))
+        failed_s = {int(n) for n in failed}
+        skipped_s = {int(n) for n in skipped} - failed_s
+        if asked is None:
+            rec = {n: c for n, c in rec.items() if n in failed_s or n in skipped_s}
+        else:
+            for n in {int(x) for x in asked} - failed_s - skipped_s:
+                rec.pop(n, None)
+        newly: List[int] = []
+        for n in sorted(failed_s):
+            before = rec.get(n, 0)
+            rec[n] = before + 1
+            if before < self.UNREADABLE_AFTER <= rec[n]:
+                newly.append(n)
+        for n in skipped_s:
+            rec.setdefault(n, 0)
+        if rec:
+            self.incomplete_banks[key] = rec
+        else:
+            self.incomplete_banks.pop(key, None)
+        return newly
+
+    def incomplete_slots(self, bank_key: str) -> List[int]:
+        """Every unread slot of a bank ("type:bank" key), retryable and unreadable; [] when complete."""
+        return sorted(self.incomplete_banks.get(bank_key, {}))
+
+    def retryable_slots(self, bank_key: str) -> List[int]:
+        """Unread slots still re-fetched on every pull (fewer than UNREADABLE_AFTER failures)."""
+        return sorted(n for n, c in self.incomplete_banks.get(bank_key, {}).items()
+                      if c < self.UNREADABLE_AFTER)
+
+    def unreadable_slots(self, bank_key: str) -> List[int]:
+        """Unread slots that failed UNREADABLE_AFTER pulls in a row."""
+        return sorted(n for n, c in self.incomplete_banks.get(bank_key, {}).items()
+                      if c >= self.UNREADABLE_AFTER)
+
+    def has_unreadable(self) -> bool:
+        return any(c >= self.UNREADABLE_AFTER for rec in self.incomplete_banks.values() for c in rec.values())
+
+    def is_slot_unread(self, obj_type: int, bank: int, number: int) -> bool:
+        """True when this slot is in the record (its live content has not been read)."""
+        return int(number) in self.incomplete_banks.get(self.bank_key(obj_type, bank), {})
 
     # -- pending whole-bank HD-1/EXi type change -----------------------------
     # Port of LocalLibraryCache.cs's Set/Get/ClearPendingBankTypeChange. Stages an intentional
@@ -688,6 +786,59 @@ def _selftest() -> None:
         check("index-roundtrip-digest",
               reloaded.bank_digest_baseline.get(LocalLibraryIndex.bank_key(0, 0x00)) == "deadbeef")
         check("index-roundtrip-clean", re_entry is not None and not re_entry.is_dirty)
+        check("index-roundtrip-no-incomplete", reloaded.incomplete_banks == {})
+
+        # ── incomplete banks persist, and an index file without the key still loads ──
+        reloaded.set_incomplete_bank(0, 0x01, [7, 3, 3])
+        reloaded.save()
+        again = LocalLibraryIndex(root).load()
+        check("index-incomplete-roundtrip", again.incomplete_slots("0:1") == [3, 7])
+        old_doc = json.loads((root / "index.json").read_text(encoding="utf-8"))
+        old_doc.pop("incomplete_banks", None)
+        old_root = root / "old_format"
+        old_root.mkdir(parents=True, exist_ok=True)
+        (old_root / "index.json").write_text(json.dumps(old_doc), encoding="utf-8")
+        old_idx = LocalLibraryIndex(old_root).load()
+        check("index-old-format-loads", old_idx.get(0, 0x00, 3) is not None and old_idx.incomplete_banks == {})
+        # the first on-disk form ({bank: [slots]}) loads as one failure per slot
+        list_doc = dict(old_doc)
+        list_doc["incomplete_banks"] = {"0:1": [7, 3]}
+        list_root = root / "list_format"
+        list_root.mkdir(parents=True, exist_ok=True)
+        (list_root / "index.json").write_text(json.dumps(list_doc), encoding="utf-8")
+        list_idx = LocalLibraryIndex(list_root).load()
+        check("index-list-format-loads", list_idx.incomplete_banks == {"0:1": {3: 1, 7: 1}}
+              and list_idx.retryable_slots("0:1") == [3, 7] and not list_idx.has_unreadable())
+        # the current form round-trips counts, and an older reader (list of slot numbers) still parses it
+        list_idx.record_slot_fetch(0, 0x01, asked=[3, 7], failed=[3, 7])
+        list_idx.record_slot_fetch(0, 0x01, asked=[3, 7], failed=[3])
+        list_idx.save()
+        disk = json.loads((list_root / "index.json").read_text(encoding="utf-8"))["incomplete_banks"]
+        check("index-new-format-old-reader", sorted({int(x) for x in disk["0:1"]}) == [3])
+        check("index-counts-roundtrip", LocalLibraryIndex(list_root).load().incomplete_banks == {"0:1": {3: 3}})
+
+        # record_slot_fetch: subset fetches never clear slots they did not ask for; 3 strikes -> unreadable;
+        # a cancel-skipped slot is kept without counting; a whole-bank read replaces the record
+        r = LocalLibraryIndex(root / "rec")
+        r.record_slot_fetch(0, 2, asked=None, failed=[5, 9])
+        check("rec-first", r.incomplete_banks == {"0:2": {5: 1, 9: 1}})
+        r.record_slot_fetch(0, 2, asked=[5, 9], failed=[5])
+        check("rec-subset-answered-removed", r.incomplete_banks == {"0:2": {5: 2}})
+        newly = r.record_slot_fetch(0, 2, asked=[5], failed=[5])
+        check("rec-unreadable", newly == [5] and r.unreadable_slots("0:2") == [5] and r.retryable_slots("0:2") == []
+              and r.has_unreadable() and r.is_slot_unread(0, 2, 5) and not r.is_slot_unread(0, 2, 9))
+        r.record_slot_fetch(0, 2, asked=[6], failed=[])
+        check("rec-subset-keeps-others", r.incomplete_slots("0:2") == [5])
+        check("rec-again-not-newly", r.record_slot_fetch(0, 2, asked=[5], failed=[5]) == []
+              and r.incomplete_banks["0:2"][5] == 4)
+        r.record_slot_fetch(0, 2, asked=None, failed=[], skipped=[100, 101])
+        check("rec-skipped-zero", r.incomplete_banks == {"0:2": {100: 0, 101: 0}})
+        r.record_slot_fetch(0, 2, asked=None, failed=[])
+        check("rec-cleared", r.incomplete_banks == {})
+
+        again.clear_incomplete_bank(0, 0x01)
+        check("index-incomplete-clear", again.incomplete_banks == {})
+        again.save()
 
         # ── disaster recovery: oplog replay reconstructs an equivalent index ──
         folded = LocalLibraryIndex.rebuild_current_from_oplog(oplog.replay())

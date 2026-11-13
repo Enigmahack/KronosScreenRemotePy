@@ -1,8 +1,9 @@
 """Converts Kronos objects and writes them into consecutive Nautilus slots over SysEx.
 
 Order is fixed for safety: read every target slot, convert, back every pre-image up to one .syx, only then write
-(arp patterns first, so no Program ever points at a pattern that isn't there), store each touched bank once, and
-re-read to verify. A target the conversion can't use (wrong Program bank type, refused conversion, past the end of
+(arp patterns first, so no Program ever points at a pattern that isn't there; then Programs and everything else,
+Stored; then the Combis / Song Timbre Sets whose Timbres point at Programs of this run, each only when all of those
+Programs were written and Stored), store each touched bank, and re-read to verify. A target the conversion can't use (wrong Program bank type, refused conversion, past the end of
 the bank) is skipped with a reason; it never aborts the others."""
 from __future__ import annotations
 
@@ -202,12 +203,18 @@ def _push(service, items: List[ConvertItem], dest: Dict[int, Tuple[int, int]], t
     placed = _placements(items, dest)
     arp = _ArpSlots(arp_start, tables)
     arp_patterns: Dict[int, bytes] = {}
+    prog_at: Dict[Tuple[int, int], Tuple[int, int, int]] = {}   # src_ref -> (report index, wire bank, slot)
+    uses: Dict[int, Set[Tuple[int, int]]] = {}                  # id(report) -> src_refs its Timbres were pointed at
 
-    for item in items:
+    for i, item in enumerate(items):
         key = dest_key(item, dest)
         bank, _ = dest[key]
         slot = next_slot[key]
         next_slot[key] += 1
+        if (item.obj_type == OBJ_PROGRAM and item.src_ref is not None and not item.native
+                and nautilus_timbre_bank_for_wire(bank) is not None
+                and slot < slot_count(OBJ_PROGRAM, bank)):
+            prog_at[item.src_ref] = (i, bank, slot)   # exactly the eligibility rule of _placements
         where = dest_label(item.obj_type, bank, slot)
         rep = ItemReport(item.name, where, "refused")
         reports.append(rep)
@@ -240,7 +247,9 @@ def _push(service, items: List[ConvertItem], dest: Dict[int, Tuple[int, int]], t
             old = target.body[:24].split(b"\x00")[0].decode("ascii", "replace").rstrip()
             if not re.fullmatch(r"NEW SONG \d{3}", old):
                 rep.messages.append(f'Replaces the song "{old}"; its previous content is in the backup.')
-        result = _convert(item, target.body, tables, arp.options_for(item), placed)
+        used = _UsedPlacements(placed)
+        result = _convert(item, target.body, tables, arp.options_for(item), used)
+        uses[id(rep)] = used.hits
         rep.messages += result.warnings
         if result.body is None:
             rep.messages += result.refusals
@@ -321,55 +330,87 @@ def _push(service, items: List[ConvertItem], dest: Dict[int, Tuple[int, int]], t
 
     written: List[Tuple[ItemReport, SimpleNamespace]] = []
     unknown: List[Tuple[ItemReport, SimpleNamespace, bytes]] = []   # no reply to the write, state unproven
-    for rep, op, pre, needed in pending:
-        bad = [arp_failed[s] for s in sorted(needed) if s in arp_failed]
-        if bad:
-            rep.messages += bad + ["Not written: it depends on an arp pattern that is missing."]
-            continue
-        aborted = aborted or guard()
-        if aborted:
-            rep.messages.append(f"Not written: {aborted}.")
-            continue
-        progress(f"Writing {rep.dest}")
-        code = service.write_object(op)
-        if code == 0:
-            written.append((rep, op))
-        elif code == NO_REPLY:
-            state = _state_after_no_reply(service, op, pre)
-            if state == "applied":
-                rep.messages.append("No reply to the write, but a re-read matches what was sent.")
-                written.append((rep, op))
-            elif state == "unchanged":
-                rep.messages.append("No reply to the write; a re-read shows the slot unchanged.")
-            else:
-                rep.messages.append("No reply to the write and the slot could not be confirmed; it may or may not "
-                                    f"have changed. Backup: {backup_path}")
-                unknown.append((rep, op, pre))
-        else:
-            rep.messages.append(f"Write refused by the instrument (reply {code}).")
-
-    # A bank is Stored only for slots that were proven written; an unknown slot never triggers a Store itself.
     committed_banks: Set[Tuple[int, int]] = set()
     failed_banks: Dict[Tuple[int, int], str] = {}
-    for obj, bank in sorted({(op.obj, op.bank) for _, op in written}):
-        aborted = aborted or guard()
-        if aborted:
-            committed, note = False, (f"Not stored: {aborted}. The slot was written to the volatile memory of the "
-                                      f"original instrument only; the previous contents are in {backup_path}.")
-        else:
-            progress(f"Storing bank {bank_label(obj, bank)}")
-            committed, note = _store_checked(service, obj, bank)
-        if committed:
-            committed_banks.add((obj, bank))
+
+    def write_and_store(entries) -> None:
+        """Writes `entries`, then Stores each bank one of them was proven written to. A bank is Stored only for
+        slots that were proven written; an unknown slot never triggers a Store itself."""
+        nonlocal aborted
+        phase_written: List[Tuple[ItemReport, SimpleNamespace]] = []
+        for rep, op, pre, needed in entries:
+            bad = [arp_failed[s] for s in sorted(needed) if s in arp_failed]
+            if bad:
+                rep.messages += bad + ["Not written: it depends on an arp pattern that is missing."]
+                continue
+            aborted = aborted or guard()
+            if aborted:
+                rep.messages.append(f"Not written: {aborted}.")
+                continue
+            progress(f"Writing {rep.dest}")
+            code = service.write_object(op)
+            if code == 0:
+                phase_written.append((rep, op))
+            elif code == NO_REPLY:
+                state = _state_after_no_reply(service, op, pre)
+                if state == "applied":
+                    rep.messages.append("No reply to the write, but a re-read matches what was sent.")
+                    phase_written.append((rep, op))
+                elif state == "unchanged":
+                    rep.messages.append("No reply to the write; a re-read shows the slot unchanged.")
+                else:
+                    rep.messages.append("No reply to the write and the slot could not be confirmed; it may or may "
+                                        f"not have changed. Backup: {backup_path}")
+                    unknown.append((rep, op, pre))
+            else:
+                rep.messages.append(f"Write refused by the instrument (reply {code}).")
+        written.extend(phase_written)
+        for obj, bank in sorted({(op.obj, op.bank) for _, op in phase_written}):
+            aborted = aborted or guard()
+            if aborted:
+                committed, note = False, (f"Not stored: {aborted}. The slot was written to the volatile memory of "
+                                          f"the original instrument only; the previous contents are in "
+                                          f"{backup_path}.")
+            else:
+                progress(f"Storing bank {bank_label(obj, bank)}")
+                committed, note = _store_checked(service, obj, bank)
+            if committed:
+                committed_banks.add((obj, bank))
+            else:
+                failed_banks[(obj, bank)] = note
             if note:
-                for rep, op in written:
+                for rep, op in phase_written:
                     if (op.obj, op.bank) == (obj, bank):
                         rep.messages.append(note)
-        else:
-            failed_banks[(obj, bank)] = note
-            for rep, op in written:
-                if (op.obj, op.bank) == (obj, bank):
-                    rep.messages.append(note)
+
+    # Phase 1: Programs, Drum Kits and Wave Sequences, written and Stored.
+    # Phase 2: Combis / Song Timbre Sets; one whose Timbres were re-pointed at Programs of this run only when every
+    # one of those Programs is committed (written AND its bank Stored); otherwise the Timbre would point at whatever
+    # the slot still holds.
+    # Split by type, so no bank is Stored in both phases (a later failed Store must not hide behind an earlier one).
+    late = (OBJ_COMBI, OBJ_SONG_TIMBRE)
+    write_and_store([e for e in pending if e[1].obj not in late])
+    committed_slots = {(op.obj, op.bank, op.index) for _, op in written if (op.obj, op.bank) in committed_banks}
+    phase2 = []
+    for entry in (e for e in pending if e[1].obj in late):
+        rep = entry[0]
+        missing = []
+        for ref in sorted(uses[id(rep)]):
+            i, bank, slot = prog_at[ref]
+            if (OBJ_PROGRAM, bank, slot) in committed_slots:
+                continue
+            prep = reports[i]
+            reason = prep.messages[-1] if prep.messages else prep.status
+            missing.append(f'Timbre Program "{prep.name}" ({prep.dest}) was not written and stored '
+                           f'({prep.status}: {reason})')
+        if missing:
+            rep.messages += missing + ["Not written: a Timbre Program it uses failed in this run, so its Timbres "
+                                       "would point at whatever that slot still holds."]
+            progress(f"Skipped {rep.dest} ({rep.name}): {'; '.join(missing)}")
+            continue
+        phase2.append(entry)
+    write_and_store(phase2)
+
     if failed_banks and committed_banks:
         done = ", ".join(bank_label(o, b) for o, b in sorted(committed_banks))
         for rep, op in written:
@@ -520,6 +561,21 @@ def restore_from_backup(service, backup_path: str,
     if ok:
         msgs.append(f"Restored {len(ops)} object(s) from {backup_path}.")
     return RestoreResult(ok, msgs)
+
+
+class _UsedPlacements(dict):
+    """The run's placements, recording which ones a conversion actually re-pointed a Timbre at (convert_combi tests
+    `(bank, index) in placed` before using an entry), so a Combi is only written once those Programs are committed."""
+
+    def __init__(self, placed) -> None:
+        super().__init__(placed)
+        self.hits: Set[Tuple[int, int]] = set()
+
+    def __contains__(self, key) -> bool:
+        hit = super().__contains__(key)
+        if hit:
+            self.hits.add(key)
+        return hit
 
 
 def _placements(items: List[ConvertItem], dest: Dict[int, Tuple[int, int]]) -> Dict[Tuple[int, int], Tuple[int, int]]:

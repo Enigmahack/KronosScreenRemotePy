@@ -71,13 +71,17 @@ class Fake:
     def bank_digest(self, obj, bank):
         return hashlib.sha1(f"{obj}:{bank}:{sorted(self.objs.get((obj, bank), {}))}".encode()).digest()
 
-    backfill = False   # a real instrument has no empty slot: anything unwritten holds an INIT object
+    # A real instrument has no empty slot: anything unwritten holds an INIT object. A bank this fake
+    # populates always answers every slot that way (a slot that does not answer is a TIMEOUT, and the
+    # pull then refuses to mark the bank as pulled); `backfill` extends that to every bank.
+    backfill = False
+    _INIT = {OBJ_PROGRAM: (PROGRAM_HD1_WIRE_SIZE, 5, "Init Program"), OBJ_DRUM_KIT: (ob.DRUM_KIT_BODY_SIZE, 3, "Init Drum Kit"),
+             OBJ_WAVE_SEQ: (ob.WAVE_SEQ_BODY_SIZE, 1, "Init Wave Sequence")}
 
     def dump_object_parsed(self, obj, bank, number, no_response_ms=3000):
         o = self.objs.get((obj, bank), {}).get(number)
-        if o is None and self.backfill:
-            size, ver, nm = {OBJ_PROGRAM: (PROGRAM_HD1_WIRE_SIZE, 5, "Init Program"), OBJ_DRUM_KIT: (ob.DRUM_KIT_BODY_SIZE, 3, "Init Drum Kit"),
-                             OBJ_WAVE_SEQ: (ob.WAVE_SEQ_BODY_SIZE, 1, "Init Wave Sequence")}[obj]
+        if o is None and (self.backfill or (obj, bank) in self.objs) and obj in self._INIT:
+            size, ver, nm = self._INIT[obj]
             o = (ver, named(size, nm))
         if o is None:
             return None
@@ -116,7 +120,7 @@ roots = {w._tree_local.topLevelItem(i).text(0).split("  ")[0].split(" (")[0]: w.
 assert list(roots)[:5] == ["Programs", "Combis", "Set Lists", "Drum Kits", "Wave Sequences"], list(roots)
 dk_banks = [roots["Drum Kits"].child(i).text(0) for i in range(roots["Drum Kits"].childCount())]
 assert dk_banks == ["INT", "U-A"], dk_banks
-leaf = roots["Drum Kits"].child(1).child(0)
+leaf = roots["Drum Kits"].child(1).child(4)   # U-A answers every slot: 000-003 hold Init kits
 assert leaf.text(0).startswith("Funk Kit") and leaf.data(0, 0x100)[:4] == ("local", OBJ_DRUM_KIT, 0x40, 4)
 print("pull + tree ok:", dk_banks, "|", leaf.text(0))
 

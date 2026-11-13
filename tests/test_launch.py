@@ -31,7 +31,10 @@ def wait(cond, timeout=15):
 
 
 class FakeKronos:
-    """Duck-typed SysExService: every registry bank answers a digest; INT A holds one program."""
+    """Duck-typed SysExService. A bank this fake populates (INT A) answers a digest and EVERY slot
+    (unwritten slots hold an Init Program, as on the instrument, where a slot that does not answer is a
+    timeout); every other bank is one the instrument does not serve (no digest, no dump), which the pull
+    pins with its NoDigest sentinel. `timeouts` = {(obj, bank, slot)} that never answer."""
     def __init__(self):
         self.can_dump = True
         self.digest_ok = True
@@ -40,17 +43,20 @@ class FakeKronos:
         self.stores = []
         self.digest_calls = 0
         self.objs = {(OBJ_PROGRAM, 0x00): {0: (1, (b"HWPROG" + bytes(4954))[:4960])}}
+        self.timeouts = set()
 
     def bank_digest(self, obj, bank):
         self.digest_calls += 1
-        if not self.digest_ok:
+        if not self.digest_ok or (obj, bank) not in self.objs:
             return None
         return hashlib.sha1(f"{obj}:{bank}:{self.digest_ver}".encode()).digest()
 
     def dump_object_parsed(self, obj, bank, number, no_response_ms=3000):
-        o = self.objs.get((obj, bank), {}).get(number)
-        if o is None:
+        if (obj, bank, number) in self.timeouts or (obj, bank) not in self.objs:
             return None
+        o = self.objs[(obj, bank)].get(number)
+        if o is None:
+            o = (1, (b"Init Program" + bytes(4960))[:4960])
         d = MagicMock(); d.version, d.body = o
         return d
 

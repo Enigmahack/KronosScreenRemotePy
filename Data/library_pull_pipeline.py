@@ -58,7 +58,15 @@ Public composition points for the (later) changeset/sync task:
   GetBankObjects  = Callable[[int, int], Dict[int, Tuple[int, bytes]]]
                     (obj_type, bank) -> {number: (version, body)} for every
                     occupied slot in that bank (absent number = empty slot).
-                    Real wiring: sysex_dump_collector.SysExDumpCollector,
+                    May return a BankObjects (dict subclass) whose `missing`
+                    lists slots that did not answer (and `skipped`, slots a
+                    cancel never asked); those are kept per slot in
+                    index.incomplete_banks and re-fetched / held back on
+                    their own while the bank's baseline advances. May also
+                    accept an optional `slots=` keyword (a list of slot
+                    numbers): pull() then re-asks only a bank's unread slots
+                    (detected with accepts_slots; a callable without it gets
+                    the whole bank). Real wiring: sysex_dump_collector.SysExDumpCollector,
                     bulk func-0x77 request with a per-slot func-0x73 fallback
                     for USER banks -- entirely the integration point's call,
                     not this module's.
@@ -156,6 +164,82 @@ class PullResult:
     #: instrument answered nothing at all (see NO_REPLY_GIVE_UP). Carries the
     #: user-facing explanation; every normal outcome leaves it None.
     aborted: Optional[str] = None
+    #: Display labels of the banks with slots that did not answer THIS pull and are still
+    #: retried (fewer than UNREADABLE_AFTER failures). What did arrive is applied and the bank's
+    #: baseline advances; the unread slots are kept in index.incomplete_banks, which alone makes
+    #: the next pull re-fetch them (only them) and holds back edits to them.
+    incomplete_banks: Tuple[str, ...] = ()
+    #: Slots behind `incomplete_banks` (failed this pull, still retried).
+    missing_slots: int = 0
+    #: Slot labels ("Program I-A slot 5") that became unreadable with this pull. Reported once;
+    #: afterwards they only show in the window's standing line.
+    newly_unreadable: Tuple[str, ...] = ()
+    #: Previously unread slots that answered this pull.
+    recovered_slots: int = 0
+
+    @property
+    def incomplete_warning(self) -> Optional[str]:
+        """User-facing CHECK line for slots that did not answer and are still retried; None when
+        there are none (slots already marked unreadable stay quiet)."""
+        if not self.incomplete_banks and not self.newly_unreadable:
+            return None
+        parts = []
+        if self.incomplete_banks:
+            names = ", ".join(self.incomplete_banks[:6]) + (
+                f" and {len(self.incomplete_banks) - 6} more" if len(self.incomplete_banks) > 6 else "")
+            parts.append(
+                f"CHECK: {self.missing_slots} slot(s) did not answer, in {len(self.incomplete_banks)} bank(s) "
+                f"({names}). Those slots were not refreshed; local changes to those slots are held back "
+                f"(not pushed) and they are asked for again on the next Sync.")
+        if self.newly_unreadable:
+            names = ", ".join(self.newly_unreadable[:6]) + (
+                f" and {len(self.newly_unreadable) - 6} more" if len(self.newly_unreadable) > 6 else "")
+            parts.append(
+                f"CHECK: {len(self.newly_unreadable)} slot(s) did not answer {LocalLibraryIndex.UNREADABLE_AFTER} "
+                f"pulls in a row and are now marked unreadable ({names}). They are no longer asked for on every "
+                "Sync - only when their bank changes or you choose Re-check unreadable slots.")
+        return "\n".join(parts)
+
+
+class BankObjects(dict):
+    """What a GetBankObjects callable returns: {number: (version, body)} for every slot that
+    answered, plus `missing`, the slot numbers that were asked for and did NOT answer (timeout or
+    a reply that failed to parse), and `skipped`, the slots never asked because a cancel stopped
+    the bank part-way (they are remembered as unread but do not count as failed attempts).
+
+    A plain dict is still accepted everywhere and means "complete" (every absent number is an
+    empty slot) - the duck-typed fakes the self-tests use rely on that."""
+
+    def __init__(self, data=(), missing=(), skipped=()) -> None:
+        super().__init__(data)
+        self.missing: Tuple[int, ...] = tuple(missing)
+        self.skipped: Tuple[int, ...] = tuple(skipped)
+
+
+def missing_slots_of(objs) -> Tuple[int, ...]:
+    """The `missing` slot numbers of a GetBankObjects result (empty for a plain dict)."""
+    return tuple(getattr(objs, "missing", ()) or ())
+
+
+def skipped_slots_of(objs) -> Tuple[int, ...]:
+    """The `skipped` (cancel) slot numbers of a GetBankObjects result (empty for a plain dict)."""
+    return tuple(getattr(objs, "skipped", ()) or ())
+
+
+def accepts_slots(fn) -> bool:
+    """True when a GetBankObjects callable takes the optional `slots=` subset keyword (a named
+    `slots` parameter or **kwargs). Older duck-typed callables take only (obj_type, bank)."""
+    import inspect
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+    return "slots" in params or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+
+
+def slot_label(bank_key: str, number: int) -> str:
+    """'Program I-A slot 5' for one slot of a "type:bank" key."""
+    return f"{bank_key_label(bank_key)} slot {number}"
 
 
 #: Consecutive unanswered digest requests tolerated at the START of the sweep before it
@@ -276,54 +360,181 @@ def pull(index: LocalLibraryIndex, blobs: BlobStore,
             fresh[key] = ""   # NoDigest sentinel (LocalLibraryIndex.NO_BASELINE_SENTINEL)
 
     plan = plan_pull(persisted, fresh, full)
+    # Unread slots are tracked per slot in index.incomplete_banks, independent of the digest
+    # baseline: a bank whose digest changed (or a full pull) is read whole - which also retries
+    # its unreadable slots - and a bank whose digest did NOT change but that still has retryable
+    # unread slots gets those slots, and only those, asked again. The record, not a stale
+    # baseline, drives that re-fetch, so nothing that re-baselines a bank (this pull, a push's
+    # post-Store step, Resolve Conflicts) can make an unread slot look pulled.
+    whole = {b.bank_key for b in plan.banks_to_fetch}
+    work: List[Tuple[BankRef, Optional[List[int]]]] = []
+    for b in all_banks():
+        if b.bank_key in whole:
+            work.append((b, None))
+        else:
+            retry = index.retryable_slots(b.bank_key)
+            if retry:
+                work.append((b, retry))
+    return _fetch_banks(index, blobs, work, fresh, get_bank_objects, progress, cancel)
 
-    fetched = 0
-    conflicts = 0
-    banks_done = 0
-    for bank_ref in plan.banks_to_fetch:
+
+def recheck_unread(index: LocalLibraryIndex, blobs: BlobStore, get_bank_objects: GetBankObjects,
+                   progress: Optional[Callable[[str], None]] = None,
+                   cancel: Optional[Callable[[], bool]] = None) -> PullResult:
+    """Ask again for every unread slot in index.incomplete_banks, unreadable ones included (the
+    Librarian's "Re-check unreadable slots"). No digest sweep and no baseline change: only the
+    record and the slots that answer are touched. A slot that fails again keeps counting (an
+    unreadable slot stays unreadable)."""
+    work = [(b, index.incomplete_slots(b.bank_key)) for b in all_banks()
+            if index.incomplete_slots(b.bank_key)]
+    return _fetch_banks(index, blobs, work, {}, get_bank_objects, progress, cancel)
+
+
+def _apply_objects(index: LocalLibraryIndex, blobs: BlobStore, bank_ref: BankRef, objs) -> Tuple[int, int]:
+    """Reconcile one fetch's answered slots into the index. A locally-dirty entry is NEVER
+    overwritten; it is flagged Conflicted only when THIS slot's incoming content differs from its
+    baseline. Returns (fetched, conflicts)."""
+    fetched = conflicts = 0
+    for number, (version, body) in objs.items():
+        entry = index.get(bank_ref.obj_type, bank_ref.bank, number)
+
+        if entry is None or not entry.is_dirty:
+            content_hash = blobs.put(body)
+            now = _now_iso()
+            index.set_entry(bank_ref.obj_type, bank_ref.bank, number, LocalIndexEntry(
+                version=version,
+                baseline_hash=content_hash,
+                current_hash=content_hash,
+                display_name=_extract_display_name(body),
+                created_utc=entry.created_utc if entry is not None else now,
+                modified_utc=now,
+                conflicted=False,
+                has_resolved_dependencies=entry.has_resolved_dependencies if entry is not None else True,
+                is_exi=entry.is_exi if entry is not None else True,
+                pending_delete=False,
+            ))
+            fetched += 1
+        else:
+            # Dirty: never overwrite. Conflict only if THIS slot's incoming
+            # content actually differs from what it was edited against.
+            incoming_hash = BlobStore.compute_hash(body)
+            if incoming_hash != entry.baseline_hash:
+                index.mark_conflicted(bank_ref.obj_type, bank_ref.bank, number, True)
+                conflicts += 1
+    return fetched, conflicts
+
+
+def _fetch_banks(index: LocalLibraryIndex, blobs: BlobStore,
+                 work: List[Tuple[BankRef, Optional[List[int]]]], fresh: Dict[str, str],
+                 get_bank_objects: GetBankObjects, progress: Optional[Callable[[str], None]],
+                 cancel: Optional[Callable[[], bool]]) -> PullResult:
+    """Fetch each (bank, slots) of `work` (slots None = the whole bank), apply what answered,
+    fold the outcome into the unread-slot record, and advance the digest baseline of every
+    bank read whole and not cut short by a cancel."""
+    subset_ok = accepts_slots(get_bank_objects)
+    cancelled = False
+    fetched = conflicts = banks_done = missing_total = recovered = 0
+    incomplete: List[str] = []
+    newly_unreadable: List[str] = []
+    limit = LocalLibraryIndex.UNREADABLE_AFTER
+    for bank_ref, slots in work:
         if cancel is not None and cancel():
             cancelled = True
             break
         banks_done += 1
+        key = bank_ref.bank_key
+        display = _OBJ_TYPE_DISPLAY.get(bank_ref.obj_type, "")
+        bank_label = _bank_display_label(bank_ref.obj_type, bank_ref.bank)
+        name = f"{display} {bank_label}".strip()
+        asked: Optional[List[int]] = slots if (slots is not None and subset_ok) else None
         if progress is not None:
-            display = _OBJ_TYPE_DISPLAY.get(bank_ref.obj_type, "")
-            bank_label = _bank_display_label(bank_ref.obj_type, bank_ref.bank)
-            suffix = f" {bank_label}" if bank_label else ""
-            progress(f"Bulk-dumping {display}{suffix}...")
-        objs = get_bank_objects(bank_ref.obj_type, bank_ref.bank) or {}
+            progress(f"Bulk-dumping {name}..." if asked is None
+                     else f"Re-reading {len(asked)} unread slot(s) of {name}...")
+        objs = (get_bank_objects(bank_ref.obj_type, bank_ref.bank, slots=asked) if asked is not None
+                else get_bank_objects(bank_ref.obj_type, bank_ref.bank))
+        if objs is None:
+            objs = {}
+        # Not `or {}`: a bank whose every slot timed out is an EMPTY BankObjects, falsy, and
+        # replacing it would drop its `missing` list - exactly the case that must not look pulled.
+        missing = set(missing_slots_of(objs))
+        skipped = set(skipped_slots_of(objs))
+        if missing and not skipped and cancel is not None and cancel():
+            # An older callable that reports a cancel's unasked slots as `missing`: do not count
+            # them as failures (a cancel is not a failed read).
+            skipped, missing = missing, set()
 
-        for number, (version, body) in objs.items():
-            entry = index.get(bank_ref.obj_type, bank_ref.bank, number)
+        f, c = _apply_objects(index, blobs, bank_ref, objs)
+        fetched += f
+        conflicts += c
 
-            if entry is None or not entry.is_dirty:
-                content_hash = blobs.put(body)
-                now = _now_iso()
-                index.set_entry(bank_ref.obj_type, bank_ref.bank, number, LocalIndexEntry(
-                    version=version,
-                    baseline_hash=content_hash,
-                    current_hash=content_hash,
-                    display_name=_extract_display_name(body),
-                    created_utc=entry.created_utc if entry is not None else now,
-                    modified_utc=now,
-                    conflicted=False,
-                    has_resolved_dependencies=entry.has_resolved_dependencies if entry is not None else True,
-                    is_exi=entry.is_exi if entry is not None else True,
-                    pending_delete=False,
-                ))
-                fetched += 1
-            else:
-                # Dirty: never overwrite. Conflict only if THIS slot's incoming
-                # content actually differs from what it was edited against.
-                incoming_hash = BlobStore.compute_hash(body)
-                if incoming_hash != entry.baseline_hash:
-                    index.mark_conflicted(bank_ref.obj_type, bank_ref.bank, number, True)
-                    conflicts += 1
-
-        fresh_hex = fresh.get(bank_ref.bank_key)
-        if fresh_hex is not None:
+        fresh_hex = fresh.get(key)
+        # A bank read whole that gave no digest AND answered no slot at all is one the instrument
+        # does not serve (the NoDigest case): keep pinning it with the sentinel and record nothing,
+        # or every lazy Sync would re-sweep it slot by slot.
+        served = asked is not None or bool(fresh_hex) or bool(objs)
+        if served:
+            before = set(index.incomplete_slots(key))
+            newly = index.record_slot_fetch(bank_ref.obj_type, bank_ref.bank, asked,
+                                            failed=missing, skipped=skipped)
+            rec = index.incomplete_banks.get(key, {})
+            recovered += len(before - set(rec))
+            retry_failed = [n for n in missing if rec.get(n, limit) < limit]
+            if retry_failed:
+                incomplete.append(_bank_report_label(bank_ref))
+                missing_total += len(retry_failed)
+            newly_unreadable.extend(slot_label(key, n) for n in newly)
+        if skipped:
+            # Cut short by a cancel inside the bank: its unasked slots are recorded above (unread,
+            # held back, re-fetched), but the bank is not a finished read - no baseline advance.
+            cancelled = True
+            break
+        if asked is None and fresh_hex is not None:
+            # The baseline now reflects what this library holds for every slot that answered;
+            # the record above keeps the ones that did not.
             index.set_bank_digest_baseline(bank_ref.obj_type, bank_ref.bank, fresh_hex)
 
-    return PullResult(banks_done, fetched, conflicts, cancelled=cancelled)
+    return PullResult(banks_done, fetched, conflicts, cancelled=cancelled,
+                      incomplete_banks=tuple(incomplete), missing_slots=missing_total,
+                      newly_unreadable=tuple(newly_unreadable), recovered_slots=recovered)
+
+
+def _bank_report_label(bank_ref: BankRef) -> str:
+    display = _OBJ_TYPE_DISPLAY.get(bank_ref.obj_type, "")
+    label = _bank_display_label(bank_ref.obj_type, bank_ref.bank)
+    return f"{display} {label}".strip() if label else (display or bank_ref.bank_key)
+
+
+def bank_key_label(bank_key: str) -> str:
+    """Display label ("Program U-A") of a "type:bank" index bank key."""
+    try:
+        obj_type, bank = (int(x) for x in bank_key.split(":"))
+    except ValueError:
+        return bank_key
+    return _bank_report_label(BankRef(obj_type, bank))
+
+
+def unread_slots_text(incomplete: Dict[str, Dict[int, int]], entry_keys: List[str], limit: int = 12) -> str:
+    """'Program I-A slot 3, Program I-A slot 5 (unreadable)' for the given "type:bank:number"
+    index keys, each tagged unreadable when the record says so."""
+    parts = []
+    for k in sorted(dict.fromkeys(entry_keys), key=lambda k: tuple(int(x) for x in k.split(":"))):
+        obj_type, bank, number = (int(x) for x in k.split(":"))
+        bank_key = LocalLibraryIndex.bank_key(obj_type, bank)
+        fails = incomplete.get(bank_key, {}).get(number)
+        tag = " (unreadable)" if fails is not None and fails >= LocalLibraryIndex.UNREADABLE_AFTER else ""
+        parts.append(slot_label(bank_key, number) + tag)
+    if len(parts) > limit:
+        parts = parts[:limit] + [f"and {len(parts) - limit} more"]
+    return ", ".join(parts)
+
+
+def incomplete_banks_text(incomplete: Dict[str, Dict[int, int]], keys: Optional[List[str]] = None) -> str:
+    """'Program U-A (3 unread slots), Combi I-B (128 unread slots)' for the given incomplete-bank
+    record (LocalLibraryIndex.incomplete_banks), restricted to `keys` when given."""
+    chosen = [k for k in (keys if keys is not None else incomplete) if k in incomplete]
+    parts = [f"{bank_key_label(k)} ({len(incomplete[k])} unread slot{'s' if len(incomplete[k]) != 1 else ''})"
+             for k in sorted(chosen, key=lambda k: tuple(int(x) for x in k.split(":")))]
+    return ", ".join(parts)
 
 
 # ── Self-test (python library_pull_pipeline.py) ─────────────────────────────
@@ -464,6 +675,145 @@ def _selftest() -> None:
         check("silent-baseline-untouched",
               idx_silent.bank_digest_baseline == {LocalLibraryIndex.bank_key(OBJ_PROGRAM, prog_a_bank): "keep-me"})
         check("silent-nothing-fetched", r_silent.objects_fetched == 0 and not r_silent.cancelled)
+
+        # ── incomplete banks: what arrived is applied, the baseline ADVANCES (it reflects the slots
+        #    that answered), the unread slots are recorded per slot, and the next lazy pull asks for
+        #    those slots only - the record, not the digest, drives that ──
+        idx_inc = LocalLibraryIndex(root / "incomplete")
+        blobs_inc = BlobStore(root / "incomplete")
+        inc_digest = {b.bank_key: f"d-{b.bank_key}" for b in all_banks()}
+        prog_b_key = BankRef(OBJ_PROGRAM, prog_b_bank).bank_key
+        timeouts = {(OBJ_PROGRAM, prog_a_bank): {1, 2}, (OBJ_PROGRAM, prog_b_bank): set(range(128))}
+        calls: List[Tuple[int, int, Optional[Tuple[int, ...]]]] = []
+
+        def gbo_inc(obj_type, bank, slots=None):
+            calls.append((obj_type, bank, None if slots is None else tuple(slots)))
+            want = range(128) if slots is None else slots
+            if (obj_type, bank) in timeouts:
+                dead = timeouts[(obj_type, bank)]
+                # every slot answers with a body unless it times out; an EMPTY (falsy) BankObjects
+                # (all timed out) must still count as incomplete
+                return BankObjects({n: (1, make_body(f"Inc-{bank}-{n}")) for n in want if n not in dead},
+                                   missing=[n for n in want if n in dead])
+            return {}                      # plain dict: complete
+        r_inc = pull(idx_inc, blobs_inc, lambda bk: inc_digest.get(bk), gbo_inc, full=True)
+        check("incomplete-applied", idx_inc.get(OBJ_PROGRAM, prog_a_bank, 0) is not None)
+        check("incomplete-two-banks", len(r_inc.incomplete_banks) == 2)
+        check("incomplete-missing-count", r_inc.missing_slots == 2 + 128)
+        check("incomplete-baseline-advanced",
+              idx_inc.bank_digest_baseline.get(prog_a_key) == inc_digest[prog_a_key]
+              and idx_inc.bank_digest_baseline.get(prog_b_key) == inc_digest[prog_b_key])
+        check("plain-dict-complete",
+              idx_inc.bank_digest_baseline.get(BankRef(OBJ_COMBI, combi_bank).bank_key)
+              == inc_digest[BankRef(OBJ_COMBI, combi_bank).bank_key])
+        check("incomplete-warning", r_inc.incomplete_warning is not None
+              and "CHECK:" in r_inc.incomplete_warning)
+        check("incomplete-persisted-record",
+              idx_inc.incomplete_slots(prog_a_key) == [1, 2]
+              and idx_inc.incomplete_slots(prog_b_key) == list(range(128))
+              and BankRef(OBJ_COMBI, combi_bank).bank_key not in idx_inc.incomplete_banks)
+        idx_inc.save()
+        check("incomplete-survives-restart",
+              LocalLibraryIndex(root / "incomplete").load().incomplete_slots(prog_a_key) == [1, 2])
+        # The digest is unchanged (the baseline advanced): the record alone forces a re-fetch of ONLY
+        # the unread slots - the original bug was a lazy Sync never asking for them again.
+        calls.clear()
+        r_inc2 = pull(idx_inc, blobs_inc, lambda bk: inc_digest.get(bk), gbo_inc, full=False)
+        check("incomplete-refetched-lazily", r_inc2.banks_checked == 2)
+        check("incomplete-targeted", sorted(calls) == sorted([(OBJ_PROGRAM, prog_a_bank, (1, 2)),
+                                                              (OBJ_PROGRAM, prog_b_bank, tuple(range(128)))]))
+        check("incomplete-second-strike", idx_inc.incomplete_banks[prog_a_key] == {1: 2, 2: 2})
+        timeouts[(OBJ_PROGRAM, prog_b_bank)] = {5}   # partly answered now: answered slots leave the record
+        r_inc2b = pull(idx_inc, blobs_inc, lambda bk: inc_digest.get(bk), gbo_inc, full=False)
+        check("incomplete-record-shrinks", r_inc2b.banks_checked == 2
+              and idx_inc.incomplete_slots(prog_b_key) == [5] and r_inc2b.recovered_slots == 127)
+        # the 3rd consecutive failure: slots 1, 2 of bank A (and 5 of B) become unreadable, reported once
+        check("unreadable-after-3", idx_inc.unreadable_slots(prog_a_key) == [1, 2]
+              and idx_inc.unreadable_slots(prog_b_key) == [5]
+              and len(r_inc2b.newly_unreadable) == 3 and "unreadable" in (r_inc2b.incomplete_warning or "")
+              and not r_inc2b.incomplete_banks)
+        # ...and from then on are quiet: not asked for, no warning, nothing to do on a lazy pull
+        calls.clear()
+        r_quiet = pull(idx_inc, blobs_inc, lambda bk: inc_digest.get(bk), gbo_inc, full=False)
+        check("unreadable-quiet", r_quiet.banks_checked == 0 and calls == [] and r_quiet.incomplete_warning is None)
+        # a digest change of the bank reads it whole, which retries the unreadable slots (still dead: quiet)
+        inc_digest[prog_a_key] = "d-changed"
+        calls.clear()
+        r_dc = pull(idx_inc, blobs_inc, lambda bk: inc_digest.get(bk), gbo_inc, full=False)
+        check("unreadable-digest-change-retries", calls == [(OBJ_PROGRAM, prog_a_bank, None)]
+              and r_dc.incomplete_warning is None and idx_inc.unreadable_slots(prog_a_key) == [1, 2]
+              and idx_inc.bank_digest_baseline.get(prog_a_key) == "d-changed")
+        # Re-check asks only for the unread slots, no digest sweep, and a slot that answers recovers
+        timeouts[(OBJ_PROGRAM, prog_a_bank)] = {2}
+        calls.clear()
+        r_rc = recheck_unread(idx_inc, blobs_inc, gbo_inc)
+        check("recheck-targeted", sorted(calls) == sorted([(OBJ_PROGRAM, prog_a_bank, (1, 2)),
+                                                           (OBJ_PROGRAM, prog_b_bank, (5,))]))
+        check("recheck-result", r_rc.recovered_slots == 1 and idx_inc.incomplete_slots(prog_a_key) == [2]
+              and idx_inc.unreadable_slots(prog_a_key) == [2] and r_rc.incomplete_warning is None
+              and idx_inc.bank_digest_baseline.get(prog_a_key) == "d-changed")
+        # a subset fetch where every asked slot answers never clears slots it did not ask for
+        idx_inc.incomplete_banks[prog_b_key] = {5: 1, 6: 3}
+        timeouts[(OBJ_PROGRAM, prog_b_bank)] = set()
+        calls.clear()
+        pull(idx_inc, blobs_inc, lambda bk: inc_digest.get(bk), gbo_inc, full=False)
+        check("subset-keeps-unreadable", (OBJ_PROGRAM, prog_b_bank, (5,)) in calls
+              and idx_inc.incomplete_banks.get(prog_b_key) == {6: 3})
+        timeouts.clear()                   # the instrument answers everything now
+        recheck_unread(idx_inc, blobs_inc, gbo_inc)
+        check("incomplete-cleared", idx_inc.incomplete_banks == {})
+        r_inc4 = pull(idx_inc, blobs_inc, lambda bk: inc_digest.get(bk), gbo_inc, full=False)
+        check("complete-then-skipped", r_inc4.banks_checked == 0)
+
+        # an older two-argument callable (no slots=) still works: the bank is read whole
+        idx_old = LocalLibraryIndex(root / "oldcb")
+        idx_old.set_incomplete_bank(OBJ_PROGRAM, prog_a_bank, [3])
+        for b in all_banks():
+            idx_old.set_bank_digest_baseline(b.obj_type, b.bank, inc_digest[b.bank_key])
+        old_calls: List[Tuple[int, int]] = []
+        r_old = pull(idx_old, BlobStore(root / "oldcb"), lambda bk: inc_digest.get(bk),
+                     lambda t, b: (old_calls.append((t, b)) or {3: (1, make_body("Old3"))}), full=False)
+        check("old-callable-whole-bank", old_calls == [(OBJ_PROGRAM, prog_a_bank)] and r_old.banks_checked == 1
+              and idx_old.incomplete_banks == {} and idx_old.get(OBJ_PROGRAM, prog_a_bank, 3) is not None)
+        check("accepts-slots", accepts_slots(gbo_inc) and not accepts_slots(lambda t, b: {})
+              and accepts_slots(lambda t, b, **k: {}))
+
+        # a bank with NO digest that answers no slot keeps the NoDigest pin (not re-swept forever)
+        idx_nd = LocalLibraryIndex(root / "nodigest")
+        nd_digest = dict(inc_digest)
+        nd_digest[prog_b_key] = None
+        r_nd = pull(idx_nd, BlobStore(root / "nodigest"), lambda bk: nd_digest.get(bk),
+                    lambda t, b: BankObjects({}, missing=range(128)) if (t, b) == (OBJ_PROGRAM, prog_b_bank) else {},
+                    full=True)
+        check("nodigest-silent-pinned", idx_nd.bank_digest_baseline.get(prog_b_key) == ""
+              and not r_nd.incomplete_banks and not idx_nd.incomplete_banks)
+
+        # a cancel inside a bank (holes) stops the sweep, advances no baseline, and STILL remembers the
+        # unread slots - without counting the never-asked ones as failed attempts
+        idx_c = LocalLibraryIndex(root / "cancel")
+        flag = {"stop": False}
+
+        def gbo_cancel(obj_type, bank, slots=None):
+            flag["stop"] = True
+            return BankObjects({0: (1, make_body("C0"))}, missing=[1], skipped=range(2, 128))
+        r_c = pull(idx_c, BlobStore(root / "cancel"), lambda bk: inc_digest.get(bk), gbo_cancel,
+                   full=True, cancel=lambda: flag["stop"])
+        rec_c = next(iter(idx_c.incomplete_banks.values()), {})
+        check("cancel-mid-bank", r_c.cancelled and not idx_c.bank_digest_baseline
+              and len(idx_c.incomplete_banks) == 1 and sorted(rec_c) == list(range(1, 128))
+              and rec_c[1] == 1 and all(rec_c[n] == 0 for n in range(2, 128)))
+        # an older callable reporting the cancel's slots as `missing` gets the same no-count treatment
+        idx_c2 = LocalLibraryIndex(root / "cancel2")
+        flag["stop"] = False
+
+        def gbo_cancel_old(obj_type, bank):
+            flag["stop"] = True
+            return BankObjects({0: (1, make_body("C0"))}, missing=range(1, 128))
+        pull(idx_c2, BlobStore(root / "cancel2"), lambda bk: inc_digest.get(bk), gbo_cancel_old,
+             full=True, cancel=lambda: flag["stop"])
+        rec_c2 = next(iter(idx_c2.incomplete_banks.values()), {})
+        check("cancel-old-callable-no-count", len(rec_c2) == 127 and set(rec_c2.values()) == {0}
+              and not idx_c2.bank_digest_baseline)
     finally:
         if root.exists():
             shutil.rmtree(root)
