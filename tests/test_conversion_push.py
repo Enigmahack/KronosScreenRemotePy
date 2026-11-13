@@ -214,6 +214,30 @@ rep = push_converted(svc, [prog_with_ge(47)], {OBJ_PROGRAM: (0x4C, 0)}, arp_tabl
 rep2 = push_converted(svc, [prog_with_ge(47), prog_with_ge(26 + 21)], {OBJ_PROGRAM: (0x4C, 1)}, arp_tables, bk, arp_start=128)
 check("arp-start-past-bank", all(r.status == "written" for r in rep2) and (0x19, 0x40, 128) not in svc.slots)
 
+# ---- bank names follow the connected instrument: a Kronos says U-GG/U-G, a Nautilus says T/G
+from Conversion.push import restore_from_backup, bank_label, dest_label
+
+
+class FakeKronos(FakeNautilus):
+    is_nautilus = False
+
+
+check("bank-label-nautilus-default", bank_label(OBJ_PROGRAM, 0x4D) == "T" and bank_label(OBJ_COMBI, 0x40) == "G")
+check("bank-label-kronos", bank_label(OBJ_PROGRAM, 0x4D, False) == "U-GG" and bank_label(OBJ_COMBI, 0x46, False) == "U-G")
+check("dest-label-kronos", dest_label(OBJ_PROGRAM, 0x4D, 0, False) == "U-GG000" and dest_label(OBJ_PROGRAM, 0x4C, 3) == "S003")
+for cls, want in ((FakeKronos, "U-GG"), (FakeNautilus, "T")):
+    svc = cls({(OBJ_PROGRAM, 0x4D): 3700})
+    ops = [SimpleNamespace(obj=OBJ_PROGRAM, bank=0x4D, index=0, version=6, body=bytes(3700))]
+    bkp = os.path.join(tempfile.mkdtemp(), "restore.syx")
+    svc.backup_objects(ops, bkp)
+    seen = []
+    res = restore_from_backup(svc, bkp, progress=seen.append)
+    check(f"restore-label-{want}", res.ok and seen == [f"Restoring {want} slot 0"])
+    svc.write_code = 5
+    res = restore_from_backup(svc, bkp)
+    check(f"restore-failure-label-{want}", any(f"Write of {want} slot 0" in m for m in res.messages)
+          and any(f"Bank {want} was not Stored" in m for m in res.messages))
+
 if fails:
     print("FAILED:", fails)
     sys.exit(1)

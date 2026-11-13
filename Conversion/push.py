@@ -71,11 +71,16 @@ class ItemReport:
     messages: List[str] = field(default_factory=list)
 
 
-def bank_label(obj_type: int, bank: int) -> str:
+def _nautilus_target(service) -> bool:
+    """The connected instrument's family, for labels: Nautilus unless the service says it is a Kronos."""
+    return bool(getattr(service, "is_nautilus", True))
+
+
+def bank_label(obj_type: int, bank: int, nautilus: bool = True) -> str:
     """Nautilus user banks continue past its factory A-F as G.. (wire 0x40 = G, 0x4C = S), where Kronos says U-A.."""
     if obj_type == OBJ_SONG_TIMBRE:
         return "Songs"
-    if obj_type in (OBJ_PROGRAM, OBJ_COMBI) and 0x40 <= bank <= 0x4D:
+    if nautilus and obj_type in (OBJ_PROGRAM, OBJ_COMBI) and 0x40 <= bank <= 0x4D:
         return chr(71 + bank - 0x40)
     if obj_type == OBJ_ARP_PATTERN:
         return "arp pattern bank B"
@@ -90,11 +95,11 @@ def slot_count(obj_type: int, bank: int) -> int:
     return SONG_SLOTS if obj_type == OBJ_SONG_TIMBRE else object_types.slot_count(obj_type, bank)
 
 
-def dest_label(obj_type: int, bank: int, slot: int) -> str:
+def dest_label(obj_type: int, bank: int, slot: int, nautilus: bool = True) -> str:
     if obj_type == OBJ_SONG_TIMBRE:
         return f"Song {slot:03d}"
-    return f"{bank_label(obj_type, bank)}{slot:03d}" if obj_type in (OBJ_PROGRAM, OBJ_COMBI) \
-        else f"{bank_label(obj_type, bank)}:{slot:03d}"
+    label = bank_label(obj_type, bank, nautilus)
+    return f"{label}{slot:03d}" if obj_type in (OBJ_PROGRAM, OBJ_COMBI) else f"{label}:{slot:03d}"
 
 
 EXI_DEST = -1   # `dest` key for EXi Programs when they go to a different bank than HD-1 Programs
@@ -195,6 +200,8 @@ def push_converted(service, items: List[ConvertItem], dest: Dict[int, Tuple[int,
 def _push(service, items: List[ConvertItem], dest: Dict[int, Tuple[int, int]], tables: ConvertTables,
           backup_path: str, progress: Callable[[str], None], arp_start: Optional[int],
           still_valid: Optional[Callable[[], bool]], reports: PushReports) -> None:
+    nautilus = _nautilus_target(service)
+
     def guard() -> Optional[str]:
         return _connection_problem(service, still_valid)
 
@@ -215,11 +222,11 @@ def _push(service, items: List[ConvertItem], dest: Dict[int, Tuple[int, int]], t
                 and nautilus_timbre_bank_for_wire(bank) is not None
                 and slot < slot_count(OBJ_PROGRAM, bank)):
             prog_at[item.src_ref] = (i, bank, slot)   # exactly the eligibility rule of _placements
-        where = dest_label(item.obj_type, bank, slot)
+        where = dest_label(item.obj_type, bank, slot, nautilus)
         rep = ItemReport(item.name, where, "refused")
         reports.append(rep)
         if slot >= slot_count(item.obj_type, bank):
-            rep.messages.append(f"Past the last slot of bank {bank_label(item.obj_type, bank)}.")
+            rep.messages.append(f"Past the last slot of bank {bank_label(item.obj_type, bank, nautilus)}.")
             continue
         problem = guard()
         if problem:
@@ -236,7 +243,7 @@ def _push(service, items: List[ConvertItem], dest: Dict[int, Tuple[int, int]], t
             want = NAUTILUS.wire_size(program_kind_of(item))
             if len(target.body) != want:
                 kind = "EXi" if len(target.body) == NAUTILUS.wire_exi else "HD-1"
-                rep.messages.append(f"{bank_label(OBJ_PROGRAM, bank)} is a {kind} bank; this is a "
+                rep.messages.append(f"{bank_label(OBJ_PROGRAM, bank, nautilus)} is a {kind} bank; this is a "
                                     f"{program_kind_of(item).value.upper()} Program - pick a matching bank.")
                 continue
         if item.obj_type == OBJ_SONG_TIMBRE and len(target.body) != COMBI_NAUTILUS_SIZE:
@@ -372,7 +379,7 @@ def _push(service, items: List[ConvertItem], dest: Dict[int, Tuple[int, int]], t
                                           f"the original instrument only; the previous contents are in "
                                           f"{backup_path}.")
             else:
-                progress(f"Storing bank {bank_label(obj, bank)}")
+                progress(f"Storing bank {bank_label(obj, bank, nautilus)}")
                 committed, note = _store_checked(service, obj, bank)
             if committed:
                 committed_banks.add((obj, bank))
@@ -412,7 +419,7 @@ def _push(service, items: List[ConvertItem], dest: Dict[int, Tuple[int, int]], t
     write_and_store(phase2)
 
     if failed_banks and committed_banks:
-        done = ", ".join(bank_label(o, b) for o, b in sorted(committed_banks))
+        done = ", ".join(bank_label(o, b, nautilus) for o, b in sorted(committed_banks))
         for rep, op in written:
             if (op.obj, op.bank) in failed_banks:
                 rep.messages.append(f"Bank(s) already stored: {done}. The previous contents of every target slot are "
@@ -510,6 +517,7 @@ def restore_from_backup(service, backup_path: str,
     were not all acknowledged is not Stored. Not wired to any menu yet.
     Verified on a Nautilus for Program, Combi and arp-pattern slots (2026-10-22)."""
     msgs: List[str] = []
+    nautilus = _nautilus_target(service)   # bank names in the messages follow the connected instrument
     try:
         with open(backup_path, "rb") as f:
             raw = f.read()
@@ -536,28 +544,28 @@ def restore_from_backup(service, backup_path: str,
         problem = _connection_problem(service, still_valid, nautilus_only=False)
         if problem:
             bad_banks.add((op.obj, op.bank))
-            msgs.append(f"Not restored {bank_label(op.obj, op.bank)} slot {op.index}: {problem}.")
+            msgs.append(f"Not restored {bank_label(op.obj, op.bank, nautilus)} slot {op.index}: {problem}.")
             continue
-        progress(f"Restoring {bank_label(op.obj, op.bank)} slot {op.index}")
+        progress(f"Restoring {bank_label(op.obj, op.bank, nautilus)} slot {op.index}")
         code = service.write_object(op)
         if code != 0:
             bad_banks.add((op.obj, op.bank))
-            msgs.append(f"Write of {bank_label(op.obj, op.bank)} slot {op.index} not acknowledged (reply {code}).")
+            msgs.append(f"Write of {bank_label(op.obj, op.bank, nautilus)} slot {op.index} not acknowledged (reply {code}).")
     ok = not bad_banks
     for obj, bank in sorted({(o.obj, o.bank) for o in ops} - bad_banks):
         committed, note = _store_checked(service, obj, bank)
         if committed is not True:
             ok = False
-            msgs.append(f"Bank {bank_label(obj, bank)}: {note}")
+            msgs.append(f"Bank {bank_label(obj, bank, nautilus)}: {note}")
     for obj, bank in sorted(bad_banks):
-        msgs.append(f"Bank {bank_label(obj, bank)} was not Stored.")
+        msgs.append(f"Bank {bank_label(obj, bank, nautilus)} was not Stored.")
     for op in ops:
         if (op.obj, op.bank) in bad_banks:
             continue
         back = service.dump_object_parsed(op.obj, op.bank, op.index, no_response_ms=6000)
         if back is None or back.body != op.body:
             ok = False
-            msgs.append(f"{bank_label(op.obj, op.bank)} slot {op.index} did not read back as the backup.")
+            msgs.append(f"{bank_label(op.obj, op.bank, nautilus)} slot {op.index} did not read back as the backup.")
     if ok:
         msgs.append(f"Restored {len(ops)} object(s) from {backup_path}.")
     return RestoreResult(ok, msgs)
