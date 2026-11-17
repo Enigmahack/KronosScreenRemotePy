@@ -162,12 +162,16 @@ _refs = [(s, u) for _, _, u, s in iter_drum_kit_sample_refs(_r.body)] if _r.body
 check("drumkit-similar-sample-used", _real.try_map("ROM_DRUMSAMPLES", 1) is None and [s for s, _ in _refs] == [207]
       and _refs[0][1][15] & 1 == 1
       and any("chosen by its audio" in w and "1 identical" in w for w in _r.warnings) and not any("switched off" in w for w in _r.warnings))
-# the other way: both halves of the pair map to the one mono sample, the right half's zone is dropped when the left is in the note
+# the other way: the Nautilus pair #207/#208 is Kronos EXs1 drum samples #6/#7 (identical audio), so each half maps exactly
 from Conversion.media import convert_drum_kit_to_kronos
-_kit = add_dk_zone(add_dk_zone(drum_kit(0, 207), 0, 1, 208), 0, 2, 5000)
+_rr = convert_drum_kit_to_kronos(add_dk_zone(drum_kit(0, 207), 0, 1, 208), _real, no_exs)
+_zs = [(z, s, u[15] >> 1) for n, z, u, s in iter_drum_kit_sample_refs(_rr.body)] if _rr.body else []
+check("drumkit-reverse-exs-twin", _zs == [(0, 6, 2), (1, 7, 2)] and not any("right half" in w for w in _rr.warnings))
+# a pair with no exact Kronos twin (#239/#240): both halves map to one mono sample, the right half's zone is dropped
+_kit = add_dk_zone(add_dk_zone(drum_kit(0, 239), 0, 1, 240), 0, 2, 5000)
 _rr = convert_drum_kit_to_kronos(_kit, _real, no_exs)
 _zs = [(z, s) for n, z, _, s in iter_drum_kit_sample_refs(_rr.body)] if _rr.body else []
-check("drumkit-pair-halves-merge-to-one-mono-zone", (0, 1) in _zs and all(z != 1 for z, _ in _zs) and any("right half" in w for w in _rr.warnings))
+check("drumkit-pair-halves-merge-to-one-mono-zone", (0, 10) in _zs and all(z != 1 for z, _ in _zs) and any("right half" in w for w in _rr.warnings))
 # Wave Sequence steps with no multisample twin use the closest-sounding one instead of the default piano
 _ms = {d: next(int(k) for k, v in _real._similar[d].items() if _real.try_map("ROM_MULTISAMPLES", int(k)) is None)
        for d in ("kronos_to_nautilus_ms",)}
@@ -203,7 +207,22 @@ check("ge-warning-known", w and "#47" in w and "Comp/Lead Generated-Riff" in w)
 ge_body[1814] = 200
 w = karma.describe_ge_assignment(bytes(ge_body), ge_cat)
 check("ge-warning-unknown", w and "#200" in w and "name unknown" in w)
-check("ge-warning-zero", karma.describe_ge_assignment(bytes(WIRE_SIZE_HD1), ge_cat) is None)
+from Conversion.data import init_combi_template, init_program_template
+_kinit = init_program_template(False, False)
+check("ge-zero-init-unused", karma.describe_ge_assignment(_kinit, ge_cat) is None and karma.module_ge(_kinit) is None)
+_ge0 = bytearray(_kinit); _ge0[1306] |= 0x80          # GE #0 with KARMA on is a real assignment
+check("ge-zero-karma-on", karma.module_ge(bytes(_ge0)) == 0 and "#0" in karma.describe_ge_assignment(bytes(_ge0), ge_cat))
+_ge0 = bytearray(_kinit); _ge0[1820] ^= 0x01          # GE #0 with an edited module, KARMA off
+check("ge-zero-edited-module", karma.module_ge(bytes(_ge0)) == 0)
+_ge0[1814] = 47
+check("ge-nonzero", karma.module_ge(bytes(_ge0)) == 47)
+_kc_init = init_combi_template(False)
+check("ge-combi-init-modules-unused", all(karma.module_ge(_kc_init, 1814 + 744 * m, combi=True) is None for m in range(4)))
+_kcb = bytearray(_kc_init); _kcb[1306] |= 0x80            # KARMA on is Combi-wide: module B (GE 0, Run GE off) stays unused
+_kcb[2558 + 10] ^= 0x01                                   # even with an edited module B
+check("ge-combi-run-off-unused", karma.module_ge(bytes(_kcb), 2558, combi=True) is None)
+_kcb[2558 + 294] |= 0x20
+check("ge-combi-run-on-used", karma.module_ge(bytes(_kcb), 2558, combi=True) == 0)
 
 # ---- program pipeline
 full = bytearray(hd1_zone(0, 9)); full[1814] = 47; full[1400] = 0xAB
@@ -347,6 +366,52 @@ ed = convert_combi(bytes(kr), ge_cat, ct, None, None, TimbreProgramRefs.FACTORY_
 check("combi-ref-edited", ed.body[2632] == 5 and any("My Edit" in w for w in ed.warnings))
 check("combi-wrong-size", convert_combi(bytes(100), ge_cat).body is None)
 
+# ---- unknown Program identity (no namer = the source slot's content is not known)
+from Conversion.data import UnknownProgramIdentity
+check("identity-assumed-reported", any("ASSUMING" in w for w in convert_combi(
+    bytes(kr), ge_cat, ct, None, None, TimbreProgramRefs.FACTORY_EQUIVALENTS, ref_map).warnings))
+kept_u = convert_combi(bytes(kr), ge_cat, ct, None, None, TimbreProgramRefs.FACTORY_EQUIVALENTS, ref_map,
+                       unknown_identity=UnknownProgramIdentity.KEEP_SLOT)
+check("identity-keep-slot", kept_u.body[2632] == 5 and kept_u.body[2633] == 0
+      and any("not in the source set" in w for w in kept_u.warnings))
+known = convert_combi(bytes(kr), ge_cat, ct, None, None, TimbreProgramRefs.FACTORY_EQUIVALENTS, ref_map,
+                      lambda b, i: "Grand", unknown_identity=UnknownProgramIdentity.KEEP_SLOT)
+check("identity-known-name-remaps", known.body[2632] == 9 and not any("ASSUMING" in w for w in known.warnings))
+from Conversion.combi_reverse import convert_combi_to_kronos
+nr = bytearray(rm)
+rk = convert_combi_to_kronos(bytes(nr), init_combi_template(False), ref_map,
+                             unknown_identity=UnknownProgramIdentity.KEEP_SLOT)
+check("identity-reverse-keep", rk.body[4802] == 9 and any("not in the source set" in w for w in rk.warnings))
+rk = convert_combi_to_kronos(bytes(nr), init_combi_template(False), ref_map)
+check("identity-reverse-assumed", rk.body[4802] == 5 and rk.body[4803] == 0 and any("ASSUMING" in w for w in rk.warnings))
+
+# ---- Nautilus -> Kronos carries tempo and latch, never the arp switch
+from Conversion.program_reverse import convert_program_to_kronos
+_n = bytearray(init_program_template(True, False)); _n[1350], _n[1351] = 0x10, 0x27; _n[1349] |= 0x03
+_k = convert_program_to_kronos(bytes(_n), HD1, rmap, no_exs, init_program_template(False, False)).body
+check("reverse-program-tempo-latch", (_k[1304] | _k[1305] << 8) == 10000 and _k[1306] & 0x40 and not _k[1306] & 0x80)
+_nc = bytearray(init_combi_template(True)); _nc[1350], _nc[1351] = 0x10, 0x27; _nc[1349] |= 0x03
+_kc2 = convert_combi_to_kronos(bytes(_nc), init_combi_template(False)).body
+check("reverse-combi-tempo-latch", (_kc2[1304] | _kc2[1305] << 8) == 10000 and _kc2[1306] & 0x40 and not _kc2[1306] & 0x80)
+
+# ---- losses are reported: Drum Track / S/PDIF, EXi pass-through, RAM / user-bank samples
+_dt = bytearray(init_program_template(False, False)); _dt[1292] = 77
+_r = convert_program(bytes(_dt), HD1, rmap, no_exs, ge_cat, init_program_template(True, False))
+check("drum-track-reported", any("Drum Track (pattern P077" in w for w in _r.warnings))
+check("init-no-karma-noise", not any("KARMA performance data" in w for w in convert_program(
+    init_program_template(False, False), HD1, rmap, no_exs, ge_cat, init_program_template(True, False)).warnings))
+from Tools.sample_reference_walker import EXI2_SHIFT, EXI_PCM_HIGH_DEFAULT_BLOB
+_ex = bytearray(init_program_template(False, True)); _ex[2857] = 8; _ex[2908] = 59
+_ex[2857 + EXI2_SHIFT] = 7; _ex[3375 + EXI2_SHIFT] = 0xB1
+_ex[3376 + EXI2_SHIFT:3392 + EXI2_SHIFT] = EXI_PCM_HIGH_DEFAULT_BLOB; _ex[3439 + EXI2_SHIFT] = 0x40
+_r = convert_program(bytes(_ex), EXI, rmap, no_exs, ge_cat, init_program_template(True, True))
+check("exi2-pcm-reported", any(w.startswith("EXi2 MOD-7 PCM oscillator (ROM multisample #4)") for w in _r.warnings))
+check("exi-sgx2-reported", any("EXi1 SGX-2 Piano Type 59 (Berlin)" in w for w in _r.warnings))
+_ram = bytearray(hd1_zone(0, 9)); _ram[2774 + 1:2774 + 17] = bytes([0x4B, 0x4F, 0x52, 0x47] + [0] * 8 + [0x4D, 0x53, 0, 2])
+_notes = []
+remap_program_hd1(bytes(_ram), rmap, no_exs, notes=_notes)
+check("ram-passthrough-reported", any("Sampling-mode RAM sample #9" in n for n in _notes))
+
 # ---- Nautilus PCG writer / reader
 from Conversion.nautilus_pcg import (open_nautilus_pcg, write_single_drum_kit, write_single_program,
                                      write_single_wave_seq)
@@ -384,6 +449,52 @@ _ws[_OSC1_ZONE_BASE + 1:_OSC1_ZONE_BASE + 17] = bytes(16)
 _notes = []
 remap_program_hd1(bytes(_ws), RomWaveformMap.from_catalog(), ExsOptionIndex.from_catalog(), substitute=True, notes=_notes)
 check("wave-seq-internal-zone-not-noted", not any("sample pack" in n for n in _notes))
+
+# ---- playback direction (sample is REV XOR zone reverse bit) survives Kronos -> Nautilus -> Kronos
+from Data.librarian_sysex import program_zone_reversed, set_program_zone_reverse
+from Objects.object_body import set_wave_seq_step_reverse, wave_seq_step_reversed
+
+
+def _ev(k_bank, k_idx, n_idx, section="ROM_MULTISAMPLES", reverse=False):
+    return dict(kronos_bank=f"Bank{k_bank:02d}", section=section, kronos_index=k_idx, nautilus_index=n_idx,
+                nautilus_uuid=None, match="content", **({"reverse": True} if reverse else {}))
+
+
+_rv = rom(("ROM_MULTISAMPLES", 31, 40, None))            # Kronos #31 forward, #30 its REV twin: both are Nautilus #40
+_rv.merge_evidence([_ev(0, 30, 40, reverse=True), _ev(1, 25, 177)])
+
+
+def _zone(number, rev_bit):
+    b = bytearray(hd1_zone(0, number))
+    set_program_zone_reverse(b, 0, 0, rev_bit)
+    return bytes(b)
+
+
+def _dir(body, rev_set):
+    (_o, _z, _u, n), = list(iter_program_sample_zone_refs(body))[:1]
+    return (n in rev_set) ^ program_zone_reversed(body, 0, 0), n
+
+
+for _name, _src in (("rev-bit-off", _zone(30, False)), ("rev-bit-on", _zone(30, True)), ("fwd-bit-on", _zone(31, True))):
+    _want = _dir(_src, {30})[0]
+    _naut, _ = remap_program_hd1(_src, _rv, no_exs)
+    _back, _ = remap_program_hd1(_naut, _rv.reversed(), no_exs)
+    check(f"reverse-direction-{_name}", _dir(_naut, set())[0] == _want and _dir(_back, {30}) == (_want, 31))
+_only_rev = RomWaveformMap()
+_only_rev.merge_evidence([_ev(0, 30, 40, reverse=True)])
+_back, _ = remap_program_hd1(_zone(40, False), _only_rev.reversed(), no_exs)
+check("reverse-only-rev-twin-flips-bit", _dir(_back, {30}) == (False, 30) and program_zone_reversed(_back, 0, 0))
+_w = bytearray(wave_seq(0, 30))
+set_wave_seq_step_reverse(_w, 0, True)
+_wn, _ = remap_wave_seq(bytes(_w), _rv, no_exs)
+check("reverse-wave-seq-step", [s for _, _, s in iter_wave_seq_sample_refs(_wn)][0] == 40 and not wave_seq_step_reversed(_wn, 0))
+# a Nautilus ROM sample whose only Kronos twin is in EXs1 comes back as that EXs sample
+_back, _un = remap_program_hd1(hd1_zone(0, 177), _rv.reversed(), no_exs)
+_z = list(iter_program_sample_zone_refs(_back))
+check("reverse-rom-to-exs-twin", not _un and _z[0][3] == 25 and _z[0][2][15] >> 1 == 2)
+# Nautilus drum sample #0 ("no sample") is switched off going to the Kronos, where #0 is a real kick
+_dk, _ = remap_drum_kit(drum_kit(0, 0), _rv.reversed(), no_exs)
+check("nautilus-drum-zero-switched-off", list(iter_drum_kit_sample_refs(_dk)) == [])
 
 # ---- bundled data loads
 check("data-rom-map", len(RomWaveformMap.from_catalog()) > 1000)

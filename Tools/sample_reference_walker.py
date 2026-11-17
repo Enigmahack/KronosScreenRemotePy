@@ -38,8 +38,11 @@ _OSC1_ZONE_BASE, _OSC2_ZONE_BASE, _ZONE_STRIDE, _ZONE_NUM_OFFSET = 2774, 3240, 2
 _OSC_MODE_OFFSET = 2558
 
 _EXI_ALGORITHM_TYPE_OFFSET = 2857
+# An EXi Program runs two engines: EXi2's block (Algorithm Type at 3909, Prog_EXi_Common.txt) is EXi1's moved by 1052
+# bytes. The PCM sites below are EXi1's; checked on 156 EXi2 MOD-7/STR-1 corpus Programs to sit at the same distance.
+EXI2_SHIFT = 1052
 _EXI_MOD7, _EXI_STR1 = 7, 4
-_MOD7 = ("MOD-7", 3375, 3376, 3439)   # engine, flag, uuid, number offsets
+_MOD7 = ("MOD-7", 3375, 3376, 3439)   # engine, flag, uuid, number offsets (EXi1)
 _STR1 = ("STR-1", 3449, 3450, 3513)
 
 # EXi's own "unpopulated slot" / ROM sentinel for the PCM OSC High slot.
@@ -146,21 +149,20 @@ def iter_program_sample_zone_refs(body: bytes) -> Iterator[Tuple[int, int, bytes
 
 
 def iter_exi_pcm_high_slot_candidates(body: bytes) -> Iterator[Tuple[str, bytes, int]]:
-    """(engine, 16-byte blob, raw number) for an EXi Program whose engine is MOD-7 or STR-1 and
-    whose PCM High slot has its 'MS Type' on-bit set."""
+    """(engine, 16-byte blob, raw number) for each of an EXi Program's two engines that is MOD-7 or STR-1 and whose
+    PCM High slot has its 'MS Type' on-bit set. EXi1's engine is named "MOD-7" / "STR-1", EXi2's "EXi2 MOD-7"."""
     body = kronos_layout_view(body)
-    if _EXI_ALGORITHM_TYPE_OFFSET >= len(body):
-        return
-    algo = body[_EXI_ALGORITHM_TYPE_OFFSET]
-    site = _MOD7 if algo == _EXI_MOD7 else _STR1 if algo == _EXI_STR1 else None
-    if site is None:
-        return
-    engine, flag_off, uuid_off, num_off = site
-    if num_off + 1 >= len(body):
-        return
-    if (body[flag_off] & 0x01) == 0:
-        return
-    yield engine, bytes(body[uuid_off:uuid_off + 16]), body[num_off] | (body[num_off + 1] << 8)
+    for n, shift in ((1, 0), (2, EXI2_SHIFT)):
+        if _EXI_ALGORITHM_TYPE_OFFSET + shift >= len(body):
+            return
+        algo = body[_EXI_ALGORITHM_TYPE_OFFSET + shift]
+        site = _MOD7 if algo == _EXI_MOD7 else _STR1 if algo == _EXI_STR1 else None
+        if site is None:
+            continue
+        engine, flag_off, uuid_off, num_off = (site[0], *(o + shift for o in site[1:]))
+        if num_off + 1 >= len(body) or (body[flag_off] & 0x01) == 0:
+            continue
+        yield (engine if n == 1 else f"EXi2 {engine}"), bytes(body[uuid_off:uuid_off + 16]),             body[num_off] | (body[num_off + 1] << 8)
 
 
 def walk(obj_type: int, body: bytes) -> List[SampleDependencyRow]:
@@ -287,6 +289,14 @@ def _selftest() -> None:
     check("exi-non-pcm-engine-not-walked", len(walk(OBJ_PROGRAM, exi(3, 3375, 3376, 3439, real_blob, 0x0C70))) == 0)
     rows = walk(OBJ_PROGRAM, exi(4, 3449, 3450, 3513, real_blob, 0x0040))
     check("exi-str1-real-ref", len(rows) == 1 and "STR-1" in rows[0].description and "#4" in rows[0].description)
+    both = bytearray(exi(7, 3375, 3376, 3439, real_blob, 0x0C70))
+    both[2857 + EXI2_SHIFT] = 4
+    both[3449 + EXI2_SHIFT] = 0xB1
+    both[3450 + EXI2_SHIFT:3466 + EXI2_SHIFT] = bytes(reversed(real_blob))
+    both[3513 + EXI2_SHIFT] = 0x40
+    engines = sorted(e for e, _b, _n in iter_exi_pcm_high_slot_candidates(bytes(both)))
+    check("exi2-engine-walked", engines == ["EXi2 STR-1", "MOD-7"])
+    check("exi2-rows", len(walk(OBJ_PROGRAM, bytes(both))) == 2)
 
     # INIT objects reference nothing
     b = program("Init Program", WIRE_SIZE_HD1)

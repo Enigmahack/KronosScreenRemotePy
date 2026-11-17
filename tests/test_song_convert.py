@@ -71,8 +71,25 @@ else:
     out = read_sng(k2n)
     orig = read_sng(open(kr[0], "rb").read())
     check("file-k2n-model", out.model == MODEL_NAUTILUS and all(len(s.timbre_set) == 5640 for s in out.songs))
-    check("file-k2n-events-untouched", [s.tracks for s in out.songs] == [s.tracks for s in orig.songs]
+    import Data.song_events as sev
+
+    def non_pc(f):
+        return [[e for e in t if e.kind != sev.PROGRAM] for s in f.songs for t in s.tracks]
+
+    def pcs(f):
+        return [(e.fields["bank"], e.fields["prog"]) for s in f.songs for t in s.tracks for e in t if e.kind == sev.PROGRAM]
+    check("file-k2n-other-events-untouched", non_pc(out) == non_pc(orig)
           and [s.master for s in out.songs] == [s.master for s in orig.songs])
+    # Kronos user-bank Program Changes keep their slot and move one bank down (U-x -> the same Nautilus position); with
+    # the default policy a factory equivalent may replace one, so compare under "keep the slot numbers".
+    from Conversion.data import UnknownProgramIdentity
+    keep_tables = ConvertTables.load()
+    keep_tables.unknown_identity = UnknownProgramIdentity.KEEP_SLOT
+    k2n_keep = read_sng(convert_sng(open(kr[0], "rb").read(), MODEL_NAUTILUS, keep_tables)[0])
+    check("file-k2n-pc-user-bank-shift", pcs(orig) and pcs(k2n_keep) == [(b - 1, p) for b, p in pcs(orig)])
+    n2k_keep = read_sng(convert_sng(k2n_keep.serialize(), MODEL_KRONOS, keep_tables)[0])
+    check("file-pc-roundtrip-keep", pcs(n2k_keep) == pcs(orig))
+    check("file-k2n-pc-reported", any("Program Change" in m for m in w))
     check("file-k2n-control-untouched", [s.control for s in out.songs] == [s.control for s in orig.songs])
     check("file-k2n-names", [s.name for s in out.songs] == [s.name for s in orig.songs])
     check("file-k2n-rows", all(r[1] == s.event_bytes for r, s in zip(out.header.rows, out.songs)))

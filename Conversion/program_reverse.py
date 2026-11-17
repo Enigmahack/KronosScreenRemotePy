@@ -2,12 +2,14 @@
 
 The Nautilus RT Controller / Scene / Step Seq block [1280, 2552) has no Kronos counterpart and is replaced by the
 Kronos S/PDIF + Drum Track + KARMA block [1280, 2558) of `template` (normally an Init Program), so KARMA and the Drum
-Track stay off. Everything else is shared, and HD-1 ROM sample references are mapped back through the inverted ROM table."""
+Track stay off (tempo and latch are carried). Everything else is shared, and HD-1 ROM sample references are mapped back through the inverted ROM table."""
 from __future__ import annotations
 
 from typing import List, Optional
 
+from Conversion import karma
 from Conversion.data import RomWaveformMap
+from Conversion.exi import exi_notes
 from Conversion.profiles import KRONOS, NAUTILUS, PROGRAM_SHARED_HEAD_END, PROGRAM_SIZE_DELTA, ProgramKind
 from Conversion.result import ConversionResult
 from Conversion.zones import program_zones_not_audio_identical, remap_program_hd1, substitution_warning
@@ -51,6 +53,7 @@ def convert_program_to_kronos(body: bytes, kind: ProgramKind, rom_map: RomWavefo
                                                  f"{kronos_size} (an EXi template for an EXi Program, HD-1 for HD-1)."])
 
     out = _to_kronos_layout(bytes(body), template)
+    karma.carry_scene_common(body, out)
     if kind is ProgramKind.HD1:
         reverse = rom_map.reversed()
         approx = program_zones_not_audio_identical(bytes(out), reverse)
@@ -64,7 +67,10 @@ def convert_program_to_kronos(body: bytes, kind: ProgramKind, rom_map: RomWavefo
         if substitutions:
             warnings.append(substitution_warning("Kronos", substitutions))
         out = bytearray(remapped)
+    else:
+        warnings += exi_notes(body, "Nautilus", "Kronos")
     if nautilus_init is None or body[PROGRAM_SHARED_HEAD_END:NAUTILUS.tail_start] != \
             nautilus_init[PROGRAM_SHARED_HEAD_END:NAUTILUS.tail_start]:
-        warnings.append("Nautilus-only settings (RT Controller, Scenes, Step Sequencer) were not carried over.")
+        warnings.append("Nautilus-only settings (RT Controller, Scenes, ARP, Step Sequencer) were not carried over; "
+                        "tempo and latch were.")
     return ConversionResult(bytes(out), warnings, refusals, substitutions=substitutions)

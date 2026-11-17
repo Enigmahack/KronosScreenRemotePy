@@ -48,10 +48,12 @@ def convert_object(obj_type: int, body: bytes, is_exi: bool, src_family: str, ds
     if obj_type in (OBJ_COMBI, OBJ_SONG_TIMBRE):
         if to_nautilus:
             return convert_combi(body, tables.ge_catalog, init_combi_template(True), karma.ArpOptions(),
-                                 tables.ge_patterns, ref_map=tables.ref_map, kronos_program_name=program_name)
-        return convert_combi_to_kronos(body, init_combi_template(False), tables.ref_map, program_name)
+                                 tables.ge_patterns, ref_map=tables.ref_map, kronos_program_name=program_name,
+                                 unknown_identity=tables.unknown_identity)
+        return convert_combi_to_kronos(body, init_combi_template(False), tables.ref_map, program_name,
+                                       tables.unknown_identity)
     if obj_type == OBJ_SET_LIST:
-        return convert_setlist(body, to_nautilus, tables.ref_map, program_name)
+        return convert_setlist(body, to_nautilus, tables.ref_map, program_name, tables.unknown_identity)
     if obj_type == OBJ_DRUM_KIT:
         return (convert_drum_kit if to_nautilus else convert_drum_kit_to_kronos)(body, tables.rom_map, tables.exs)
     if obj_type == OBJ_WAVE_SEQ:

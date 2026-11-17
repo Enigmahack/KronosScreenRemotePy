@@ -15,8 +15,8 @@ from __future__ import annotations
 
 from typing import Callable, Dict, List, Optional
 
-from Conversion.data import (ProgramRefMap, kronos_program_label, kronos_user_to_nautilus_bank, nautilus_program_label,
-                             nautilus_user_to_kronos_bank)
+from Conversion.data import (ProgramRefMap, UnknownProgramIdentity, assumed_warning, factory_repoint, kronos_program_label,
+                             kronos_user_to_nautilus_bank, nautilus_program_label, nautilus_user_to_kronos_bank)
 from Conversion.result import ConversionResult
 from Data.librarian_sysex import (SETLIST_KRONOS_SIZE, SETLIST_NAUTILUS_SIZE, set_setlist_slot_ref, setlist_slot_base,
                                   setlist_slot_ref, setlist_stride)
@@ -35,7 +35,8 @@ _HOLD_MAX_NAUTILUS = 0x16            # Kronos allows 0x17 (SetList.txt of each i
 
 
 def convert_setlist(body: bytes, to_nautilus: bool, ref_map: Optional[ProgramRefMap] = None,
-                    program_name: Optional[Callable[[int, int], Optional[str]]] = None) -> ConversionResult:
+                    program_name: Optional[Callable[[int, int], Optional[str]]] = None,
+                    unknown_identity: UnknownProgramIdentity = UnknownProgramIdentity.ASSUME_FACTORY) -> ConversionResult:
     """`program_name(Timbre bank byte, slot)` names the Program at a slot in the source set, in the SOURCE instrument's
     Combi Timbre numbering (Kronos U-A = 18, Nautilus G = 17); None = unknown. See Conversion.auto.convert_object."""
     src_size, dst_size = (SETLIST_KRONOS_SIZE, SETLIST_NAUTILUS_SIZE) if to_nautilus else (SETLIST_NAUTILUS_SIZE,
@@ -64,7 +65,7 @@ def convert_setlist(body: bytes, to_nautilus: bool, ref_map: Optional[ProgramRef
     if hold_clamped:
         warnings.append(f"Hold Time above the Nautilus maximum was lowered to it in slot(s) {_ranges(hold_clamped)}.")
     _convert_footer(body, out, to_nautilus, warnings)
-    _repoint_slots(body, out, to_nautilus, ref_map, program_name, warnings)
+    _repoint_slots(body, out, to_nautilus, ref_map, program_name, warnings, unknown_identity)
     return ConversionResult(bytes(out), warnings, [])
 
 
@@ -84,9 +85,11 @@ def _convert_footer(src: bytes, out: bytearray, to_nautilus: bool, warnings: Lis
 
 
 def _repoint_slots(src: bytes, out: bytearray, to_nautilus: bool, ref_map: Optional[ProgramRefMap],
-                   program_name, warnings: List[str]) -> None:
+                   program_name, warnings: List[str],
+                   unknown_identity: UnknownProgramIdentity = UnknownProgramIdentity.ASSUME_FACTORY) -> None:
     use_map = ref_map is not None and len(ref_map) > 0
     remapped: List[str] = []
+    assumed: List[str] = []
     kept: Dict[str, List[int]] = {}
     combis: List[int] = []
     songs: List[int] = []
@@ -112,26 +115,31 @@ def _repoint_slots(src: bytes, out: bytearray, to_nautilus: bool, ref_map: Optio
         if to_nautilus:
             e = ref_map.get(bank, index) if use_map else None
             actual = program_name(bank, index) if program_name is not None and e is not None else None
-            matches = e is not None and (actual is None or actual.strip() == e.kronos_name.strip())
+            matches, guessed = factory_repoint(e.kronos_name if e is not None else None, actual, unknown_identity)
         else:
             nbank = kronos_user_to_nautilus_bank(bank) or bank
             e = ref_map.get_by_nautilus(nbank, index) if use_map else None
             actual = program_name(nbank, index) if program_name is not None and e is not None else None
-            matches = e is not None and (actual is None or actual.strip() == e.nautilus_name.strip())
+            matches, guessed = factory_repoint(e.nautilus_name if e is not None else None, actual, unknown_identity)
         if not matches:
+            if e is not None and actual is None:
+                label += " (not in the source set)"
             kept.setdefault(label, []).append(s + 1)
             continue
+        done = assumed if guessed else remapped
         if to_nautilus:
             nb = e.nautilus_bank
             new_bank, new_index = nautilus_user_to_kronos_bank(nb) or nb, e.nautilus_index
-            remapped.append(f'{s + 1}: {label} "{e.kronos_name}" -> {nautilus_program_label(nb, new_index)} '
+            done.append(f'{s + 1}: {label} "{e.kronos_name}" -> {nautilus_program_label(nb, new_index)} '
                             f'"{e.nautilus_name}"')
         else:
             new_bank, new_index = e.kronos_bank, e.kronos_index
-            remapped.append(f'{s + 1}: {label} "{e.nautilus_name}" -> {kronos_program_label(new_bank, new_index)} '
+            done.append(f'{s + 1}: {label} "{e.nautilus_name}" -> {kronos_program_label(new_bank, new_index)} '
                             f'"{e.kronos_name}"')
         set_setlist_slot_ref(out, s, new_bank, new_index)
     other = "Nautilus" if to_nautilus else "Kronos"
+    if assumed:
+        warnings.append(assumed_warning("Program slots", assumed, other))
     if remapped:
         warnings.append(f"Program slots re-pointed to {other} factory equivalents: {'; '.join(remapped)}.")
     if kept:

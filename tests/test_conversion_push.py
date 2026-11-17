@@ -162,6 +162,29 @@ svc = PickyNautilus({(OBJ_COMBI, 0x40): 5640})   # Program's target slot doesn't
 rep = push_converted(svc, [p_a, dep], {OBJ_PROGRAM: (0x4C, 5), OBJ_COMBI: (0x40, 0)}, tables, bk)
 check("no-read-reply-combi-not-written", (OBJ_COMBI, 0x40, 0) not in svc.slots and rep[1].status != "written")
 
+# ---- a Program's Wave Sequence zone follows the Wave Sequence written in the same run, and waits for it
+from Data.librarian_sysex import OBJ_WAVE_SEQ, _OSC_ZONE_BASE, iter_program_zone_refs, set_program_zone_number
+from Data.object_types import wave_seq_loc_to_linear
+
+_wp = bytearray(3706)
+_wp[_OSC_ZONE_BASE[0]] = 2                                   # zone 1: MS Type Wave Sequence
+set_program_zone_number(_wp, 0, 0, wave_seq_loc_to_linear(0x40, 3))
+ws_prog = ConvertItem(OBJ_PROGRAM, "WSP", bytes(_wp), is_exi=False)
+ws_item = ConvertItem(OBJ_WAVE_SEQ, "SEQ", bytes(2216), src_ref=(0x40, 3))
+ws_sizes = {(OBJ_PROGRAM, 0x4C): 3700, (OBJ_WAVE_SEQ, 0x41): 2216}
+ws_dest = {OBJ_PROGRAM: (0x4C, 0), OBJ_WAVE_SEQ: (0x41, 0)}
+svc = PickyNautilus(ws_sizes)
+rep = push_converted(svc, [ws_prog, ws_item], ws_dest, tables, bk)
+_z = next(iter_program_zone_refs(svc.slots.get((OBJ_PROGRAM, 0x4C, 0), bytes(3700))))
+check("media-repoint-written", [r.status for r in rep] == ["written"] * 2 and _z[2:] == (2, wave_seq_loc_to_linear(0x41, 0)))
+check("media-repoint-reported", any("re-pointed to the Drum Kit / Wave Sequence" in m for m in rep[0].messages))
+calls = [c for c in svc.calls if c[0] in ("write", "store")]
+check("media-stored-before-program-written", calls.index(("store", OBJ_WAVE_SEQ, 0x41)) < calls.index(("write", 0x4C, 0)))
+svc = PickyNautilus(ws_sizes, write_codes={(OBJ_WAVE_SEQ, 0x41): 5})
+rep = push_converted(svc, [ws_prog, ws_item], ws_dest, tables, bk)
+check("media-failed-program-skipped", rep[0].status == "failed" and ("write", 0x4C, 0) not in svc.calls
+      and any('"SEQ"' in m for m in rep[0].messages))
+
 lone = ConvertItem(OBJ_COMBI, "C", _combi_refs((18, 10)))
 svc = FakeNautilus({(OBJ_COMBI, 0x40): 5640})
 push_converted(svc, [lone], {OBJ_COMBI: (0x40, 0)}, tables, bk)
@@ -237,6 +260,43 @@ for cls, want in ((FakeKronos, "U-GG"), (FakeNautilus, "T")):
     res = restore_from_backup(svc, bkp)
     check(f"restore-failure-label-{want}", any(f"Write of {want} slot 0" in m for m in res.messages)
           and any(f"Bank {want} was not Stored" in m for m in res.messages))
+
+# ---- Convert to Kronos: Nautilus bodies are converted the other way, backed up with the Kronos codec, and a
+# Combi converted alongside its Programs points at where the run wrote them (Kronos Timbre numbering)
+import Data.librarian_sysex as ksx
+from Conversion.data import init_combi_template, init_program_template
+
+
+class KronosTarget(FakeNautilus):
+    is_nautilus = False
+    _codec = ksx
+
+    def backup_objects(self, ops, path):
+        ops = list(ops)
+        self.calls.append(("backup", len(ops)))
+        with open(path, "wb") as f:
+            for op in ops:
+                f.write(ksx.object_dump_write(op.obj, op.bank, op.index, op.version, op.body))
+
+
+ksvc = KronosTarget({(OBJ_PROGRAM, 0x4D): 3706, (OBJ_COMBI, 0x46): 7810})
+ksvc.slots[(OBJ_PROGRAM, 0x4D, 0)] = init_program_template(False, False)
+ksvc.slots[(OBJ_COMBI, 0x46, 0)] = init_combi_template(False)
+n_prog = bytearray(init_program_template(True, False)); n_prog[:24] = b"Naut Prog".ljust(24)
+n_combi = bytearray(init_combi_template(True)); n_combi[:24] = b"Naut Combi".ljust(24)
+n_combi[2632], n_combi[2633], n_combi[2634] = 0, 17, 0x20       # Timbre 1 -> G000 (Nautilus byte 17)
+items = [ConvertItem(OBJ_PROGRAM, "P", bytes(n_prog), src_ref=(17, 0)),
+         ConvertItem(OBJ_COMBI, "C", bytes(n_combi))]
+reps = push_converted(ksvc, items, {OBJ_PROGRAM: (0x4D, 0), OBJ_COMBI: (0x46, 0)}, tables,
+                      os.path.join(tempfile.mkdtemp(), "k.syx"))
+check("kronos-target-written", [r.status for r in reps] == ["written", "written"])
+kp, kc = ksvc.slots[(OBJ_PROGRAM, 0x4D, 0)], ksvc.slots[(OBJ_COMBI, 0x46, 0)]
+check("kronos-target-sizes", len(kp) == 3706 and len(kc) == 7810)
+check("kronos-target-timbre-placed", kc[4802] == 0 and kc[4803] == 31)   # U-GG = Kronos Timbre byte 31
+native_k = ConvertItem(OBJ_PROGRAM, "K", init_program_template(False, False), native=True)
+reps = push_converted(ksvc, [native_k], {OBJ_PROGRAM: (0x4D, 1)}, tables, os.path.join(tempfile.mkdtemp(), "k2.syx"))
+check("kronos-target-native-copied", reps[0].status == "written"
+      and ksvc.slots[(OBJ_PROGRAM, 0x4D, 1)] == init_program_template(False, False))
 
 if fails:
     print("FAILED:", fails)

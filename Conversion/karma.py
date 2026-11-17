@@ -1,10 +1,12 @@
 """KARMA -> Nautilus arpeggiator handling: stripping Kronos-only KARMA bytes and assigning arp patterns to Scenes."""
 from __future__ import annotations
 
+import functools
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
-from Conversion.data import (ARP_ENCODING_FIXED, KarmaGeCatalog, KarmaGePatternLibrary)
+from Conversion.data import (ARP_ENCODING_FIXED, KarmaGeCatalog, KarmaGePatternLibrary, init_combi_template,
+                             init_program_template)
 
 # Kronos "KARMA Common" through the last "Master Scene" byte; identical in the EXi and HD-1 bodies.
 KARMA_START, KARMA_END = 1304, 2557
@@ -38,9 +40,42 @@ def read_ge_number(body: bytes) -> Optional[int]:
     return body[GE_NUMBER_OFFSET] | (body[GE_NUMBER_OFFSET + 1] << 8)
 
 
+# A KARMA module (Program: the one at 1814; Combi: 1814 + 744*m) always holds a GE: 0 is "Arp Model 01 Up/Dn", a real
+# GE, and also what an Init module holds. Combi "Run GE" is on in the Init Combi's module A and fixed on in a Program,
+# so neither it nor the number says whether the module is used.
+KARMA_MODULE_SIZE = 744
+_KARMA_SWITCH_OFFSET = 1306   # bit 7: KARMA on
+
+
+@functools.lru_cache(maxsize=None)
+def _init_module(combi: bool, offset: int) -> bytes:
+    init = init_combi_template(False) if combi else init_program_template(False, False)
+    return init[offset:offset + KARMA_MODULE_SIZE]
+
+
+_RUN_GE = (294, 0x20)        # module +294 bit 5; fixed on in a Program
+
+
+def module_ge(body: bytes, offset: int = GE_NUMBER_OFFSET, combi: bool = False) -> Optional[int]:
+    """The GE the KARMA module at `offset` runs, or None when the module is unused. GE 0 counts only when KARMA is
+    switched on or the module's settings differ from the same module of a Kronos Init Program / Combination (in 41
+    corpus PCGs, 49 of 804 GE-0 Programs had an edited module, e.g. "Money For Nothing ARP G"). The KARMA switch is
+    Combi-wide, so a Combi module with GE 0 must also have its own Run GE on (83 of 6,909 GE-0 corpus Combi modules)."""
+    if offset + KARMA_MODULE_SIZE > len(body):
+        return None
+    ge = body[offset] | (body[offset + 1] << 8)
+    if ge:
+        return ge
+    if combi and not body[offset + _RUN_GE[0]] & _RUN_GE[1]:
+        return None
+    if body[_KARMA_SWITCH_OFFSET] & 0x80 or body[offset:offset + KARMA_MODULE_SIZE] != _init_module(combi, offset):
+        return 0
+    return None
+
+
 def describe_ge_assignment(body: bytes, catalog: KarmaGeCatalog) -> Optional[str]:
-    ge = read_ge_number(body)
-    if not ge:
+    ge = module_ge(body)
+    if ge is None:
         return None
     name = f'"{catalog.name(ge)}"' if catalog.name(ge) else "(name unknown)"
     return (f"KARMA GE #{ge} {name} was assigned - Nautilus has no automatic translation for this "
@@ -149,3 +184,14 @@ def carry_karma_common(kronos_body: bytes, nautilus_body: bytearray, arp_assigne
     if arp_assigned:
         s = (s & ~0x02 & 0xFF) | (((k >> 7) & 1) << 1)
     nautilus_body[_N_SWITCHES] = s
+
+
+def carry_scene_common(nautilus_body: bytes, kronos_body: bytearray) -> None:
+    """Nautilus -> Kronos: tempo and latch. The arp switch is not carried: the Kronos KARMA modules come from an Init
+    template, and switching KARMA on would start its GE 0 ("Arp Model 01")."""
+    tempo = nautilus_body[_N_TEMPO] | (nautilus_body[_N_TEMPO + 1] << 8)
+    if 4000 <= tempo <= 30000:
+        kronos_body[_K_TEMPO] = tempo & 0xFF
+        kronos_body[_K_TEMPO + 1] = (tempo >> 8) & 0xFF
+    k = kronos_body[_K_SWITCHES]
+    kronos_body[_K_SWITCHES] = (k & ~0x40 & 0xFF) | ((nautilus_body[_N_SWITCHES] & 1) << 6)

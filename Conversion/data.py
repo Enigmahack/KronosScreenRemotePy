@@ -2,6 +2,7 @@
 revised table can ship without a release; an override that won't parse never shadows the bundled one."""
 from __future__ import annotations
 
+import enum
 import functools
 import json
 import logging
@@ -200,33 +201,51 @@ def _kronos_bank_ref(n: int) -> Optional[bytes]:
 
 
 class ReverseRomWaveformMap:
-    """Nautilus ROM sample -> Kronos ROM sample, for the same lookups RomWaveformMap offers. Where several Kronos
-    samples map to one Nautilus sample, one with identical audio wins, then the lowest index."""
+    """Nautilus sample -> Kronos sample, for the same lookups RomWaveformMap offers. A Nautilus ROM sample can come back
+    as a Kronos ROM sample or, when only an EXs bank holds it (much of EXs1 is in the Nautilus ROM), as that EXs sample.
+    Where several Kronos samples map to one Nautilus sample: the Kronos ROM first (an EXs bank may not be installed, so
+    EXs only fills gaps), then identical audio, then one that needs no reversal, then the lowest index. `reverse` is carried back: a Kronos "...REV" sample is the Nautilus forward
+    sample played reversed, so reaching it from the forward sample needs the zone's reverse setting flipped."""
     target_name = "Kronos"
 
     def __init__(self, forward: RomWaveformMap) -> None:
-        best: Dict[Tuple[str, int], Tuple[bool, int]] = {}
-        for (section, kronos_index), nautilus_index in forward._map.items():
-            same = (section, kronos_index) not in forward._audio_differs
-            key = (section, nautilus_index)
-            if key not in best or (same, -kronos_index) > (best[key][0], -best[key][1]):
-                best[key] = (same, kronos_index)
-        self._best = best
-        self._fwd = forward
-        self._by_uuid: Dict[Tuple[str, str, int], SampleTarget] = {}
         bank_ref: Dict[int, Optional[bytes]] = {}
+
+        def kronos_ref(n: int) -> Optional[bytes]:
+            if n not in bank_ref:
+                bank_ref[n] = _kronos_bank_ref(n)
+            return bank_ref[n]
+
+        ranked: Dict[Tuple[str, int], Tuple[tuple, SampleTarget]] = {}
+
+        def offer(key: Tuple[str, int], rank: tuple, target: SampleTarget) -> None:
+            if key not in ranked or rank > ranked[key][0]:
+                ranked[key] = (rank, target)
+
+        for (section, kronos_index), nautilus_index in forward._map.items():
+            k = (section, kronos_index)
+            rev = k in forward._reverse
+            offer((section, nautilus_index), (True, k not in forward._audio_differs, not rev, -kronos_index),
+                  SampleTarget(kronos_index, None, k in forward._partial, rev))
+        self._by_uuid: Dict[Tuple[str, str, int], SampleTarget] = {}
         for (kind, n, kronos_index), t in forward._ext.items():
-            if t.uuid is not None:
-                if n not in bank_ref:
-                    bank_ref[n] = _kronos_bank_ref(n)
-                if bank_ref[n] is None:
-                    continue                  # a bank with no reference form we can write: never guess one
-                key = (kind, bytes([*t.uuid[:15], t.uuid[15] & 0xFE]).hex().upper(), t.index)
-                self._by_uuid.setdefault(key, SampleTarget(kronos_index, bank_ref[n], t.partial))
+            ref = kronos_ref(n)
+            if ref is None:
+                continue                      # a bank with no reference form we can write: never guess one
+            target = SampleTarget(kronos_index, ref, t.partial, t.reverse)
+            if t.uuid is None:                # a Kronos EXs sample whose audio is in the Nautilus ROM
+                offer((kind, t.index), (False, not t.partial, not t.reverse, -kronos_index), target)
+                continue
+            key = (kind, bytes([*t.uuid[:15], t.uuid[15] & 0xFE]).hex().upper(), t.index)
+            old = self._by_uuid.get(key)
+            if old is None or (old.reverse and not t.reverse):
+                self._by_uuid[key] = target
+        self._best = {key: target for key, (_, target) in ranked.items()}
+        self._identical = {key for key, (rank, _) in ranked.items() if rank[1]}
+        self._fwd = forward
 
     def lookup(self, section: str, bank: int, nautilus_index: int) -> Optional[SampleTarget]:
-        hit = self._best.get((section, nautilus_index)) if bank == 0 else None
-        return None if hit is None else SampleTarget(hit[1], None, (section, hit[1]) in self._fwd._partial)
+        return self._best.get((section, nautilus_index)) if bank == 0 else None
 
     def similar_drumsample(self, nautilus_index: int) -> Optional[Tuple[SampleTarget, float, str]]:
         hit = self._fwd._similar.get("nautilus_to_kronos", {}).get(nautilus_index)
@@ -249,12 +268,12 @@ class ReverseRomWaveformMap:
         return len(self._best)
 
     def try_map(self, section: str, nautilus_index: int) -> Optional[int]:
+        """The Kronos ROM index, or None (also when the best match lives in an EXs bank)."""
         hit = self._best.get((section, nautilus_index))
-        return None if hit is None else hit[1]
+        return None if hit is None or hit.uuid is not None else hit.index
 
     def is_audio_identical(self, section: str, nautilus_index: int) -> bool:
-        hit = self._best.get((section, nautilus_index))
-        return hit is not None and hit[0]
+        return (section, nautilus_index) in self._identical
 
 
 @dataclass(frozen=True)
@@ -266,6 +285,38 @@ class ProgramRefEntry:
     nautilus_index: int
     nautilus_name: str
     source: str
+
+
+class UnknownProgramIdentity(enum.Enum):
+    """What a Program reference becomes when the factory map has an equivalent for its slot but the source set does not
+    show what that slot holds (a Combi-only PCG, a Song, a Program the Local library has not pulled)."""
+    ASSUME_FACTORY = "assume"   # re-point to the equivalent, and say it was assumed
+    KEEP_SLOT = "keep"          # keep the slot number, as for a slot known to hold the user's own Program
+
+    @classmethod
+    def of(cls, value) -> "UnknownProgramIdentity":
+        try:
+            return cls(value)
+        except ValueError:
+            return cls.ASSUME_FACTORY
+
+
+def factory_repoint(entry_name: Optional[str], actual: Optional[str],
+                    policy: "UnknownProgramIdentity") -> Tuple[bool, bool]:
+    """(re-point, assumed) for a reference whose factory equivalent was made from a Program named `entry_name` (None: no
+    equivalent) and whose source slot holds `actual` (None: unknown)."""
+    if entry_name is None:
+        return False, False
+    if actual is None:
+        assume = policy is UnknownProgramIdentity.ASSUME_FACTORY
+        return assume, assume
+    return actual.strip() == entry_name.strip(), False
+
+
+def assumed_warning(what: str, items: List[str], other: str) -> str:
+    return (f"{what} re-pointed to {other} factory equivalents ASSUMING their source slot holds the factory Program - the "
+            f"source set does not show what it holds: {'; '.join(items)}. Check them, or choose 'Keep the slot numbers' "
+            "in Settings > Librarian.")
 
 
 class ProgramRefMap:

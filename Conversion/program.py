@@ -10,7 +10,8 @@ from __future__ import annotations
 from typing import List, Optional
 
 from Conversion import karma
-from Conversion.data import KarmaGeCatalog, KarmaGePatternLibrary, RomWaveformMap
+from Conversion.data import KarmaGeCatalog, KarmaGePatternLibrary, RomWaveformMap, init_program_template
+from Conversion.exi import exi_notes
 from Conversion.profiles import (KRONOS, NAUTILUS, PROGRAM_SHARED_HEAD_END, PROGRAM_SIZE_DELTA, ProgramKind)
 from Conversion.result import ConversionResult
 from Conversion.zones import program_zones_not_audio_identical, remap_program_hd1, substitution_warning
@@ -33,6 +34,24 @@ def _to_nautilus_layout(kronos_body: bytes, template: Optional[bytes]) -> bytear
     return out
 
 
+_SPDIF, _DRUM_TRACK = (1280, 1292), (1292, 1303)   # Kronos-only, replaced by the template's Nautilus block
+
+
+def _spdif_drum_track_notes(kronos_body: bytes) -> List[str]:
+    """What of the Kronos S/PDIF + Drum Track settings differs from an Init Program (77% of corpus Programs have a Drum
+    Track pattern assigned) and so is lost."""
+    init = init_program_template(False, True)
+    lost = []
+    a, b = _DRUM_TRACK
+    if kronos_body[a:b] != init[a:b]:
+        pattern = kronos_body[a] | (kronos_body[a + 1] << 8)
+        lost.append(f"Drum Track (pattern {'U' if kronos_body[a + 2] else 'P'}{pattern:03d}, trigger and zone settings)")
+    a, b = _SPDIF
+    if kronos_body[a:b] != init[a:b]:
+        lost.append("S/PDIF input level/pan/send settings")
+    return [f"{' and '.join(lost)} not carried over: a Nautilus Program has no Kronos-format counterpart."] if lost else []
+
+
 def convert_program(body: bytes, kind: ProgramKind, rom_map: RomWaveformMap, exs: ExsOptionIndex,
                     ge_catalog: KarmaGeCatalog, template: Optional[bytes] = None,
                     options: Optional[karma.ArpOptions] = None,
@@ -49,9 +68,9 @@ def convert_program(body: bytes, kind: ProgramKind, rom_map: RomWaveformMap, exs
     original = kronos_body = bytes(body)
 
     # The GE must be read before the KARMA bytes are stripped.
-    ge = karma.read_ge_number(kronos_body) or 0
+    ge = karma.module_ge(kronos_body)
     arp = None
-    if ge:
+    if ge is not None:
         arp = karma.resolve_ge(ge, ge_catalog, ge_patterns, options.transcribed_pattern_slot,
                                options.min_transcription_score, karma.scene_list(options.program_scenes))
         if options.program_scenes == 0 and arp.pattern_number is not None:
@@ -70,9 +89,13 @@ def convert_program(body: bytes, kind: ProgramKind, rom_map: RomWaveformMap, exs
         substitutions = [f"{u.where}: {u.reason}" for u in unmapped]
         if substitutions:
             warnings.append(substitution_warning("Nautilus", substitutions))
+    else:
+        warnings += exi_notes(kronos_body, "Kronos", "Nautilus")
+    warnings += _spdif_drum_track_notes(original)
 
     stripped_body, was_stripped = karma.strip_karma_fields(kronos_body)
-    if was_stripped:
+    init = init_program_template(False, True)
+    if was_stripped and original[karma.KARMA_START:karma.KARMA_END + 1] != init[karma.KARMA_START:karma.KARMA_END + 1]:
         warnings.append("KARMA performance data (Realtime Controls, Dynamic MIDI, per-Scene switch states, "
                         "GE/Scene assignments) was present and has been removed - not supported on Nautilus.")
 

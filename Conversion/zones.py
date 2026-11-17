@@ -6,8 +6,8 @@ Anything that can't be positively resolved is reported as unmapped, never skippe
   - a raw UUID that resolves to a known EXs product via the catalog.
 A resolved reference may move between banks (a Kronos EXs1 sample can live in the Nautilus ROM), so the 16-byte bank id is
 rewritten along with the number. RAM (Sampling Mode), empty zones and raw UUIDs absent from the catalog (the user's own
-.KSC content) pass through.
-Program EXi PCM OSC references (MOD-7/STR-1) are a different, undecoded mechanism and are not handled."""
+.KSC content) pass through; the remap functions report the RAM and user-bank ones in `notes`.
+EXi Programs are handled by Conversion.exi, which reports what it passes through."""
 from __future__ import annotations
 
 import enum
@@ -18,8 +18,8 @@ from Conversion.data import default_piano, ROM_DRUMSAMPLES, ROM_MULTISAMPLES, Ro
 from Data.librarian_sysex import (program_oscillator_mode, program_zone_reversed, set_program_zone_number,
                                   set_program_zone_reverse, set_program_zone_uuid)
 from Objects.object_body import (iter_drum_kit_sample_refs, iter_wave_seq_sample_refs, set_drum_kit_sample_id,
-                                 set_drum_kit_zone_off, set_drum_kit_zone_uuid, set_wave_seq_step_select,
-                                 set_wave_seq_step_uuid)
+                                 set_drum_kit_zone_off, set_drum_kit_zone_uuid, set_wave_seq_step_reverse,
+                                 set_wave_seq_step_select, set_wave_seq_step_uuid, wave_seq_step_reversed)
 from Tools.exs_option_index import ExsOptionIndex
 from Tools.sample_reference_walker import (RefClass, ZONES_PER_OSC, classify, iter_program_sample_zone_refs, kronos_layout_view)
 from Tools.sample_reference_walker import _OSC1_ZONE_BASE as OSC1_ZONE_BASE, _OSC2_ZONE_BASE as OSC2_ZONE_BASE, _ZONE_STRIDE as ZONE_STRIDE
@@ -41,8 +41,10 @@ def _resolve(uuid: bytes, number: int, rom_map: RomWaveformMap, exs: ExsOptionIn
     """(outcome, SampleTarget or None, reason)."""
     c = classify(uuid)
     target_name = getattr(rom_map, "target_name", "Nautilus")
-    if c.kind in (RefClass.NOTHING, RefClass.RAM):
+    if c.kind is RefClass.NOTHING:
         return _Outcome.PASS, None, None
+    if c.kind is RefClass.RAM:
+        return _Outcome.PASS, None, f"Sampling-mode RAM sample #{number}"
     if c.kind is RefClass.ROM:
         t = rom_map.lookup(section, 0, number)
         if t is not None:
@@ -62,7 +64,7 @@ def _resolve(uuid: bytes, number: int, rom_map: RomWaveformMap, exs: ExsOptionIn
         if rom_map.known_uuid(c.raw_uuid_hex):
             return _Outcome.UNMAPPED, None, (f"Nautilus EXs bank {c.raw_uuid_hex[:12]}... waveform #{number} has no "
                                              f"{target_name} equivalent")
-        return _Outcome.PASS, None, None
+        return _Outcome.PASS, None, f"user sample bank {c.raw_uuid_hex[:12]}... #{number}"
     # EXs127+ and every third-party pack are named by their raw bank id, not by the legacy KORG/MS number.
     # Nautilus Programs are confirmed to store the Bank.info id big-endian (Bank301-313 in PRELOAD.PCG). A real Kronos Program
     # ("AF Lead") stores EXs206's id the same way (byte 15 = 0x02) but in Wave Sequence zones (MS Type 2); a pack MULTISAMPLE
@@ -77,7 +79,14 @@ def _resolve(uuid: bytes, number: int, rom_map: RomWaveformMap, exs: ExsOptionIn
     if name:
         return _Outcome.UNMAPPED, None, (f'EXs product "{name}" ({c.raw_uuid_hex[:12]}...) has no {target_name} '
                                          "equivalent (its audio is not on the instrument)")
-    return _Outcome.PASS, None, None
+    return _Outcome.PASS, None, f"user sample bank {c.raw_uuid_hex[:12]}... #{number}"
+
+
+def passthrough_note(rom_map: RomWaveformMap, kept: List[str]) -> str:
+    """`kept`: "where (what)" for references carried over unchanged because they name samples outside ROM / EXs."""
+    shown = "; ".join(kept[:6]) + (f"; and {len(kept) - 6} more" if len(kept) > 6 else "")
+    return (f"Kept as they are, these play only if the same samples are loaded on the "
+            f"{getattr(rom_map, 'target_name', 'Nautilus')} (Sampling-mode RAM, or the same user .KSC): {shown}.")
 
 
 def substitution_warning(target_name: str, substitutions: List[str]) -> str:
@@ -93,14 +102,16 @@ def remap_program_hd1(body: bytes, rom_map: RomWaveformMap, exs: ExsOptionIndex,
     warnings: partial multisamples and oscillators that mix reversed and normal samples."""
     out, unmapped = bytearray(body), []
     osc2_unused = program_oscillator_mode(body) == 0   # Single: Oscillator 2 is silent, whatever its zones hold
-    reversed_zones, normal_zones, partial = [[], []], [[], []], []
+    reversed_zones, normal_zones, partial, kept = [[], []], [[], []], [], []
     for osc, zone, uuid, number in iter_program_sample_zone_refs(body):
         outcome, target, reason = _resolve(uuid, number, rom_map, exs, ROM_MULTISAMPLES)
+        if outcome is _Outcome.PASS and reason and not (osc == 1 and osc2_unused):
+            kept.append(f"osc {osc + 1} zone {zone + 1} ({reason})")
         if outcome is _Outcome.REMAPPED:
             set_program_zone_uuid(out, osc, zone, target.ref_bytes(uuid))
             set_program_zone_number(out, osc, zone, target.index)
-            if target.reverse:
-                set_program_zone_reverse(out, osc, zone, True)
+            # `reverse` flips the playback direction: a zone that already played a REV sample reversed plays forward.
+            set_program_zone_reverse(out, osc, zone, program_zone_reversed(body, osc, zone) ^ target.reverse)
             if target.partial and not (osc == 1 and osc2_unused):
                 partial.append(f"osc {osc + 1} zone {zone + 1}")
         elif outcome is _Outcome.UNMAPPED and not (osc == 1 and osc2_unused):
@@ -126,6 +137,8 @@ def remap_program_hd1(body: bytes, rom_map: RomWaveformMap, exs: ExsOptionIndex,
         if partial:
             notes.append("Only part of these multisamples exists on the " + getattr(rom_map, "target_name", "Nautilus")
                          + ", so the sample zones may differ slightly: " + ", ".join(partial) + ".")
+        if kept:
+            notes.append(passthrough_note(rom_map, kept))
         for osc in range(2):
             if reversed_zones[osc] and normal_zones[osc]:
                 notes.append(f"Oscillator {osc + 1} mixes reversed samples (zones {', '.join(map(str, reversed_zones[osc]))}) "
@@ -165,19 +178,24 @@ def program_zones_not_audio_identical(body: bytes, rom_map: RomWaveformMap) -> L
 
 def remap_drum_kit(body: bytes, rom_map: RomWaveformMap, exs: ExsOptionIndex,
                    switch_off_unmapped: bool = False,
-                   approx: Optional[List[Tuple[str, str, float]]] = None) -> Tuple[bytes, List[UnmappedRef]]:
+                   approx: Optional[List[Tuple[str, str, float]]] = None,
+                   notes: Optional[List[str]] = None) -> Tuple[bytes, List[UnmappedRef]]:
     """With `switch_off_unmapped` a zone whose sample has no exact equivalent is turned off (and still listed). A ROM sample
     with no twin first gets the closest-sounding one (DrumSampleSimilarity.json) when `approx` is given: it receives
     (where, tier, distance) for each such zone and the zone is not listed as unmapped."""
-    out, unmapped = bytearray(body), []
+    out, unmapped, kept = bytearray(body), [], []
     note_samples = {(n, s) for n, _, u, s in iter_drum_kit_sample_refs(body) if classify(u).kind is RefClass.ROM}
     for note, zone, uuid, sample_id in iter_drum_kit_sample_refs(body):
         # ROM drum sample #0 is "no sample": the Nautilus's own factory kits switch zones on at #0 for unused
         # notes, and it has no entry in the ROM map because there is nothing to map.
-        # On the KRONOS #0 is a real sample ("BD-01-amb f": the second velocity layer of its kick), so only a Nautilus source skips it.
+        # On the KRONOS #0 is a real sample ("BD-01-amb f": the second velocity layer of its kick), so a Nautilus zone left
+        # on at #0 would sound there: it is switched off instead.
         if sample_id == 0 and classify(uuid).kind is RefClass.ROM and getattr(rom_map, "target_name", "") == "Kronos":
+            set_drum_kit_zone_off(out, note, zone)
             continue
         outcome, new, reason = _resolve(uuid, sample_id, rom_map, exs, ROM_DRUMSAMPLES)
+        if outcome is _Outcome.PASS and reason:
+            kept.append(f"note {note} zone {zone + 1} ({reason})")
         if outcome is _Outcome.REMAPPED:
             set_drum_kit_zone_uuid(out, note, zone, new.ref_bytes(uuid))
             set_drum_kit_sample_id(out, note, zone, new.index)
@@ -198,6 +216,8 @@ def remap_drum_kit(body: bytes, rom_map: RomWaveformMap, exs: ExsOptionIndex,
             unmapped.append(UnmappedRef(f"Note {note} zone {zone + 1}", reason))
             if switch_off_unmapped:
                 set_drum_kit_zone_off(out, note, zone)
+    if notes is not None and kept:
+        notes.append(passthrough_note(rom_map, kept))
     return bytes(out), unmapped
 
 
@@ -207,15 +227,18 @@ def remap_wave_seq(body: bytes, rom_map: RomWaveformMap, exs: ExsOptionIndex, su
     """With `substitute`, a step whose sample has no equivalent plays the closest-sounding ROM multisample by audio when
     `approx` is given and one is known (it receives (where, tier, distance); the step is not listed as unmapped), else the
     default piano (still returned in the list)."""
-    out, unmapped, partial = bytearray(body), [], []
+    out, unmapped, partial, kept = bytearray(body), [], [], []
     for step, uuid, select in iter_wave_seq_sample_refs(body):
         # The Nautilus's own Wave Sequences leave their unused steps on ROM sample #0, which has no Kronos twin.
         if select == 0 and classify(uuid).kind is RefClass.ROM and getattr(rom_map, "target_name", "") == "Kronos":
             continue
         outcome, new, reason = _resolve(uuid, select, rom_map, exs, ROM_MULTISAMPLES)
+        if outcome is _Outcome.PASS and reason:
+            kept.append(f"step {step + 1} ({reason})")
         if outcome is _Outcome.REMAPPED:
             set_wave_seq_step_uuid(out, step, new.ref_bytes(uuid))
             set_wave_seq_step_select(out, step, new.index)
+            set_wave_seq_step_reverse(out, step, wave_seq_step_reversed(body, step) ^ new.reverse)
             if new.partial:
                 partial.append(str(step + 1))
         elif outcome is _Outcome.UNMAPPED:
@@ -235,4 +258,6 @@ def remap_wave_seq(body: bytes, rom_map: RomWaveformMap, exs: ExsOptionIndex, su
     if notes is not None and partial:
         notes.append("Only part of the multisample used by step(s) " + ", ".join(partial) + " exists on the "
                      + getattr(rom_map, "target_name", "Nautilus") + ", so those steps may sound slightly different.")
+    if notes is not None and kept:
+        notes.append(passthrough_note(rom_map, kept))
     return bytes(out), unmapped

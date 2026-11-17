@@ -17,8 +17,8 @@ def convert_drum_kit(body: bytes, rom_map, exs: ExsOptionIndex, source: str = "K
     if len(body) != DRUM_KIT_SIZE:
         return ConversionResult(None, [], [f"{source} Drum Kit body is {len(body)} bytes, expected {DRUM_KIT_SIZE}."])
     approx: list = []
-    remapped, unmapped = remap_drum_kit(body, rom_map, exs, switch_off_unmapped=True, approx=approx)
-    similar = []
+    similar: list = []
+    remapped, unmapped = remap_drum_kit(body, rom_map, exs, switch_off_unmapped=True, approx=approx, notes=similar)
     if approx:
         tiers = {t: sum(1 for _, x, _ in approx if x == t) for t in ("exact", "close", "approx", "category", "nearest", "merged")}
         used = len(approx) - tiers["merged"]

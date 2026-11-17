@@ -1,28 +1,37 @@
-"""Converts Kronos objects and writes them into consecutive Nautilus slots over SysEx.
+"""Converts objects of the other instrument family and writes them into consecutive slots of the connected instrument
+(Kronos -> Nautilus or Nautilus -> Kronos) over SysEx. The target is the service's family (`is_nautilus`); an item marked
+`native` is already in the target's format and is copied. Arp patterns exist only on the Nautilus.
 
 Order is fixed for safety: read every target slot, convert, back every pre-image up to one .syx, only then write
-(arp patterns first, so no Program ever points at a pattern that isn't there; then Programs and everything else,
-Stored; then the Combis / Song Timbre Sets whose Timbres point at Programs of this run, each only when all of those
-Programs were written and Stored), store each touched bank, and re-read to verify. A target the conversion can't use (wrong Program bank type, refused conversion, past the end of
+(arp patterns first, so no Program ever points at a pattern that isn't there; then Drum Kits and Wave Sequences; then
+Programs, each whose oscillator zones were re-pointed at a Drum Kit / Wave Sequence of this run only once that object
+was written and Stored; then the Combis / Song Timbre Sets, likewise for the Programs their Timbres point at), store
+each touched bank, and re-read to verify. A target the conversion can't use (wrong Program bank type, refused conversion, past the end of
 the bank) is skipped with a reason; it never aborts the others."""
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import re
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Callable, Dict, List, Optional, Set, Tuple
 
+import Data.librarian_sysex as ksx
 import Data.nautilus_sysex as nsx
 import Data.object_types as object_types
 from Conversion import karma
 from Conversion.combi import convert_combi
+from Conversion.combi_reverse import convert_combi_to_kronos
 from Conversion.data import (KarmaGeCatalog, KarmaGePatternLibrary, ProgramRefMap, RomWaveformMap,
+                             UnknownProgramIdentity, init_program_template, kronos_timbre_bank_for_obj,
                              nautilus_timbre_bank_for_wire)
-from Conversion.media import convert_drum_kit, convert_wave_seq
-from Conversion.profiles import NAUTILUS, ProgramKind, COMBI_NAUTILUS_SIZE
+from Conversion.media import convert_drum_kit, convert_drum_kit_to_kronos, convert_wave_seq, convert_wave_seq_to_kronos
+from Conversion.profiles import KRONOS, NAUTILUS, ProgramKind, COMBI_KRONOS_SIZE, COMBI_NAUTILUS_SIZE
 from Conversion.program import convert_program
+from Conversion.program_reverse import convert_program_to_kronos
 from Conversion.result import ConversionResult
+from Data.librarian_model import apply_ref_patch, iter_program_media_refs
 from Data.librarian_sysex import OBJ_COMBI, OBJ_DRUM_KIT, OBJ_PROGRAM, OBJ_SONG_TIMBRE, OBJ_WAVE_SEQ
 from Tools.exs_option_index import ExsOptionIndex
 
@@ -37,10 +46,12 @@ OBJ_ARP_PATTERN, ARP_BANK_B, ARP_BANK_B_SLOTS = 0x19, 0x40, 128
 class ConvertItem:
     obj_type: int
     name: str
-    body: bytes                 # Kronos wire body (Program: 3706 HD-1 / 4960 EXi)
+    body: bytes                 # wire body of the source family (the other instrument), or of the target when native
     is_exi: bool = False
-    native: bool = False        # body is already a Nautilus body (a Nautilus .SNG / dump): copied, not converted
-    src_ref: Optional[Tuple[int, int]] = None   # Program: (Kronos Combi Timbre bank byte, slot) it was read from
+    native: bool = False        # body is already in the target instrument's format: copied, not converted
+    # Where the object was read from, as its referrers address it. Program: (source Combi Timbre bank byte, slot);
+    # Drum Kit / Wave Sequence: (object bank, slot), turned into the linear number a Program oscillator zone uses.
+    src_ref: Optional[Tuple[int, int]] = None
     program_name: Optional[Callable[[int, int], Optional[str]]] = None   # Combi: names the Programs its Timbres use
 
 
@@ -51,6 +62,8 @@ class ConvertTables:
     ge_catalog: KarmaGeCatalog
     ref_map: ProgramRefMap
     ge_patterns: Optional[KarmaGePatternLibrary] = None
+    # Not a table: the user's choice (Settings > Librarian) for a Program reference whose source slot is not known.
+    unknown_identity: UnknownProgramIdentity = UnknownProgramIdentity.ASSUME_FACTORY
 
     @classmethod
     def load(cls) -> "ConvertTables":
@@ -121,10 +134,10 @@ class _ArpSlots:
         self.tables = tables
         self.by_ge: Dict[int, int] = {}
 
-    def slot_for(self, ge: int) -> Optional[int]:
-        """None when the GE has a preset, no usable transcription, or the bank is full."""
+    def slot_for(self, ge: Optional[int]) -> Optional[int]:
+        """None when the module is unused, the GE has a preset, no usable transcription, or the bank is full."""
         lib = self.tables.ge_patterns
-        if self.next is None or not ge or karma.preset_for_ge(ge) is not None or lib is None:
+        if self.next is None or ge is None or karma.preset_for_ge(ge) is not None or lib is None:
             return None
         entry = lib.for_ge(ge)
         if entry is None or entry.score < karma.ArpOptions().min_transcription_score:
@@ -137,14 +150,15 @@ class _ArpSlots:
         return self.by_ge[ge]
 
     def options_for(self, item: ConvertItem) -> karma.ArpOptions:
+        if item.native:
+            return karma.ArpOptions()   # copied as is: no KARMA to translate
         if item.obj_type == OBJ_PROGRAM:
-            return karma.ArpOptions(transcribed_pattern_slot=self.slot_for(karma.read_ge_number(item.body) or 0))
+            return karma.ArpOptions(transcribed_pattern_slot=self.slot_for(karma.module_ge(item.body)))
         if item.obj_type in (OBJ_COMBI, OBJ_SONG_TIMBRE) and len(item.body) == 7810:
             base = karma.ArpOptions()
             slots = []
             for source in (base.combi_arp_a_source, base.combi_arp_b_source):
-                k = 1814 + 744 * source
-                slots.append(self.slot_for(item.body[k] | (item.body[k + 1] << 8)))
+                slots.append(self.slot_for(karma.module_ge(item.body, 1814 + 744 * source, combi=True)))
             if slots[0] is not None and slots[0] == slots[1]:
                 slots[1] = None   # one pattern can't serve both arpeggiators
             return karma.ArpOptions(transcribed_pattern_slot=slots[0], transcribed_pattern_slot_b=slots[1])
@@ -167,12 +181,13 @@ def plan_arp_slots(items: List[ConvertItem], tables: ConvertTables, arp_start: O
     return sorted(arp.by_ge.values())
 
 
-def _connection_problem(service, still_valid: Optional[Callable[[], bool]], nautilus_only: bool = True) -> Optional[str]:
+def _connection_problem(service, still_valid: Optional[Callable[[], bool]],
+                        expect_nautilus: Optional[bool] = None) -> Optional[str]:
     """Why it is no longer safe to send this push's messages to `service`, or None. A reconnect may be to a different
     instrument (SysExService.stop() resets the codec to Kronos), so nothing is sent once the link is not the same
-    live Nautilus connection the user confirmed."""
-    if nautilus_only and getattr(service, "is_nautilus", True) is False:
-        return "the connection is no longer a Nautilus"
+    live connection, to the same instrument family, the user confirmed."""
+    if expect_nautilus is not None and bool(getattr(service, "is_nautilus", True)) != expect_nautilus:
+        return f"the connection is no longer a {'Nautilus' if expect_nautilus else 'Kronos'}"
     if getattr(service, "can_dump", True) is False:
         return "the SysEx link is down"
     if still_valid is not None and not still_valid():
@@ -186,7 +201,7 @@ def push_converted(service, items: List[ConvertItem], dest: Dict[int, Tuple[int,
                    still_valid: Optional[Callable[[], bool]] = None) -> PushReports:
     """`dest` maps object type -> (wire bank, first slot); EXI_DEST adds a separate bank for EXi Programs. `arp_start` = first bank-B slot for transcribed arp
     patterns (None = don't use transcriptions). `service` needs dump_object_parsed, backup_objects, write_object
-    and store_bank (SysExService, already switched to the Nautilus codec). `still_valid` is checked, with the
+    and store_bank (SysExService, already switched to the target's codec). `still_valid` is checked, with the
     service's own family/link state, before every phase and write; once it fails nothing more is sent.
     When the service offers hold_dump_gate() the whole push runs inside it, so the perf loop and name pulls do not
     interleave their requests and replies with ours."""
@@ -201,27 +216,20 @@ def _push(service, items: List[ConvertItem], dest: Dict[int, Tuple[int, int]], t
           backup_path: str, progress: Callable[[str], None], arp_start: Optional[int],
           still_valid: Optional[Callable[[], bool]], reports: PushReports) -> None:
     nautilus = _nautilus_target(service)
+    profile, timbre_set_size = (NAUTILUS, COMBI_NAUTILUS_SIZE) if nautilus else (KRONOS, COMBI_KRONOS_SIZE)
 
     def guard() -> Optional[str]:
-        return _connection_problem(service, still_valid)
+        return _connection_problem(service, still_valid, nautilus)
 
     pending: List[Tuple[ItemReport, SimpleNamespace, bytes, Set[int]]] = []   # report, op, pre-image, arp slots needed
-    next_slot = {t: s for t, (_, s) in dest.items()}
-    placed = _placements(items, dest)
-    arp = _ArpSlots(arp_start, tables)
+    slots = _plan_slots(items, dest)
+    placed, media, placed_at = _placements(items, slots, nautilus)
+    arp = _ArpSlots(arp_start if nautilus else None, tables)
     arp_patterns: Dict[int, bytes] = {}
-    prog_at: Dict[Tuple[int, int], Tuple[int, int, int]] = {}   # src_ref -> (report index, wire bank, slot)
-    uses: Dict[int, Set[Tuple[int, int]]] = {}                  # id(report) -> src_refs its Timbres were pointed at
+    uses: Dict[int, Set[tuple]] = {}   # id(report) -> typed placement keys its references were re-pointed at
 
     for i, item in enumerate(items):
-        key = dest_key(item, dest)
-        bank, _ = dest[key]
-        slot = next_slot[key]
-        next_slot[key] += 1
-        if (item.obj_type == OBJ_PROGRAM and item.src_ref is not None and not item.native
-                and nautilus_timbre_bank_for_wire(bank) is not None
-                and slot < slot_count(OBJ_PROGRAM, bank)):
-            prog_at[item.src_ref] = (i, bank, slot)   # exactly the eligibility rule of _placements
+        bank, slot = slots[i]
         where = dest_label(item.obj_type, bank, slot, nautilus)
         rep = ItemReport(item.name, where, "refused")
         reports.append(rep)
@@ -240,27 +248,34 @@ def _push(service, items: List[ConvertItem], dest: Dict[int, Tuple[int, int]], t
             rep.messages.append("The instrument did not answer for the target slot.")
             continue
         if item.obj_type == OBJ_PROGRAM:
-            want = NAUTILUS.wire_size(program_kind_of(item))
+            want = profile.wire_size(program_kind_of(item))
             if len(target.body) != want:
-                kind = "EXi" if len(target.body) == NAUTILUS.wire_exi else "HD-1"
+                kind = "EXi" if len(target.body) == profile.wire_exi else "HD-1"
                 rep.messages.append(f"{bank_label(OBJ_PROGRAM, bank, nautilus)} is a {kind} bank; this is a "
                                     f"{program_kind_of(item).value.upper()} Program - pick a matching bank.")
                 continue
-        if item.obj_type == OBJ_SONG_TIMBRE and len(target.body) != COMBI_NAUTILUS_SIZE:
+        if item.obj_type == OBJ_SONG_TIMBRE and len(target.body) != timbre_set_size:
             rep.messages.append(f"Song {slot:03d} is {len(target.body)} bytes on the instrument, not a "
-                                f"{COMBI_NAUTILUS_SIZE}-byte Song Timbre Set.")
+                                f"{timbre_set_size}-byte Song Timbre Set.")
             continue
         if item.obj_type == OBJ_SONG_TIMBRE:
             old = target.body[:24].split(b"\x00")[0].decode("ascii", "replace").rstrip()
             if not re.fullmatch(r"NEW SONG \d{3}", old):
                 rep.messages.append(f'Replaces the song "{old}"; its previous content is in the backup.')
         used = _UsedPlacements(placed)
-        result = _convert(item, target.body, tables, arp.options_for(item), used)
-        uses[id(rep)] = used.hits
+        result = _convert(item, target.body, tables, arp.options_for(item), used, nautilus)
+        uses[id(rep)] = {("program", k) for k in used.hits}
         rep.messages += result.warnings
         if result.body is None:
             rep.messages += result.refusals
             continue
+        if item.obj_type == OBJ_PROGRAM and media:
+            body, hits = _repoint_media(result.body, media)
+            if hits:
+                result = dataclasses.replace(result, body=body)
+                uses[id(rep)] |= hits
+                rep.messages.append("Oscillator zones re-pointed to the Drum Kit / Wave Sequence written in this run: "
+                                    + ", ".join(dest_label(*placed_at[k][1:], nautilus) for k in sorted(hits)) + ".")
         needed = {s for s, _ in result.arp_patterns}
         arp_patterns.update(dict(result.arp_patterns))
         op = SimpleNamespace(obj=item.obj_type, bank=bank, index=slot, version=target.version, body=result.body)
@@ -294,7 +309,7 @@ def _push(service, items: List[ConvertItem], dest: Dict[int, Tuple[int, int]], t
             rep.messages.append(f"Not written: {aborted}.")
         return
     service.backup_objects(backups, backup_path)
-    problem = _verify_backup(backup_path, backups)
+    problem = _verify_backup(backup_path, backups, nsx if nautilus else ksx)
     if problem:
         for rep, _, _, _ in pending:
             rep.messages.append(f"Backup could not be verified ({problem}); nothing was written.")
@@ -390,33 +405,37 @@ def _push(service, items: List[ConvertItem], dest: Dict[int, Tuple[int, int]], t
                     if (op.obj, op.bank) == (obj, bank):
                         rep.messages.append(note)
 
-    # Phase 1: Programs, Drum Kits and Wave Sequences, written and Stored.
-    # Phase 2: Combis / Song Timbre Sets; one whose Timbres were re-pointed at Programs of this run only when every
-    # one of those Programs is committed (written AND its bank Stored); otherwise the Timbre would point at whatever
-    # the slot still holds.
-    # Split by type, so no bank is Stored in both phases (a later failed Store must not hide behind an earlier one).
-    late = (OBJ_COMBI, OBJ_SONG_TIMBRE)
-    write_and_store([e for e in pending if e[1].obj not in late])
-    committed_slots = {(op.obj, op.bank, op.index) for _, op in written if (op.obj, op.bank) in committed_banks}
-    phase2 = []
-    for entry in (e for e in pending if e[1].obj in late):
-        rep = entry[0]
-        missing = []
-        for ref in sorted(uses[id(rep)]):
-            i, bank, slot = prog_at[ref]
-            if (OBJ_PROGRAM, bank, slot) in committed_slots:
+    def committed_only(entries) -> list:
+        """The entries whose re-pointed references all landed: every object of this run they now point at is committed
+        (written AND its bank Stored). Otherwise a reference would point at whatever that slot still holds."""
+        committed_slots = {(op.obj, op.bank, op.index) for _, op in written if (op.obj, op.bank) in committed_banks}
+        out = []
+        for entry in entries:
+            rep = entry[0]
+            missing = []
+            for key in sorted(uses[id(rep)]):
+                i, obj, bank, slot = placed_at[key]
+                if (obj, bank, slot) in committed_slots:
+                    continue
+                prep = reports[i]
+                reason = prep.messages[-1] if prep.messages else prep.status
+                missing.append(f'{type_name(obj)} "{prep.name}" ({prep.dest}) was not written and stored '
+                               f'({prep.status}: {reason})')
+            if missing:
+                rep.messages += missing + ["Not written: an object it uses failed in this run, so its references "
+                                           "would point at whatever that slot still holds."]
+                progress(f"Skipped {rep.dest} ({rep.name}): {'; '.join(missing)}")
                 continue
-            prep = reports[i]
-            reason = prep.messages[-1] if prep.messages else prep.status
-            missing.append(f'Timbre Program "{prep.name}" ({prep.dest}) was not written and stored '
-                           f'({prep.status}: {reason})')
-        if missing:
-            rep.messages += missing + ["Not written: a Timbre Program it uses failed in this run, so its Timbres "
-                                       "would point at whatever that slot still holds."]
-            progress(f"Skipped {rep.dest} ({rep.name}): {'; '.join(missing)}")
-            continue
-        phase2.append(entry)
-    write_and_store(phase2)
+            out.append(entry)
+        return out
+
+    # Phase 1: Drum Kits and Wave Sequences. Phase 2: Programs, gated on the Drum Kits / Wave Sequences their zones were
+    # re-pointed at. Phase 3: Combis / Song Timbre Sets, gated on the Programs their Timbres were re-pointed at.
+    # Split by type, so no bank is Stored in two phases (a later failed Store must not hide behind an earlier one).
+    media_types, late = (OBJ_DRUM_KIT, OBJ_WAVE_SEQ), (OBJ_COMBI, OBJ_SONG_TIMBRE)
+    write_and_store([e for e in pending if e[1].obj in media_types])
+    write_and_store(committed_only([e for e in pending if e[1].obj not in media_types + late]))
+    write_and_store(committed_only([e for e in pending if e[1].obj in late]))
 
     if failed_banks and committed_banks:
         done = ", ".join(bank_label(o, b, nautilus) for o, b in sorted(committed_banks))
@@ -454,7 +473,7 @@ def _push(service, items: List[ConvertItem], dest: Dict[int, Tuple[int, int]], t
 
 
 def _verify_backup(path: str, backups, codec=nsx) -> Optional[str]:
-    """None when the file re-parses (Nautilus codec) to exactly the pre-images, in order; else why not. The backup
+    """None when the file re-parses (with the target's codec) to exactly the pre-images, in order; else why not. The backup
     is the only way back from a bad conversion, so no write happens on an unverified one."""
     try:
         with open(path, "rb") as f:
@@ -523,7 +542,7 @@ def restore_from_backup(service, backup_path: str,
             raw = f.read()
     except OSError as ex:
         return RestoreResult(False, [f"Cannot read the backup: {ex}"])
-    problem = _connection_problem(service, still_valid, nautilus_only=False)
+    problem = _connection_problem(service, still_valid)
     if problem:   # the backup is Nautilus-encoded; a reconnect may have reset the service to the Kronos codec
         return RestoreResult(False, [f"Not restored: {problem}; nothing was written."])
     ops = []
@@ -541,7 +560,7 @@ def restore_from_backup(service, backup_path: str,
         return RestoreResult(False, ["The backup is empty; nothing was written."])
     bad_banks: Set[Tuple[int, int]] = set()
     for op in ops:
-        problem = _connection_problem(service, still_valid, nautilus_only=False)
+        problem = _connection_problem(service, still_valid)
         if problem:
             bad_banks.add((op.obj, op.bank))
             msgs.append(f"Not restored {bank_label(op.obj, op.bank, nautilus)} slot {op.index}: {problem}.")
@@ -586,40 +605,84 @@ class _UsedPlacements(dict):
         return hit
 
 
-def _placements(items: List[ConvertItem], dest: Dict[int, Tuple[int, int]]) -> Dict[Tuple[int, int], Tuple[int, int]]:
-    """Where each Program of this run will be written, as Combi Timbre references: a Combi converted alongside its
-    Programs must point at them there, not at the slot numbers it had on the Kronos."""
-    placed: Dict[Tuple[int, int], Tuple[int, int]] = {}
+def _plan_slots(items: List[ConvertItem], dest: Dict[int, Tuple[int, int]]) -> List[Tuple[int, int]]:
+    """(wire bank, slot) each item is written to: consecutive slots per destination."""
     next_slot = {t: s for t, (_, s) in dest.items()}
+    out = []
     for item in items:
         key = dest_key(item, dest)
-        bank, _ = dest[key]
-        slot = next_slot[key]
+        out.append((dest[key][0], next_slot[key]))
         next_slot[key] += 1
-        if item.obj_type != OBJ_PROGRAM or item.src_ref is None or item.native:
+    return out
+
+
+def _linear(obj_type: int, bank: int, slot: int) -> Optional[int]:
+    if obj_type == OBJ_DRUM_KIT:
+        return object_types.drum_kit_loc_to_linear(bank, slot)
+    return object_types.wave_seq_loc_to_linear(bank, slot)
+
+
+def _placements(items: List[ConvertItem], slots: List[Tuple[int, int]], nautilus: bool = True):
+    """Where this run writes the objects other objects of the run may reference, so a referrer converted alongside them
+    points at them there, not at the slot numbers they had on the Kronos. Returns (programs, media, placed_at):
+    programs: Combi Timbre reference (bank byte, slot) -> the same at the destination;
+    media: (Drum Kit / Wave Sequence type, linear number a Program oscillator zone holds) -> the destination's;
+    placed_at: typed key ("program", ref) / ("media", type, linear) -> (item index, type, wire bank, slot)."""
+    programs: Dict[Tuple[int, int], Tuple[int, int]] = {}
+    media: Dict[Tuple[int, int], int] = {}
+    placed_at: Dict[tuple, Tuple[int, int, int, int]] = {}
+    for i, (item, (bank, slot)) in enumerate(zip(items, slots)):
+        if item.src_ref is None or item.native or slot >= slot_count(item.obj_type, bank):
             continue
-        byte = nautilus_timbre_bank_for_wire(bank)
-        if byte is not None and slot < slot_count(OBJ_PROGRAM, bank):
-            placed[item.src_ref] = (byte, slot)
-    return placed
+        if item.obj_type == OBJ_PROGRAM:
+            byte = nautilus_timbre_bank_for_wire(bank) if nautilus else kronos_timbre_bank_for_obj(bank)
+            if byte is not None:
+                programs[item.src_ref] = (byte, slot)
+                placed_at[("program", item.src_ref)] = (i, OBJ_PROGRAM, bank, slot)
+        elif item.obj_type in (OBJ_DRUM_KIT, OBJ_WAVE_SEQ):
+            src, dst = _linear(item.obj_type, *item.src_ref), _linear(item.obj_type, bank, slot)
+            if src is not None and dst is not None:
+                media[(item.obj_type, src)] = dst
+                placed_at[("media", item.obj_type, src)] = (i, item.obj_type, bank, slot)
+    return programs, media, placed_at
+
+
+def _repoint_media(body: bytes, media: Dict[Tuple[int, int], int]) -> Tuple[bytes, Set[tuple]]:
+    """Points a converted Program's Drum Kit / Wave Sequence zones at where this run writes those objects."""
+    out, hits = bytearray(body), set()
+    for site, obj_type, number in iter_program_media_refs(body):
+        dst = media.get((obj_type, number))
+        if dst is not None:
+            apply_ref_patch(out, 'osc_zone', site, 0, dst)
+            hits.add(("media", obj_type, number))
+    return bytes(out), hits
 
 
 def _convert(item: ConvertItem, template: bytes, tables: ConvertTables, options: karma.ArpOptions,
-             placed: Optional[Dict[Tuple[int, int], Tuple[int, int]]] = None):
+             placed: Optional[Dict[Tuple[int, int], Tuple[int, int]]] = None, to_nautilus: bool = True):
+    """`template` is the target slot's current body: it supplies what the source format has no counterpart for."""
     t = tables
-    if item.native and item.obj_type == OBJ_PROGRAM:
-        # Already a Nautilus body: only the slot's current size (HD-1 vs EXi) must match, never converted.
+    if item.native:
+        # Already in the target's format: copied, never converted; it must be the size the target slot holds (a
+        # Program slot's size also says HD-1 vs EXi).
         return ConversionResult(item.body) if len(item.body) == len(template) else ConversionResult(
-            None, [], [f"A Program must be {len(template)} bytes here, not {len(item.body)}."])
+            None, [], [f"A {type_name(item.obj_type)} here must be {len(template)} bytes, not {len(item.body)}."])
+    if not to_nautilus:
+        if item.obj_type == OBJ_PROGRAM:
+            return convert_program_to_kronos(item.body, program_kind_of(item), t.rom_map, t.exs, template,
+                                             init_program_template(True, item.is_exi))
+        if item.obj_type in (OBJ_COMBI, OBJ_SONG_TIMBRE):
+            return convert_combi_to_kronos(item.body, template, t.ref_map, item.program_name, t.unknown_identity,
+                                           placed)
+        if item.obj_type == OBJ_DRUM_KIT:
+            return convert_drum_kit_to_kronos(item.body, t.rom_map, t.exs)
+        return convert_wave_seq_to_kronos(item.body, t.rom_map, t.exs)
     if item.obj_type == OBJ_PROGRAM:
         return convert_program(item.body, program_kind_of(item), t.rom_map, t.exs, t.ge_catalog, template,
                                options, t.ge_patterns)
-    if item.native:
-        return ConversionResult(item.body) if len(item.body) == COMBI_NAUTILUS_SIZE else ConversionResult(
-            None, [], [f"A Nautilus Song Timbre Set is {COMBI_NAUTILUS_SIZE} bytes, not {len(item.body)}."])
     if item.obj_type in (OBJ_COMBI, OBJ_SONG_TIMBRE):
         return convert_combi(item.body, t.ge_catalog, template, options, t.ge_patterns, ref_map=t.ref_map, placed=placed,
-                             kronos_program_name=item.program_name)
+                             kronos_program_name=item.program_name, unknown_identity=t.unknown_identity)
     if item.obj_type == OBJ_DRUM_KIT:
         return convert_drum_kit(item.body, t.rom_map, t.exs)
     return convert_wave_seq(item.body, t.rom_map, t.exs)
