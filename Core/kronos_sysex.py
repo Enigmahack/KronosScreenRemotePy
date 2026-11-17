@@ -136,6 +136,15 @@ def _user_label(i: int) -> str:
     return f"U-{c}{c}"
 
 
+def extra_bank_label(n: int) -> str:
+    """User bank n (0-based) past the 14 the instrument has. Korg's NAUTILUS_MIDI_SysEx.txt *2 lists Program banks
+    A-F (0-5) and G-T (0x40-0x4D) only, Drum Kit / Wave Seq user banks 0x40-0x4D, and the MIDI bank-select table
+    also ends at T; measured on a Nautilus, bank bytes 0x4E-0x60 answer with bank 0x4C's digest. A Nautilus .PCG
+    can still hold more (Programs through 0x20021, Wave Sequences through 0x20012): they are read from the file
+    and placed into real banks, never written to an address of their own."""
+    return f"File bank {n + 1}"
+
+
 def program_label(ob: int) -> str:
     if 0x00 <= ob <= 0x06:
         return _int_label(ob)
@@ -147,6 +156,8 @@ def program_label(ob: int) -> str:
         return "g(d)"
     if 0x40 <= ob <= 0x4D:
         return _user_label(ob - 0x40)
+    if 0x4E <= ob <= 0x7F:
+        return extra_bank_label(ob - 0x40)
     return f"?{ob:02X}"
 
 
@@ -155,6 +166,8 @@ def combi_label(ob: int) -> str:
         return _int_label(ob)
     if 0x40 <= ob <= 0x46:
         return _user_label(ob - 0x40)
+    if 0x47 <= ob <= 0x7F:
+        return extra_bank_label(ob - 0x40)
     return f"?{ob:02X}"
 
 

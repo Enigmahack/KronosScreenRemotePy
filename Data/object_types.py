@@ -34,6 +34,8 @@ def drum_kit_label(ob: int) -> str:
         return "GM"
     if 0x40 <= ob <= 0x4D:
         return ksx._user_label(ob - 0x40)
+    if 0x4E <= ob <= 0x7F:
+        return ksx.extra_bank_label(ob - 0x40)
     return f"?{ob:02X}"
 
 
@@ -42,6 +44,8 @@ def wave_seq_label(ob: int) -> str:
         return "INT"
     if 0x40 <= ob <= 0x4D:
         return ksx._user_label(ob - 0x40)
+    if 0x4E <= ob <= 0x7F:
+        return ksx.extra_bank_label(ob - 0x40)
     return f"?{ob:02X}"
 
 

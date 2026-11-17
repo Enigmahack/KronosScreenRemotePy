@@ -126,7 +126,8 @@ def decode_program_obj_bank(bank_id_raw: int) -> int:
 
     Literal 0x00..0x04 for I-A..I-E. 0x8000 is a dedicated FLAG value for I-F,
     NOT a continuation of the literal sequence (there is no on-disk Program
-    "I-G" at all). 0x20000+N (N=0..13) maps directly to U-A..U-GG. Ported
+    "I-G" at all). 0x20000+N (N=0..13) maps directly to U-A..U-GG; N=14..63 (a Nautilus file holds
+    them, ids through 0x20021 seen) continue as 0x4E.. file-only banks, kronos_sysex.extra_bank_label. Ported
     byte-for-byte from PcgObjectExtractor.DecodeProgramObjBank — do not
     "clean up" the branch order or route this through the 7-int-bank
     Combi-style indirection (see module docstring for why that regressed).
@@ -136,8 +137,13 @@ def decode_program_obj_bank(bank_id_raw: int) -> int:
         return 0x05  # I-F
     if bank_id_raw < 0x8000:
         return bank_id_raw  # I-A..I-E, literal 0x00..0x04
+    return _decode_user_bank(bank_id_raw)
+
+
+def _decode_user_bank(bank_id_raw: int) -> int:
+    """0x20000+N -> 0x40+N: U-A..U-GG for N=0..13, file-only extra banks above (N <= 63 keeps the byte 7-bit)."""
     n = bank_id_raw - 0x20000
-    return 0x40 + n if 0 <= n <= 13 else -1  # U-A..U-GG
+    return 0x40 + n if 0 <= n <= 0x3F else -1
 
 
 def decode_combi_obj_bank(bank_id_raw: int) -> int:
@@ -151,17 +157,19 @@ def decode_combi_obj_bank(bank_id_raw: int) -> int:
     of re-deriving an "EditableBanks()"-equivalent table. Returns -1 if
     bankIdRaw doesn't resolve to a real bank.
     """
+    if bank_id_raw >= 0x20000 + 7:
+        return _decode_user_bank(bank_id_raw)   # past U-G: file-only extra banks
     idx = bank_id_raw if bank_id_raw < 0x20000 else bank_id_raw - 0x20000 + 7
     return ksx._func33_to_obj_bank(0, idx)
 
 
 def decode_drum_or_wave_obj_bank(bank_id_raw: int) -> int:
     """.pcg on-disk Drum Kit / Wave Sequence bankId -> obj_bank: one Int bank (raw 0) plus 14 User
-    banks at 0x20000+N (pcg_file_format.md §2.4). Returns -1 if it doesn't resolve."""
+    banks at 0x20000+N (pcg_file_format.md §2.4), extra file-only banks past N=13 as for Programs.
+    Returns -1 if it doesn't resolve."""
     if bank_id_raw == 0:
         return 0
-    n = bank_id_raw - 0x20000
-    return 0x40 + n if 0 <= n <= 13 else -1
+    return _decode_user_bank(bank_id_raw)
 
 
 # ── Extracted records ────────────────────────────────────────────────────────
@@ -493,7 +501,7 @@ def _build_bank_id_encoded_pcg() -> bytes:
         (b"PBK1", 0x20006, "U-G PROG"),
         (b"PBK1", 0x20007, "U-AA PROG"),
         (b"PBK1", 0x2000D, "U-GG PROG"),
-        (b"MBK1", 0x2000E, "OUT OF RANGE PROG"),   # N=14 -- must be rejected
+        (b"MBK1", 0x2000E, "N14 PROG"),            # N=14 -- first file-only extra bank
         (b"CBK1", 0x00006, "I-G COMBI"),
         (b"CBK1", 0x20000, "U-A COMBI"),
         (b"CBK1", 0x20006, "U-G COMBI"),
@@ -608,9 +616,10 @@ def _selftest() -> None:
         check("bankid-program-U-G-via-0x20006", name_at(OBJ_PROGRAM, 0x46) == "U-G PROG")
         check("bankid-program-U-AA-via-0x20007", name_at(OBJ_PROGRAM, 0x47) == "U-AA PROG")
         check("bankid-program-U-GG-via-0x2000D", name_at(OBJ_PROGRAM, 0x4D) == "U-GG PROG")
-        # 0x2000E (N=14) is out of range -- must be rejected, not silently mapped.
-        check("bankid-program-N14-rejected",
-              any(r.bank_id_raw == 0x2000E for r in bank_pcg.rejected_banks))
+        # 0x2000E (N=14) is past U-GG: a file-only extra bank of its own, never folded onto a real one.
+        check("bankid-program-N14-extra-bank", name_at(OBJ_PROGRAM, 0x4E) == "N14 PROG"
+              and _find(bank_pcg.objects, OBJ_PROGRAM, 0x4E).bank.label == "File bank 15")
+        check("bankid-no-rejects", not bank_pcg.rejected_banks)
 
         check("bankid-combi-I-G", name_at(OBJ_COMBI, 0x06) == "I-G COMBI")
         check("bankid-combi-U-A-via-0x20000", name_at(OBJ_COMBI, 0x40) == "U-A COMBI")

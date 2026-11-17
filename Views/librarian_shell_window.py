@@ -3507,6 +3507,7 @@ class LibrarianShellWindow(QDialog):
         self._auto_fill_scope = scope
         self._auto_fill_placed = 0
         self._auto_fill_skipped = 0
+        self._auto_fill_no_slot = 0
         self._auto_fill_error: Optional[str] = None
         self._auto_fill_error_is_storage = False
         self._auto_fill_last_paint = 0.0
@@ -3576,6 +3577,7 @@ class LibrarianShellWindow(QDialog):
                         self._log(f"Auto-Fill: no free {_ROOT_LABEL.get(entry.obj_type, str(entry.obj_type))} "
                                   f"slot for '{entry.display_name or entry.content_hash[:8]}'.")
                         self._auto_fill_skipped += 1
+                        self._auto_fill_no_slot += 1
                         continue
                     self._place_merge_entry_at(entry, dst[0], dst[1])
                     # Outcome, not intent: there's no cancel path in Auto-Fill, but count
@@ -3667,6 +3669,10 @@ class LibrarianShellWindow(QDialog):
                    + (f", {skipped} skipped (see History above)." if skipped else "."))
         if error:
             summary = f"Auto-Fill STOPPED after {placed} item(s): {error}"
+        no_slot = getattr(self, "_auto_fill_no_slot", 0)
+        if no_slot:
+            self._set_warning(f"Auto-Fill: the Keyboard Library is full - {no_slot} item(s) had no free slot "
+                              "and are still in the Merge Window.")
         self._merge_status_label.setText(summary)
         self._log(summary)
         if scope is not None:
@@ -3825,6 +3831,10 @@ class LibrarianShellWindow(QDialog):
         placed, pending = resolve_sequential_fill(seq_items, obj_type, dest_bank, start_slot,
                                                    bank_type_of=self._local_bank_type_of,
                                                    slot_available=_slot_available)
+        no_room = sum(1 for _it, reason in pending if reason.startswith("destination bank full"))
+        if no_room:
+            self._set_warning(f"Fill Sequentially: destination bank {object_types.label_for(obj_type, dest_bank)} "
+                              f"is full - {no_room} item(s) were not placed and are still in the Merge Window.")
         if not placed:
             self._log("Fill Sequentially: nothing placeable.")
             for it, reason in pending:
@@ -3890,6 +3900,8 @@ class LibrarianShellWindow(QDialog):
         self._pcg_source_label = os.path.basename(path)
         self._log(f"Loaded {self._pcg_source_label}: {len(pcg.objects)} object(s), "
                  f"{len(pcg.rejected_banks)} rejected bank(s).")
+        for r in pcg.rejected_banks:
+            self._log(f"  rejected {r.tag} at 0x{r.offset:X} (bank id 0x{r.bank_id_raw:X}): {r.reason}")
         self._pcg_status_label.setText(
             f"{self._pcg_source_label} - {len(pcg.objects)} object(s)"
             + (f" ({len(pcg.rejected_banks)} rejected bank(s))" if pcg.rejected_banks else ""))
@@ -4027,6 +4039,8 @@ class LibrarianShellWindow(QDialog):
         self._pcg_source_label = f"Instrument:{remote_path}"
         self._log(f"Pulled {self._pcg_source_label}: {len(pcg.objects)} object(s), "
                  f"{len(pcg.rejected_banks)} rejected bank(s).")
+        for r in pcg.rejected_banks:
+            self._log(f"  rejected {r.tag} at 0x{r.offset:X} (bank id 0x{r.bank_id_raw:X}): {r.reason}")
         self._pcg_status_label.setText(
             f"{self._pcg_source_label} - {len(pcg.objects)} object(s)"
             + (f" ({len(pcg.rejected_banks)} rejected bank(s))" if pcg.rejected_banks else ""))

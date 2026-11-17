@@ -249,5 +249,38 @@ assert len(erase_writes) == 1 and ob.is_init(OBJ_DRUM_KIT, erase_writes[0][4]) a
 assert w._index.get(OBJ_DRUM_KIT, 0, 3) is None or not w._index.get(OBJ_DRUM_KIT, 0, 3).pending_delete
 print("delete -> erase_body fallback -> pushed init kit ok")
 
+# ── 7. A user bank past U-GG (a Nautilus .PCG holds them) is loaded, not skipped; a full destination warns ──
+xa, xb = named(ob.WAVE_SEQ_BODY_SIZE, "Extra Seq A"), named(ob.WAVE_SEQ_BODY_SIZE, "Extra Seq B")
+blob = bytearray(pcg_file._KORG_HEADER)
+blob += chunk(b"WBK1", ob.WAVE_SEQ_BODY_SIZE, 0x20012, [xa, xb])
+w._pcg = pcg_file.open_pcg(bytes(blob))
+assert not w._pcg.rejected_banks, w._pcg.rejected_banks
+w._refresh_pcg_tree()
+w._tree_pcg.expandAll()
+ws_root = next(w._tree_pcg.topLevelItem(i) for i in range(w._tree_pcg.topLevelItemCount())
+               if w._tree_pcg.topLevelItem(i).text(0) == "Wave Sequences")
+assert ws_root.child(0).text(0) == "File bank 19" and ws_root.child(0).childCount() == 2, ws_root.child(0).text(0)
+
+
+class _LastSlot:
+    def __init__(self, *a, **k): pass
+    def selected(self): return (0x40, 31)
+
+
+real_dlg, real_exec = L._DestinationDialog, L._exec_modal
+L._DestinationDialog, L._exec_modal = _LastSlot, (lambda d: L.QDialog.DialogCode.Accepted)
+try:
+    w._clear_warning()
+    w._tree_pcg.clearSelection()
+    for k in range(2):
+        ws_root.child(0).child(k).setSelected(True)
+    w._fill_sequentially_pcg()
+finally:
+    L._DestinationDialog, L._exec_modal = real_dlg, real_exec
+assert w._brd_warning.isVisibleTo(w) and "is full" in w._lbl_warning.text(), w._lbl_warning.text()
+left = {e.display_name for e in w._merge.entries if e.obj_type == OBJ_WAVE_SEQ}
+assert left & {"Extra Seq A", "Extra Seq B"}, left   # what did not fit stays staged
+print("extra PCG bank loaded + full-destination warning ok:", w._lbl_warning.text())
+
 w._closed = True
 print("ALL PASS")

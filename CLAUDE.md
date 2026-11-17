@@ -590,7 +590,7 @@ asked — Python has no USB-direct transport today, only the TCP bridge.
 A PCG of the other instrument family is converted when its objects are used, for the *connected* instrument
 (`LibrarianShellWindow._pcg_wire_body`, cached per object; `Conversion/auto.convert_object`, Init templates in
 `Resources/Conversion/*InitProgram.bin`). `open_pcg` reads Kronos (0x68) and Nautilus (0xDD) files and sets `PcgFile.family`;
-the bank-realign heuristic is Kronos-only. The Combi and Program accessors in `Data/librarian_sysex.py`, the sample walker
+the bank-realign heuristic is Kronos-only. A Nautilus PCG can hold user banks past the 14 the instrument has (Programs to bank id 0x20021, Wave Sequences to 0x20012; Korg's NAUTILUS_MIDI_SysEx.txt *2 and the bank-select table stop at G-T / 0x4D, and bytes 0x4E-0x60 answer as 0x4C on the unit; the owner confirmed 2026-11-17 the unit shows no bank past T): `pcg_file` decodes them as file-only banks 0x4E.. ("File bank N", `kronos_sysex.extra_bank_label`), usable as Merge / Fill sources, never as a destination. A Fill Sequentially or Auto-Fill that runs out of free slots sets the warning banner. The Combi and Program accessors in `Data/librarian_sysex.py`, the sample walker
 and the dependency scanner recognise Nautilus bodies by length (Combi 5640, Program 4954/3700) and translate the Timbre bank
 byte to the Kronos numbering, so everything downstream keeps one numbering. `changeset_sync` takes `device_family` and
 REFUSEs a Program/Combi in the other family's format (Drum Kits and Wave Sequences are the same size on both: their

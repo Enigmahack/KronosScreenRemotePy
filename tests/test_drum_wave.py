@@ -139,17 +139,19 @@ blob = bytearray(pcg_file._KORG_HEADER)
 blob += chunk(b"DBK1", 3, ob.DRUM_KIT_BODY_SIZE, 0, "KIT")
 blob += chunk(b"DBK1", 2, ob.DRUM_KIT_BODY_SIZE, 0x20001, "UKIT")
 blob += chunk(b"WBK1", 150, ob.WAVE_SEQ_BODY_SIZE, 0, "WSEQ")
-blob += chunk(b"DBK1", 1, ob.DRUM_KIT_BODY_SIZE, 0x2000E, "BAD")
+blob += chunk(b"DBK1", 1, ob.DRUM_KIT_BODY_SIZE, 0x2000E, "XKIT")   # past U-GG: a file-only extra bank
+blob += chunk(b"DBK1", 1, ob.DRUM_KIT_BODY_SIZE, 0x20040, "BAD")   # N=64 would not fit a 7-bit bank byte
 pcg = pcg_file.open_pcg(bytes(blob))
 check("pcg-opens", pcg is not None)
 if pcg:
     dks = [e for e in pcg.objects if e.obj_type == OBJ_DRUM_KIT]
     wss = [e for e in pcg.objects if e.obj_type == OBJ_WAVE_SEQ]
-    check("pcg-dk-count", len(dks) == 5)
-    check("pcg-dk-banks", {e.bank.obj_bank for e in dks} == {0, 0x41})
+    check("pcg-dk-count", len(dks) == 6)
+    check("pcg-dk-banks", {e.bank.obj_bank for e in dks} == {0, 0x41, 0x4E})
+    check("pcg-dk-extra-bank", any(e.name == "XKIT0" and e.bank.label == "File bank 15" for e in dks))
     check("pcg-dk-name", any(e.name == "UKIT1" and e.bank.obj_bank == 0x41 and e.index == 1 for e in dks))
     check("pcg-ws-150", len(wss) == 150 and wss[0].bank.obj_bank == 0)
-    check("pcg-bad-bank-rejected", len(pcg.rejected_banks) == 1 and pcg.rejected_banks[0].bank_id_raw == 0x2000E)
+    check("pcg-bad-bank-rejected", len(pcg.rejected_banks) == 1 and pcg.rejected_banks[0].bank_id_raw == 0x20040)
     check("pcg-wire-body-passthrough", pcg_file.wire_body_from_pcg_entry(OBJ_DRUM_KIT, dks[0]) == dks[0].body)
 
 if fails:
