@@ -476,6 +476,20 @@ def set_wave_seq_step_select(body: bytearray, step: int, new_select: int) -> Non
     body[o + 1] = (new_select >> 8) & 0xFF
 
 
+# HW-VERIFY: step +21 is "Start Offset / Reverse" (pcg_file_format.md §7); bit 7 is assumed from the Drum Kit zone and
+# Program zone byte 21, where Reverse is bit 7. Set a step to Reverse on a unit, dump the Wave Sequence and check the bit.
+_WS_REVERSE_OFS = 21
+
+
+def wave_seq_step_reversed(body: bytes, step: int) -> bool:
+    return bool(body[_WS_STEP_BASE + step * _WS_STEP_STRIDE + _WS_REVERSE_OFS] & 0x80)
+
+
+def set_wave_seq_step_reverse(body: bytearray, step: int, on: bool) -> None:
+    o = _WS_STEP_BASE + step * _WS_STEP_STRIDE + _WS_REVERSE_OFS
+    body[o] = (body[o] | 0x80) if on else (body[o] & 0x7F)
+
+
 # ── Generic init dispatch (port of InitObjects.IsInit / IsInitName) ──────────
 
 def is_init(obj_type: int, body: bytes) -> bool:

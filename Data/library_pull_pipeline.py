@@ -300,8 +300,10 @@ def pull(index: LocalLibraryIndex, blobs: BlobStore,
          get_live_digest: GetLiveDigest, get_bank_objects: GetBankObjects,
          full: bool = False, progress: Optional[Callable[[str], None]] = None,
          cancel: Optional[Callable[[], bool]] = None,
+         family: Optional[str] = None,
          ) -> PullResult:
-    """Digest every registry bank, diff via plan_pull (lazy by default, or
+    """`family`: the connected instrument's family, recorded for every body pulled (index.note_family).
+    Digest every registry bank, diff via plan_pull (lazy by default, or
     force everything when full=True), pull each changed bank's objects, and
     reconcile against the local index -- a locally-dirty object is NEVER
     overwritten; if its own pulled content also differs from its baseline
@@ -375,22 +377,23 @@ def pull(index: LocalLibraryIndex, blobs: BlobStore,
             retry = index.retryable_slots(b.bank_key)
             if retry:
                 work.append((b, retry))
-    return _fetch_banks(index, blobs, work, fresh, get_bank_objects, progress, cancel)
+    return _fetch_banks(index, blobs, work, fresh, get_bank_objects, progress, cancel, family)
 
 
 def recheck_unread(index: LocalLibraryIndex, blobs: BlobStore, get_bank_objects: GetBankObjects,
                    progress: Optional[Callable[[str], None]] = None,
-                   cancel: Optional[Callable[[], bool]] = None) -> PullResult:
+                   cancel: Optional[Callable[[], bool]] = None, family: Optional[str] = None) -> PullResult:
     """Ask again for every unread slot in index.incomplete_banks, unreadable ones included (the
     Librarian's "Re-check unreadable slots"). No digest sweep and no baseline change: only the
     record and the slots that answer are touched. A slot that fails again keeps counting (an
     unreadable slot stays unreadable)."""
     work = [(b, index.incomplete_slots(b.bank_key)) for b in all_banks()
             if index.incomplete_slots(b.bank_key)]
-    return _fetch_banks(index, blobs, work, {}, get_bank_objects, progress, cancel)
+    return _fetch_banks(index, blobs, work, {}, get_bank_objects, progress, cancel, family)
 
 
-def _apply_objects(index: LocalLibraryIndex, blobs: BlobStore, bank_ref: BankRef, objs) -> Tuple[int, int]:
+def _apply_objects(index: LocalLibraryIndex, blobs: BlobStore, bank_ref: BankRef, objs,
+                   family: Optional[str] = None) -> Tuple[int, int]:
     """Reconcile one fetch's answered slots into the index. A locally-dirty entry is NEVER
     overwritten; it is flagged Conflicted only when THIS slot's incoming content differs from its
     baseline. Returns (fetched, conflicts)."""
@@ -400,6 +403,7 @@ def _apply_objects(index: LocalLibraryIndex, blobs: BlobStore, bank_ref: BankRef
 
         if entry is None or not entry.is_dirty:
             content_hash = blobs.put(body)
+            index.note_family(content_hash, family)
             now = _now_iso()
             index.set_entry(bank_ref.obj_type, bank_ref.bank, number, LocalIndexEntry(
                 version=version,
@@ -427,7 +431,7 @@ def _apply_objects(index: LocalLibraryIndex, blobs: BlobStore, bank_ref: BankRef
 def _fetch_banks(index: LocalLibraryIndex, blobs: BlobStore,
                  work: List[Tuple[BankRef, Optional[List[int]]]], fresh: Dict[str, str],
                  get_bank_objects: GetBankObjects, progress: Optional[Callable[[str], None]],
-                 cancel: Optional[Callable[[], bool]]) -> PullResult:
+                 cancel: Optional[Callable[[], bool]], family: Optional[str] = None) -> PullResult:
     """Fetch each (bank, slots) of `work` (slots None = the whole bank), apply what answered,
     fold the outcome into the unread-slot record, and advance the digest baseline of every
     bank read whole and not cut short by a cancel."""
@@ -463,7 +467,7 @@ def _fetch_banks(index: LocalLibraryIndex, blobs: BlobStore,
             # them as failures (a cancel is not a failed read).
             skipped, missing = missing, set()
 
-        f, c = _apply_objects(index, blobs, bank_ref, objs)
+        f, c = _apply_objects(index, blobs, bank_ref, objs, family)
         fetched += f
         conflicts += c
 

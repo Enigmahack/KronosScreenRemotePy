@@ -308,6 +308,12 @@ class LocalLibraryIndex:
         # change of its bank or an explicit Re-check. A slot skipped by a cancel is recorded with
         # its count unchanged (0 when new) - a cancel is not a failure.
         self.incomplete_banks: Dict[str, Dict[int, int]] = {}
+        # Which instrument family a stored body was made for: content hash -> "kronos" | "nautilus". Needed for
+        # Drum Kits and Wave Sequences, whose bodies are the same size on both instruments while their sample numbers
+        # differ, so the format cannot be read off the body (Programs, Combis and Set Lists can: body_family). Keyed
+        # by content, not slot: a revert to the baseline, a move or a paste keeps it right. Missing = unknown (bodies
+        # stored before this existed); never guessed.
+        self.content_family: Dict[str, str] = {}
         self._lock = threading.Lock()
         # defer_saves() batching — see that method.
         self._defer_lock = threading.RLock()
@@ -350,6 +356,7 @@ class LocalLibraryIndex:
             }
             # Absent from index files written before it existed: no incomplete banks.
             self.incomplete_banks = self._load_incomplete(root.get("incomplete_banks"))
+            self.content_family = {str(k): str(v) for k, v in (root.get("content_family") or {}).items()}
         except Exception as e:
             log.warning("index load failed: %s", e)
         return self
@@ -400,12 +407,24 @@ class LocalLibraryIndex:
                     # older build's loader (which read a list of slot numbers) still reads this.
                     "incomplete_banks": {k: {str(n): int(c) for n, c in sorted(v.items())}
                                          for k, v in self.incomplete_banks.items() if v},
+                    "content_family": self.content_family,
                 }
                 _storage.atomic_write_text(self._path(), json.dumps(root, indent=2))
             self.last_save_error = None
         except Exception as e:
             self.last_save_error = str(e)
             log.error("index save failed: %s", e)
+
+    # -- content provenance ------------------------------------------------------
+
+    def note_family(self, content_hash: str, family: Optional[str]) -> None:
+        """Record the instrument family `content_hash` was made for (no-op for an unknown family). Saved with the
+        next save()."""
+        if content_hash and family:
+            self.content_family[content_hash] = family
+
+    def family_of(self, content_hash: str) -> Optional[str]:
+        return self.content_family.get(content_hash)
 
     # -- entry access -----------------------------------------------------------
 

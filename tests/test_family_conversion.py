@@ -228,6 +228,62 @@ w._service = Fake(True)
 w._pcg = dataclasses.replace(kpcg, family=FAMILY_NAUTILUS)
 check("manual-convert-blocked-for-nautilus-pcg", "already in the Nautilus format" in (w._convert_block_reason("pcg") or ""))
 
+# ---- PCG -> Merge on a Nautilus: a Kronos Combi's dependencies are its SOURCE Programs. Timbre 1 uses the factory
+# I-A000 (re-pointed to the Nautilus factory A011 by the conversion), timbre 2 the user Program U-A005. A011 in the
+# Kronos PCG is an unrelated Program and must not be pulled as a dependency.
+from types import SimpleNamespace
+from PySide6.QtWidgets import QDialog
+
+
+def _named_prog(name):
+    b = bytearray(init_program_template(False, True))
+    b[:24] = name.encode().ljust(24, b"\0")
+    return bytes(b)
+
+
+_int_a = [_named_prog("Berlin Grand SW2 U.C." if i == 0 else ("Unrelated" if i == 11 else "Init Program")) for i in range(12)]
+_u_a = [_named_prog("User Prog" if i == 5 else "Init Program") for i in range(6)]
+_cb = bytearray(init_combi_template(False))
+_cb[:24] = b"Two Timbres".ljust(24, b"\0")
+for _t, (_fb, _n) in enumerate(((0, 0), (18, 5))):
+    _o = 2632 + _t * 188
+    _cb[_o + 2] = (_cb[_o + 2] & 0x1F) | 0x20
+    set_combi_timbre_ref(_cb, _t, _fb, _n)
+_dep_pcg = open_pcg(pf._KORG_HEADER + pf._make_bank_chunk(b"PBK1", 12, 4960, 0, _int_a)
+                    + pf._make_bank_chunk(b"PBK1", 6, 4960, 0x20000, _u_a)
+                    + pf._make_bank_chunk(b"CBK1", 1, 7810, 0x20000, [bytes(_cb)]))
+w._service = Fake(True)
+w._pcg, w._pcg_source_label = _dep_pcg, "deps.pcg"
+w._pcg_conv_cache.clear()
+w._refresh_pcg_tree()
+_ca = next(a for a in w._pcg_by_addr if a[0] == OBJ_COMBI)
+w._merge.clear()
+w._pull_pcg_address_into_merge(_ca)
+_combi_e = next(e for e in w._merge.entries if e.obj_type == OBJ_COMBI)
+_targets = sorted(s.target_address for s in _combi_e.ref_sites)
+check("pcg-merge-deps-are-source-programs", _targets == [(OBJ_PROGRAM, 0x40, 5)])
+check("pcg-merge-no-unrelated-program", not any(e.display_name == "Unrelated" for e in w._merge.entries))
+check("pcg-merge-converted-combi-kept-factory-repoint",
+      list(iter_combi_timbre_refs(_combi_e.body))[0][1:] == (0, 11)
+      and (OBJ_PROGRAM, 0, 11) in [a for _, _, a in w._resolve_refs(OBJ_COMBI, _combi_e.body)])   # what the old walk used
+
+# ---- PCG Fill Sequentially goes through the Merge Window: the dependency is staged and recorded as a gap
+w._merge.clear()
+_orig_payloads, _orig_exec, _orig_dlg = w._selected_payloads, L._exec_modal, L._DestinationDialog
+w._selected_payloads = lambda tree: [("pcg",) + _ca]
+L._exec_modal = lambda dlg: QDialog.DialogCode.Accepted
+L._DestinationDialog = lambda *a, **k: SimpleNamespace(selected=lambda: (0x40, 0))
+try:
+    w._fill_sequentially_pcg()
+finally:
+    w._selected_payloads, L._exec_modal, L._DestinationDialog = _orig_payloads, _orig_exec, _orig_dlg
+_placed = w._index.get(OBJ_COMBI, 0x40, 0)
+check("pcg-fill-placed-converted-combi", _placed is not None and len(w._blobs.get(_placed.current_hash) or b"") == 5640)
+check("pcg-fill-dependency-staged", [e.display_name for e in w._merge.entries] == ["User Prog"])
+check("pcg-fill-dependency-gap-recorded", _placed is not None and not _placed.has_resolved_dependencies)
+check("pcg-fill-family-recorded", _placed is not None and w._index.family_of(_placed.current_hash) == FAMILY_NAUTILUS
+      and all(e.family == FAMILY_NAUTILUS for e in w._merge.entries))
+
 if fails:
     print("FAILED:", fails)
     sys.exit(1)

@@ -132,6 +132,20 @@ def encode_ref(kind: str, target: ObjLoc) -> Optional[Tuple[int, int]]:
     return obj_bank_to_func33(0 if ref_type is None else ref_type, target.bank), target.number
 
 
+def iter_program_media_refs(body: bytes):
+    """(site, obj_type, linear MS number) for each oscillator zone of a Program that plays a Drum Kit or Wave Sequence
+    by number; `site` is osc * ZONES_PER_OSC + zone, as an 'osc_zone' reference site. HD-1 wire format only (either
+    instrument): EXi bodies have no oscillator zones."""
+    if len(body) not in (PROGRAM_HD1_WIRE_SIZE, PROGRAM_HD1_NAUTILUS_SIZE):
+        return
+    osc_mode = program_oscillator_mode(body)
+    for osc, zone, ms_type, number in iter_program_zone_refs(body):
+        if ms_type == 2:
+            yield osc * ZONES_PER_OSC + zone, OBJ_WAVE_SEQ, number
+        elif ms_type == 1 and osc_mode in (4, 5):
+            yield osc * ZONES_PER_OSC + zone, OBJ_DRUM_KIT, number
+
+
 def apply_ref_patch(body: bytearray, kind: str, site: int, new_bank: int, new_number: int) -> None:
     """Write one already-encoded reference (see encode_ref) at its site."""
     if kind == 'combi_timbre':
@@ -210,18 +224,9 @@ class LibraryCatalog:
             want_linear = _loc_to_linear(loc)
             if want_linear is not None:
                 for (bank, index), dump in self.programs.items():
-                    # HD-1 wire format only — EXi bodies have no oscillator zones.
-                    if len(dump.body) not in (PROGRAM_HD1_WIRE_SIZE, PROGRAM_HD1_NAUTILUS_SIZE):
-                        continue
-                    osc_mode = program_oscillator_mode(dump.body)
-                    for osc, zone, ms_type, number in iter_program_zone_refs(dump.body):
-                        if loc.obj_type == OBJ_WAVE_SEQ:
-                            match = ms_type == 2 and number == want_linear
-                        else:
-                            match = ms_type == 1 and osc_mode in (4, 5) and number == want_linear
-                        if match:
-                            out.append(ReferrerSite('osc_zone', OBJ_PROGRAM, bank, index,
-                                                    osc * ZONES_PER_OSC + zone, 0, number))
+                    for site, obj_type, number in iter_program_media_refs(dump.body):
+                        if obj_type == loc.obj_type and number == want_linear:
+                            out.append(ReferrerSite('osc_zone', OBJ_PROGRAM, bank, index, site, 0, number))
 
         # A Set List slot can only address a type that HAS a func-33 selector. This is a positive
         # gate, not an early return: without it a Drum Kit / Wave Sequence loc fell through as a

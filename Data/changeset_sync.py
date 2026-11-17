@@ -385,17 +385,19 @@ def build_changeset(index: LocalLibraryIndex, blobs: BlobStore,
                 f"{'CHECK' if waived else 'REFUSE'}: {loc.label()} references "
                 f"{missing.ref.label()} ({missing.ref_kind}), which does not exist locally")
 
-    # Step 3.4: instrument-family gate over surviving edits.
+    # Step 3.4: instrument-family gate over surviving edits. The body's size says it for Programs, Combis and Set
+    # Lists; Drum Kits and Wave Sequences are the same size on both, so their recorded provenance decides.
     if device_family is not None:
         for k in surviving:
             obj_type, bank, number = _parse_key(k)
-            body = blobs.get(index.entries[k].current_hash)
-            fam = body_family(obj_type, len(body)) if body is not None else None
+            current = index.entries[k].current_hash
+            body = blobs.get(current)
+            fam = (body_family(obj_type, len(body)) if body is not None else None) or index.family_of(current)
             if fam is not None and fam != device_family:
                 plan.warnings.append(
                     f"REFUSE: {ObjLoc(obj_type, bank, number).label()} is in the {fam.title()} format, but the "
                     f"connected instrument is a {device_family.title()} - convert it first (open the PCG while "
-                    "connected, or use Convert to Nautilus...)")
+                    "connected, or use Convert to <instrument>...)")
 
     # Step 3.5a: whole-bank type changes (requirement 4, port of ChangesetBuilder.cs's own
     # BankTypeChanges assembly) — a Program bank the caller has an INTENTIONAL, already-staged
@@ -690,7 +692,7 @@ def sync_library(index: LocalLibraryIndex, blobs: BlobStore,
     a half-refreshed picture of the instrument is exactly the state this
     pipeline's ordering exists to avoid."""
     pull_result = pull_pipeline.pull(index, blobs, get_live_digest, get_bank_objects,
-                                     full=full, progress=progress, cancel=cancel)
+                                     full=full, progress=progress, cancel=cancel, family=device_family)
     if pull_result.cancelled:
         return pull_result, ChangesetPlan(), SyncResult(cancelled=True)
     if pull_result.aborted:
@@ -863,6 +865,24 @@ def _selftest() -> None:
         plan4e = build_changeset(idx4, blobs, clip_empty, get_live_digest=lambda bk: "combidigest-v1",
                                   resolver=lambda t, b, n: True)
         check("no-family-no-gate", not plan4e.is_refusable)
+        # a Drum Kit's body is the same size on both instruments: its recorded provenance decides
+        idx4k = LocalLibraryIndex(root / "s4k")
+        kit_hash = blobs.put(bytes(38424))
+        idx4k.set_entry(OBJ_DRUM_KIT, 0x40, 0, LocalIndexEntry(
+            version=1, baseline_hash=old_combi_hash, current_hash=kit_hash,
+            display_name="K0", created_utc=now(), modified_utc=now()))
+        idx4k.set_bank_digest_baseline(OBJ_DRUM_KIT, 0x40, "kitdigest-v1")
+
+        def kit_plan(family):
+            return build_changeset(idx4k, blobs, clip_empty, get_live_digest=lambda bk: "kitdigest-v1",
+                                   resolver=lambda t, b, n: True, device_family=family)
+        check("drum-kit-unknown-family-not-gated", not kit_plan("nautilus").is_refusable)
+        idx4k.note_family(kit_hash, "kronos")
+        check("drum-kit-wrong-family-refused", kit_plan("nautilus").is_refusable
+              and any("Kronos format" in w for w in kit_plan("nautilus").warnings))
+        check("drum-kit-right-family-writes", not kit_plan("kronos").is_refusable)
+        idx4k.save()
+        check("content-family-persisted", LocalLibraryIndex(root / "s4k").load().family_of(kit_hash) == "kronos")
         plan3d = build_changeset(idx1, blobs, clip_blocked, get_live_digest=lambda bk: "x",
                                   resolver=lambda t, b, n: True, allow_dangling=True)
         check("allow-dangling-pending-deps-not-refused", not plan3d.is_refusable)

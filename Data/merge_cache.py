@@ -152,6 +152,7 @@ class MergeEntry:
     origins: List[MergeOrigin] = field(default_factory=list)
     referenced_by: Set[str] = field(default_factory=set)          # >1 => "shared" in the UI
     ref_sites: List[MergeRefSite] = field(default_factory=list)   # this entry's OWN outgoing refs
+    family: str = ""                   # instrument family the body is in ("" = unknown); see LocalLibraryIndex.content_family
 
     @property
     def has_unresolved_dependencies(self) -> bool:
@@ -234,6 +235,7 @@ class MergeCache:
                     "version": e.version,
                     "display_name": e.display_name,
                     "is_top_level_pull": e.is_top_level_pull,
+                    "family": e.family,
                     "origins": [{"source": o.source, "address": list(o.address)} for o in e.origins],
                     "referenced_by": sorted(e.referenced_by),
                     "ref_sites": [
@@ -267,7 +269,7 @@ class MergeCache:
             entry = MergeEntry(
                 content_hash=content_hash, obj_type=int(ed.get("obj_type", 0)), body=body,
                 version=int(ed.get("version", 0)), display_name=ed.get("display_name", ""),
-                is_top_level_pull=bool(ed.get("is_top_level_pull", False)),
+                is_top_level_pull=bool(ed.get("is_top_level_pull", False)), family=ed.get("family", ""),
             )
             entry.origins.extend(
                 MergeOrigin(o["source"], tuple(o["address"])) for o in ed.get("origins", []))
@@ -361,7 +363,7 @@ class MergeCache:
             entry = MergeEntry(
                 content_hash=content_hash, obj_type=int(ed.get("obj_type", 0)), body=body,
                 version=int(ed.get("version", 0)), display_name=ed.get("display_name", ""),
-                is_top_level_pull=bool(ed.get("is_top_level_pull", False)),
+                is_top_level_pull=bool(ed.get("is_top_level_pull", False)), family=ed.get("family", ""),
             )
             entry.origins.extend(
                 MergeOrigin(o["source"], tuple(o["address"])) for o in ed.get("origins", []))
@@ -404,7 +406,8 @@ class MergeCache:
     # -- pulling ----------------------------------------------------------------
 
     def pull_recursive(self, entry_or_address, resolve_content: ResolveContent,
-                        resolve_refs: ResolveRefs, source: str = "pull"
+                        resolve_refs: ResolveRefs, source: str = "pull",
+                        family_of: Optional[Callable[[str], Optional[str]]] = None
                         ) -> Tuple[List[MergeEntry], List[Tuple[Address, str]]]:
         """Pulls one object -- and, fully automatically and transitively,
         everything it references that resolves via resolve_content -- into
@@ -423,6 +426,8 @@ class MergeCache:
             not hardcoded here, see module docstring.
         source: label recorded on MergeOrigin (a PCG filename, or
             MergeCache.LOCAL_SOURCE_LABEL).
+        family_of(content_hash) -> Optional[str]: the instrument family each pulled body is in
+            (MergeEntry.family); None leaves it unknown.
 
         Returns (added, gaps) -- mirrors C# MergeCache.Pull's return shape.
         """
@@ -430,6 +435,9 @@ class MergeCache:
         gaps: List[Tuple[Address, str]] = []
         self._pull_one(_normalize_address(entry_or_address), resolve_content, resolve_refs,
                         source, True, added, gaps)
+        if family_of is not None:
+            for e in added:
+                e.family = family_of(e.content_hash) or ""
         self.save()
         return added, gaps
 
