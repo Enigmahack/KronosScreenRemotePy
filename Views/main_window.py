@@ -4480,7 +4480,8 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         from Tools.file_manager import FileManagerWindow
         self._file_manager_win = FileManagerWindow(
             host, self._settings.ftp_port,
-            self._settings.ftp_username, self._settings.ftp_password, None)
+            self._settings.ftp_username, self._settings.ftp_password, None,
+            settings=self._settings)
         self._file_manager_win.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self._file_manager_win.destroyed.connect(lambda: setattr(self, '_file_manager_win', None))
         self._file_manager_win.show()

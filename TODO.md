@@ -85,7 +85,7 @@ The new sample mapping reaches them (better ROM matches, EXs banks, bank-id rewr
 - [ ] Nautilus `g(d)` (GM drum) Timbre references in Combis: a Kronos Combi using them cannot be converted faithfully and nothing warns (checklist 11).
 - [ ] Arp-pattern transcription exists only in the manual "Convert to Nautilus..." menu; conversion on entry cannot write patterns.
 - [ ] Objects moved to Merge before the device family is detected arrive in the Kronos format; the push guard then refuses them.
-- [ ] Set Lists are refused across instruments (their user-bank references would be off by one).
+- [ ] Set Lists are converted by `Conversion/setlist.py` (Kronos <-> Nautilus); not verified on hardware (`HW-VERIFY:` in `Conversion/setlist.py`, `Data/librarian_sysex.py`).
 - [ ] Kronos Combi/Program with an EXs reference the target lacks: the Combi keeps the Program but its sound is the default piano; report per Combi.
 
 ## Needs an instrument

@@ -12,16 +12,16 @@ Status: **Ported** / **Partial** / **Missing** / **Absent** (deliberately not po
 |---|---|---|---|
 | 1 | C# self-test suites as evidence | Partial | No Python counterpart: `DumpGateSelfTests`, `MidiTransportCoordinator*`, `ObjectBodySelfTests`, `LocalEditOpsSelfTests`, `LocalCutCopyPasteSelfTests`, `CrossPanePlacementSelfTests`, `PlacementStalenessGateSelfTests`, `DataSafetySelfTests` (436 lines), `DependencyResolutionSelfTests`, `LibrarianDependencyCacheSelfTests`, `PcgPaneLoadSelfTests`, `PcgSearchFilterSelfTests`, `LibrarianSettingsApplySelfTests`, `ScreenSessionSelfTests`, `StreamReceiverV3SelfTests`. Partly covered: `SyncPipeline`, `SyncCancellation`, `LibrarianUndo`, `LocalLibrary`, `MergeCache`. |
 | 2 | USB-direct MIDI transport, `MidiTransportCoordinator` | Absent | Python has the daemon's 9875 TCP bridge only; Settings has no transport combo. |
-| 3 | `LocalEditOps` | Partial | Behaviour exists but is embedded in `Views/librarian_shell_window.py` (4900 lines) and `Data/librarian_model.py`; nothing is unit-testable headless. Candidate for extraction into `Data/local_edit_ops.py`. |
-| 4 | Storage-change counters (`StorageChangeCountFor`, `ExpectDigestReply`) | Missing | The post-write "unexpected storage push" check (Librarian step 3b) does not run. Documented in `CLAUDE.md`. |
+| 3 | `LocalEditOps` | Partial | Behaviour exists but is embedded in `Views/librarian_shell_window.py` (5990 lines) and `Data/librarian_model.py`; not separated from the window. `tests/test_librarian.py` drives the window headless — "not unit-testable headless" is too strong. |
+| 4 | Storage-change counters (`StorageChangeCountFor`, `ExpectDigestReply`) | Missing | Symbols don't exist. What's missing is the check **after** the write that notices another client or the front panel storing to the bank during a push. Pre-write staleness check and HD-1/EXi bank-type refuse (`changeset_sync.py:45`) are both ported. |
 | 5 | `SysExService` extras | Partial | No match for `Reset`, `NotifyUserActivity`, `DumpBankBulkAsync`, `RequestProgramBankTypesAsync`. |
-| 6 | `PcgChecksumWarning` | Missing | `Data/pcg_file.py` has no checksum validation; C# warns. Matters for the converter's PCG writer, which must produce valid checksums. |
+| 6 | `PcgChecksumWarning` | Partial | Exists in `Conversion/nautilus_pcg.py:37`; the reader collects warnings, the writer sets checksums. Gap: `Data/pcg_file.py` (Librarian's loader) never checks checksums and nothing shows a warning. |
 | 7 | Librarian menubar | Partial | Python uses buttons plus shortcuts (Ctrl+Z/X/C/V, F2, Del); no File/Edit menubar. Context menus ported. C# "Properties..." is "More Info..." in Python. |
 | 8 | `LibraryPullPipeline` per-object/bank/mode pulls | Partial | `PullAsync` ported; `PullObject/Bank/ModeAsync` not found as named functions. |
 | 9 | Typed `ObjectBody` classes | Ported (functions) | `Objects/object_body.py` covers name, category, set-list slot, drum-kit and wave-seq refs. |
 | 10 | SyncPipeline | Ported, differs | Python is stricter: pushes need live pre-image backups; `force_destructive_write` only skips the conflict pre-scan. |
 | 11 | MIDI Monitor window | Ported | `DecodeMidi` is device-family aware in C#, Kronos-only in Python. Auto-scroll checkbox unverified. |
-| 12 | CLI dev tools (`--dump-pcg-*`, `--nautilus-*`, `--karma-ge-*`, `--sample-*`) | Absent | Python equivalents are ad hoc (`tests/live_*.py`, module `_selftest`s). No single self-test runner. |
+| 12 | CLI dev tools (`--dump-pcg-*`, `--nautilus-*`, `--karma-ge-*`, `--sample-*`) | Partial | `pipeline/run.py --tier 1` runs everything. Python equivalents are ad hoc (`tests/live_*.py`, module `_selftest`s). No single self-test runner. Missing: C# `--dump-pcg-*` style flags. |
 | 13 | Nautilus PCG conversion | **In progress** | See `Conversion/` and the converter section below. |
 
 Also ported (name match): DumpGate, OpLog, BlankTemplateStore, LibrarianUndo, MergeCache, LocalLibrary store/index,
@@ -39,7 +39,7 @@ pan/zoom sync are all present.
 | Tempo/pitch | Partial, intentional | C# uses SoundTouch; Python uses WSOLA + soxr (user decision). Output differs; no A/B comparison done. |
 | Tree-selection self-test, `ExsOptionFile` self-test | Missing | Minor. |
 | Legacy fake workstation (`Core/sample_editor.py`, `audio_*`, `presets.py`, ...) | Python-only | Dead code per `CLAUDE.md`; do not delete without asking. |
-| File Manager "Set Default Start Folder" + `ResolveStartFolder` | Missing | Setting field exists but nothing reads or writes it. |
+| File Manager default remote folder | Ported | `file_manager_default_remote_folder` in settings; `FileManagerWindow` takes live settings (`Tools/file_manager.py`), `Views/main_window.py` passes it in. Test: `tests/test_file_manager_start_folder.py` (both panes, fallbacks, right-click save, Settings page). |
 | File Manager drag dwell-to-navigate, edge auto-scroll | Missing | UX only. |
 | File Manager rubber-band select | Partial | Qt gives it for free; end-on-leave behaviour unverified. |
 | Item Properties dialog in the sample remote browser | Missing | `FtpPropertiesDialog` in `Views/property_dialogs.py` is a different dialog (name collision). |
@@ -51,17 +51,16 @@ state, VU, Help/About). The gaps, largest first:
 
 | # | Gap | Status | Note |
 |---|---|---|---|
-| 1 | Macros JSON format | Incompatible | C#: `{trigger:"Ctrl+X", step_delay_ms (10..2000, default 50), steps:[{code,down}]}`. Python: Qt-int trigger, steps as daemon command strings, default delay 100. A shared settings file loses macros both ways. |
-| 2 | Raw key map | Incompatible | C# keeps `raw_key_mappings.json` (WPF key names, keyed on key+shift); Python stores `raw_key_maps` inside settings.json (Qt ints, keyed on key+mods). |
-| 3 | Settings key/enum names | Incompatible | `image_scaling_mode` vs `scaling_quality`; `merge_behavior` `TemporaryMemory`/`LocalStorage` vs `temporary_memory`/`local_storage`. The scaling setting is silently ignored in either direction. |
-| 4 | Settings defaults | Differs | C# `PullMode=true`, `MergeBehavior=TemporaryMemory`; Python `pull_mode=False`, `local_storage`. |
-| 5 | Child-window placement | **Missing behaviour** | `window_placements` is loaded and saved, but no window reads or writes it; every child window reopens at its default size. Largest visible gap. |
-| 6 | Command-line flags | Partial | C# `--host`, `--mode pull`; Python positional host, `--pull`, `--data-dir`. `--host` and `--mode` missing. |
-| 7 | Keybind strings | Partial, untested | WPF key names/`Win` vs Qt labels/`Meta`; OEM keys likely do not round-trip. Zoom In/Out default to `=`/`-` in Python, none in C#. |
-| 8 | Status-bar wrap, menu-driven minimum width, live shortcut labels | Missing | Known (`CLAUDE.md`). |
-| 9 | Help window text, command-palette entries | Open | Label differences ("Layout Preset: Full" vs "Layout: Full", "..." vs ellipsis); `NautilusModeF` entry not seen in Python. |
-| 10 | Top-left change gate | Partial | C# only runs help detection when the 140x55 region changed; Python runs per frame (same outcome, more CPU). |
-| 11 | Storage location | Differs, intentional | C# is portable (beside the exe); Python uses per-user app data with one-time migration. A C# settings.json must be copied by hand. Log file names differ. |
+| 1 | Macros JSON format | Incompatible | Python uses Qt-int triggers, daemon command strings for steps, default delay 100. A shared settings file with C# loses macros both ways (C# deprecated). |
+| 2 | Raw key map | Incompatible | Python stores `raw_key_maps` inside settings.json (Qt ints, keyed on key+mods). Incompatible with C# format (C# deprecated). |
+| 3 | Settings key/enum names | Incompatible | Python uses `scaling_quality` (not `image_scaling_mode`), `temporary_memory`/`local_storage` (not `TemporaryMemory`/`LocalStorage`). Scaling setting silently ignored when loading C# format (C# deprecated). |
+
+| 4 | Child-window placement | **Missing behaviour** | `window_placements` is loaded and saved, but no window reads or writes it; every child window reopens at its default size. Largest visible gap. |
+| 5 | Command-line flags | Partial | Python has `--pull`, `--data-dir`, positional host. Missing: `--host`, `--mode`, `--dump-pcg-*` style flags. |
+| 6 | Status-bar wrap, menu-driven minimum width, live shortcut labels | Partial | Status-label word-wrap is on (`QLabel.setWordWrap(True)`). Menu-driven minimum width missing. Live shortcut labels missing. Palette says "Layout Preset: Full" (no Nautilus Mode Select entries). |
+| 7 | Help window text, command-palette entries | Open | Palette says "Layout Preset: Full" (no Nautilus Mode Select entries). `NautilusModeF` entry not seen in Python. |
+
+| 8 | Storage location | Differs, intentional | Python uses per-user app data with one-time migration. Log file names differ. |
 
 Retired in C# (not gaps; Python still carries dead code): Palette Editor and overlay (`draw_palette_editor`,
 `palette_key`), Warp Mode, Input Tester, and the legacy `audio_*` workstation tree (`Core/audio_engine.py` stubs).

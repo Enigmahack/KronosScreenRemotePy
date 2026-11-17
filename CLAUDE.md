@@ -491,8 +491,7 @@ Tools.dependency_scanner | Data.changeset_sync | Data.library_pull_pipeline`. Na
 is `nautilus`/`nautilus`; Kronos 192.168.100.15 uses the repo's `settings.json` login.
 
 **Remaining from the Pass 4 audit, in priority order** (C# `file` references are the truth):
-1. *Librarian*: `WindowPlacements` for non-main windows; File Manager "Set Default Start Folder" (field
-   exists); Drum Kit / Wave Sequence object types (see above); drum-track in the resolution paths.
+1. *Librarian*: `WindowPlacements` for non-main windows; File Manager default remote folder (`file_manager_default_remote_folder`; built, test `tests/test_file_manager_start_folder.py`); Drum Kit / Wave Sequence object types (see above); drum-track in the resolution paths.
 2. *(done 2026-10-02) MIDI/SysEx tab + behavior.* `Core/sysex_service.py` gained the perf-metadata loop
    (`refresh_now()` is now a 300 ms-debounced wake; proactive polling on a fixed interval; poll-on-changes
    for undecodable Program Changes; a bank-digest 0x38 push always refreshes), the per-change name pull
@@ -507,8 +506,9 @@ is `nautilus`/`nautilus`; Kronos 192.168.100.15 uses the repo's `settings.json` 
    moved, or CC transmit is off in GLOBAL › MIDI); re-run `tests/live_midi.py <host> --listen 30` /
    `tests/live_midi_raw.py <host> 25` while moving it. **Nautilus:** SysEx reads "unavailable" there because the
    probe is the Kronos-format mode request — identical to C# (its live-stream decode is Kronos-only by
-   design); the bridge itself connects. Still unported from C#: the storage-change counters
-   (`StorageChangeCountFor` / `ExpectDigestReply`) that the Librarian's post-write step 3b reads.
+   design); the bridge itself connects. Still unported from C#: the post-write check that notices a bank was stored
+   by another client during a push (the pre-write staleness check and the HD-1/EXi bank-type refuse at
+   `changeset_sync.py:45` are both ported). `StorageChangeCountFor` / `ExpectDigestReply` symbols don't exist.
 3. *Sample Editor — model + window DONE 2026-10-02; self-test port and visual pass remain.* Plan: port C#'s `SampleEditorViewModel` (4,592 lines)
    as a UI-independent `Core/sample_editor_model.py`, port its self-tests (`Core/Sample/SamplePhase*SelfTests.cs`
    — each pins a real hardware-observed bug), then rebuild `Views/sample_editor_window.py` on the model (the
@@ -534,12 +534,21 @@ is `nautilus`/`nautilus`; Kronos 192.168.100.15 uses the repo's `settings.json` 
    `tests/test_sample_model_edit.py`, `tests/test_sample_model_zones.py` (real SMPTEST fixture copies). Gotchas: zone-adding
    methods rebuild the tree (selection is dropped — re-find the node with `_node_for_path`); `KmpZone` equality is by
    VALUE so always use `zone_index`/`zone_in`; the model's `dispatch` hook must be set by the window to marshal the
-   audio-thread `on_stopped` onto the GUI thread.
-4. Status-bar wrap + menu-driven minimum width + live shortcut labels in menus (990d1d0),
-   re-fit window on family switch, keybind defaults diff (C# Zoom In/Out default to none; Python
-   defaults them to =/-), command-palette entry diff incl. `NautilusModeF`, Help window text diff.
-5. Port C#'s self-test suites as the parity evidence (DataSafety, SyncPipeline, MergeAutoFill,
-   CrossPanePlacement, LibrarianUndo, SamplePhase*).
+   audio-thread `on_stopped` onto the GUI thread. **Partial-coverage self-tests** (auditor listed 15 suites): `SyncPipeline`
+   (`test_sync_safety.py`), `SyncCancellation`, `LibrarianUndo` (librarian self-test), `LocalLibrary` (store self-test),
+   `MergeCache` (merge self-test), `DumpGate` (`test_dump_match.py`), `StreamReceiverV3` (`test_handshake_status.py`),
+   `DataSafety` (`test_sync_safety.py`). The audit's full list: `DumpGateSelfTests`, `MidiTransportCoordinator*`,
+   `ObjectBodySelfTests`, `LocalEditOpsSelfTests`, `LocalCutCopyPasteSelfTests`, `CrossPanePlacementSelfTests`,
+   `PlacementStalenessGateSelfTests`, `DataSafetySelfTests`, `DependencyResolutionSelfTests`,
+   `LibrarianDependencyCacheSelfTests`, `PcgPaneLoadSelfTests`, `PcgSearchFilterSelfTests`,
+   `LibrarianSettingsApplySelfTests`, `ScreenSessionSelfTests`, `StreamReceiverV3SelfTests`.
+4. Status-bar word-wrap (on — `QLabel.setWordWrap(True)` on all status labels); menu-driven minimum width; live shortcut
+   labels in menus (990d1d0). Re-fit window on family switch. Keybind defaults: Zoom In/Out to `=`/`-`. Command-palette entry diff incl. `NautilusModeF`. Help window text diff.
+5. Port C#'s self-test suites as the parity evidence (DataSafety, SyncPipeline, MergeAutoFill, CrossPanePlacement,
+   LibrarianUndo, SamplePhase*, DumpGateSelfTests, ObjectBodySelfTests, LocalEditOpsSelfTests, LocalCutCopyPasteSelfTests,
+   CrossPanePlacementSelfTests, PlacementStalenessGateSelfTests, DependencyResolutionSelfTests, LibrarianDependencyCacheSelfTests,
+   PcgPaneLoadSelfTests, PcgSearchFilterSelfTests, LibrarianSettingsApplySelfTests, ScreenSessionSelfTests,
+   StreamReceiverV3SelfTests).
 
 Note: `Core/sample_editor.py` (legacy fake workstation) shadows nothing now because the model package is `Core/sample_editor_model/`.
 
@@ -699,7 +708,7 @@ line here only after the live check. Back up any slot before writing (the conver
    file (250) and answers MLSD with `500 Unknown command` - same as the Nautilus. FEAT lists EPRT EPSV MDTM PASV REST SIZE TVFS UTF8.
 2. `Data/kmp_multisample.py:126` - copy a test .KMP with no RLP2/RLP3 to the unit and see whether the Kronos
    loads it, and what the Sample Editor then shows.
-3. `Core/sysex_service.py:725` - write/store replies are matched by function only (object DUMP replies are now matched by obj+bank+slot, 2026-11-11: `SysExDumpCollector.collect(expect_bank=, expect_index=)`, after a live Nautilus read took an HD-1-sized stray Program dump for an EXi slot; `tests/test_dump_match.py`). With a second client (or front-panel
+3. `Core/sysex_service.py:904` - write/store replies are matched by function only (object DUMP replies now matched by obj+bank+slot via `SysExDumpCollector.collect(expect_bank=, expect_index=)`, 2026-11-11; after a live Nautilus read took an HD-1-sized stray Program dump for an EXi slot; `tests/test_dump_match.py`). With a second client (or front-panel
    activity) during a dump, does a stray 0x24 get taken for the wanted reply?
 4. Hardware VALUE-slider CC: `tests/live_midi.py <host> --listen 30` while moving the slider; check GLOBAL >
    MIDI has CC transmit on first.

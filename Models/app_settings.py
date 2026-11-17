@@ -198,8 +198,9 @@ class AppSettings:
     vu_device_id: Optional[str] = None
     sample_editor_output_device_id: str = ""
 
-    # File Manager's local pane starting folder ("" = Desktop)
+    # File Manager starting folders: local pane ("" = Desktop), instrument pane ("" = "/")
     file_manager_default_local_folder: str = ""
+    file_manager_default_remote_folder: str = ""
 
     # Sample Editor
     sample_undo_byte_cap_mb: int = 256

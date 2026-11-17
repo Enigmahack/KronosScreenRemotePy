@@ -609,6 +609,16 @@ def _ftp_parent(path: str) -> str:
     return "/" if idx <= 0 else clean[:idx]
 
 
+def normalize_remote_folder(path: str) -> str:
+    """'SSD/Samples/' -> '/SSD/Samples'; empty -> '/'."""
+    return "/" + path.strip().replace("\\", "/").strip("/")
+
+
+def _default_local_folder() -> str:
+    desktop = pathlib.Path.home() / "Desktop"
+    return str(desktop if desktop.is_dir() else pathlib.Path.home())
+
+
 # ── Drag-drop constants and tree subclass ─────────────────────────────────────
 
 _DRAG_MIME = "application/x-kronos-fileentries"
@@ -761,18 +771,22 @@ class FileManagerWindow(QMainWindow):
     _progress_signal = Signal(int)
     _conflict_signal = Signal(object)   # _ConflictRequest, filled in on the GUI thread
 
-    def __init__(self, host: str, ftp_port: int, user: str, password: str, parent=None):
+    def __init__(self, host: str, ftp_port: int, user: str, password: str, parent=None, settings=None):
         super().__init__(parent)
         self._host = host
         self._ftp_port = ftp_port
         self._user = user
         self._pass = password
+        # The live AppSettings (never a private copy): start folders are read from it and
+        # "Set as Default Start Folder" writes to it.
+        self._settings = settings
 
         self._ftp = _FtpWorker(host, ftp_port, user, password)
         self._remote_path = "/"
-        self._local_path = str(pathlib.Path.home() / "Desktop")
-        if not os.path.isdir(self._local_path):
-            self._local_path = str(pathlib.Path.home())
+        self._local_path = _default_local_folder()
+        start = settings.file_manager_default_local_folder if settings else ""
+        if start and os.path.isdir(start):
+            self._local_path = start
 
         self._remote_entries: List[FileEntry] = []
         self._local_entries: List[FileEntry] = []
@@ -988,6 +1002,21 @@ class FileManagerWindow(QMainWindow):
         try:
             self._ftp.connect()
             self._status_signal.emit("Connected.")
+            start = normalize_remote_folder(
+                self._settings.file_manager_default_remote_folder if self._settings else "")
+            if start != "/":
+                # LIST of a missing folder is an empty success on the instruments, so check
+                # the folder is really there before opening it.
+                name = start.rsplit("/", 1)[-1]
+                try:
+                    found = any(e.name == name and e.is_directory
+                                for e in self._ftp.list_dir(_ftp_parent(start), include_hidden=True))
+                except ftplib.error_perm:
+                    found = False
+                if found:
+                    self._remote_path = start
+                else:
+                    self._status_signal.emit(f"Default start folder {start} not found; showing /.")
             self._bg_refresh_remote()
         except Exception as e:
             self._status_signal.emit(f"FTP connect failed: {e}")
@@ -1356,6 +1385,9 @@ class FileManagerWindow(QMainWindow):
         if entry and entry.is_directory:
             a = menu.addAction("Open")
             a.triggered.connect(lambda: self._ctx_open(entry, is_remote))
+            a = menu.addAction("Set as Default Start Folder")
+            a.setEnabled(self._settings is not None)
+            a.triggered.connect(lambda: self._set_default_start_folder(entry.full_path, is_remote))
         else:
             label = "← Send to PC" if is_remote else "→ Send to Instrument"
             a = menu.addAction(label)
@@ -1406,6 +1438,17 @@ class FileManagerWindow(QMainWindow):
         else:
             self._local_path = entry.full_path
             self._refresh_local()
+
+    def _set_default_start_folder(self, path: str, is_remote: bool):
+        from Models.storage import save_settings_async
+        if is_remote:
+            path = normalize_remote_folder(path)
+            self._settings.file_manager_default_remote_folder = path
+        else:
+            self._settings.file_manager_default_local_folder = path
+        save_settings_async(self._settings)
+        pane = "instrument" if is_remote else "computer"
+        self._set_status(f"Default {pane} start folder: {path}")
 
     # ── Clipboard (cut/copy/paste) ────────────────────────────────────────────
 

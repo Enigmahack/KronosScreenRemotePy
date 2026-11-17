@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 import Models.storage
 from Models.app_settings import AppSettings, MacroDef, RawKeyMap, get_rebindable
 from Models.models import Keybind
+from Tools.file_manager import normalize_remote_folder
 import Utils.key_map as key_map
 import Utils.theme as T
 from Views.revealable_password_edit import RevealablePasswordEdit
@@ -134,6 +135,7 @@ class SettingsWindow(QDialog):
             ("Tools", (("MIDI/SysEx", self._build_midi_tab),
                        ("Librarian", self._build_librarian_tab),
                        ("Sample Editor", self._build_sample_editor_tab),
+                       ("File Manager", self._build_file_manager_tab),
                        ("Debug", self._build_debug_tab))),
         )
         for group, pages in groups:
@@ -843,6 +845,50 @@ class SettingsWindow(QDialog):
         vb.addStretch()
         return w
 
+    # ── File Manager tab ───────────────────────────────────────────────────────
+
+    def _build_file_manager_tab(self) -> QWidget:
+        w = QWidget()
+        vb = QVBoxLayout(w)
+        vb.setSpacing(6)
+        vb.addWidget(_section("Default Start Folders"))
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Computer:"))
+        self._fm_local = QLineEdit()
+        self._fm_local.setPlaceholderText("(Desktop)")
+        self._fm_local.setToolTip("Folder the File Manager's computer pane opens in. Empty = Desktop.")
+        row.addWidget(self._fm_local, 1)
+        btn = QPushButton("Browse…")
+        btn.clicked.connect(self._on_browse_fm_local)
+        row.addWidget(btn)
+        vb.addLayout(row)
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Instrument:"))
+        self._fm_remote = QLineEdit()
+        self._fm_remote.setPlaceholderText("/")
+        self._fm_remote.setToolTip("Folder the File Manager's instrument pane opens in, e.g. /SSD/Samples. "
+                                   "Empty = the top level.")
+        row.addWidget(self._fm_remote, 1)
+        vb.addLayout(row)
+        vb.addWidget(_hint("A folder that no longer exists falls back to the default. You can also right-click "
+                           "a folder in the File Manager and choose Set as Default Start Folder. Takes effect "
+                           "the next time the File Manager is opened."))
+        vb.addStretch()
+        return w
+
+    def _save_file_manager_fields(self, s) -> None:
+        s.file_manager_default_local_folder = self._fm_local.text().strip()
+        remote = self._fm_remote.text().strip()
+        s.file_manager_default_remote_folder = normalize_remote_folder(remote) if remote else ""
+
+    def _on_browse_fm_local(self):
+        current = self._fm_local.text().strip() or str(pathlib.Path.home())
+        path = QFileDialog.getExistingDirectory(self, "File Manager Start Folder", current)
+        if path:
+            self._fm_local.setText(path)
+
     # ── Debug tab ──────────────────────────────────────────────────────────────
 
     def _build_debug_tab(self) -> QWidget:
@@ -959,6 +1005,8 @@ class SettingsWindow(QDialog):
         self._hide_value_inp.setChecked(s.hide_value_input)
         self._reverse_scroll.setChecked(s.reverse_scrolling)
         self._screenshot_dir.setText(s.screenshot_dir)
+        self._fm_local.setText(s.file_manager_default_local_folder)
+        self._fm_remote.setText(s.file_manager_default_remote_folder)
         self._vga_mirror.setChecked(s.vga_mirror_enabled)
         self._ss_spin.setValue(s.screensaver_timeout)
 
@@ -1051,6 +1099,7 @@ class SettingsWindow(QDialog):
         s.hide_value_input       = self._hide_value_inp.isChecked()
         s.reverse_scrolling      = self._reverse_scroll.isChecked()
         s.screenshot_dir         = self._screenshot_dir.text().strip()
+        self._save_file_manager_fields(s)
         s.vga_mirror_enabled     = self._vga_mirror.isChecked()
         s.screensaver_timeout    = self._ss_spin.value()
 
@@ -1495,6 +1544,7 @@ class SettingsWindow(QDialog):
         s.hide_value_input       = self._hide_value_inp.isChecked()
         s.reverse_scrolling      = self._reverse_scroll.isChecked()
         s.screenshot_dir         = self._screenshot_dir.text().strip()
+        self._save_file_manager_fields(s)
         s.vga_mirror_enabled     = self._vga_mirror.isChecked()
         s.screensaver_timeout    = self._ss_spin.value()
         s.kronos_host            = self._host_edit.text().strip()

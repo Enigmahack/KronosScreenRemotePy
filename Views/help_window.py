@@ -235,7 +235,7 @@ def _build_html() -> str:
            "The default mirror setting can be changed in <b>Settings → General</b>."),
 
         _h1("Bank Select"),
-        _p("Change the instrument bank from the <b>Bank Select</b> menu. "
+        _p("Change the instrument bank from the <b>Bank Select</b> menu (Kronos only; hidden on a Nautilus). "
            "Banks I-A through I-G and U-A through U-G correspond to the internal "
            "and user bank rows. U-XX banks (U-AA, U-BB, …) send a chord of both "
            "the U and I buttons simultaneously, selecting the combined bank slot."),
@@ -246,8 +246,11 @@ def _build_html() -> str:
         _p("A dual-pane file browser for transferring files between your PC and the "
            "instrument over FTP. Uses the same credentials as the screen stream."),
         _kbd_table(
-            _kb_row("Left pane",           "Local PC (starts at the Desktop folder)."),
-            _kb_row("Right pane",          "Instrument filesystem (/ by default)."),
+            _kb_row("Left pane",           "Local PC (starts at the Desktop folder, or home directory if Desktop is unavailable). "
+                                           "Right-click a folder to set it as the default start folder for that pane."),
+            _kb_row("Right pane",          "Instrument filesystem (/ by default). "
+                                           "Right-click a folder to set it as the default start folder. "
+                                           "The saved remote folder is remembered in settings."),
             _kb_row("Drag left → right",   "Upload files to the instrument."),
             _kb_row("Drag right → left",   "Download files to your PC."),
             _kb_row("Double-click folder", "Navigate into it."),
@@ -433,6 +436,12 @@ def _build_html() -> str:
         _p(_dim("Delete and Clear Changes affect the library only; a fresh pull restores deleted "
                 "objects. Clear History deletes the local audit log alone.")),
 
+        _h2("Song Library"),
+        _p("Accessed from the Librarian toolbar (" + _key("Songs") + " button). Songs are stored as single .SNG files on disk. "
+           "Import from a .SNG file or pull from the instrument. Export converts Song Timbre Sets to the connected instrument's "
+           "format and writes them (Kronos or Nautilus). The Librarian toolbar also has <b>Convert a .SNG file…</b> for "
+           "Kronos ↔ Nautilus conversion and Song Timbre Set backup/convert."),
+
         _h1("Sample Editor  (Tools → Sample Editor…)"),
         _p("View and edit .KSC / .KMP / .KSF sample content: key ranges, loop points, flags and destructive "
            "waveform edits. Edits happen on a local copy; <b>File → Pull … from Instrument</b> brings content "
@@ -493,15 +502,29 @@ def _build_html() -> str:
         _p(_dim("Use Tools → Open Screenshots Folder to browse previously saved files.")),
 
         _h1("Status Bar"),
-        _p("The status bar at the bottom of the window shows:"),
+        _p("The status bar at the bottom of the window shows (left → right):"),
         _kbd_table(
-            _kb_row("Coloured dot + text", "Connection state: green = connected, amber = connecting, gray = disconnected."),
-            _kb_row("Change / Pull",       "Active streaming mode for the current connection."),
+            _kb_row("Coloured dot",          "Connection state: green = connected, amber = connecting, gray = disconnected."),
+            _kb_row("Status text",           "Connection state text (IP address when connected)."),
+            _kb_row("⌨",                   "Keyboard capture state: green = active (keys forwarded to instrument), "
+                                           "gray = inactive (click screen to capture), red = send disabled."),
             _kb_row("N.N fps",             "Measured incoming frame rate while connected."),
-            _kb_row("Keyboard Info",       "Opens a keyboard info pane displaying CPU, memory, "
-                                           "temperature, and storage stats."),
-            _kb_row("VU meter",            "Shows the level of a local audio device (e.g. your DAW output). "
+            _kb_row("Ping",                "Round-trip time to the instrument (ms)."),
+            _kb_row("MIDI badge",          "MIDI bridge connection status (TCP when connected)."),
+            _kb_row("RX / TX dots",        "MIDI traffic indicators — flash on traffic. Click to open the MIDI Monitor."),
+            _kb_row("Notification",        "Transient messages (sync results, errors, warnings)."),
+            _kb_row("▦ (Keyboard Info)",   "Click to open the Keyboard Info / Performance Meter window."),
+            _kb_row("📚 (Librarian)",      "Quick-launch the Librarian."),
+            _kb_row("📁 (File Transfer)",  "Quick-launch the File Manager."),
+            _kb_row("🎵 (Sample Editor)",  "Quick-launch the Sample Editor."),
+            _kb_row("🎧 (MIDI Monitor)",   "Quick-launch the MIDI Monitor."),
+            _kb_row("Performance",         "Current performance — bank, number and name (via SysEx)."),
+            _kb_row("Save",                "Write / Save (Setlist/Combi/Program/Global)."),
+            _kb_row("Tap Tempo",           "Tap in quarter-notes to set the tempo."),
+            _kb_row("Seq transport",       "Locate / Rewind / Fast-Forward / Pause / Record / Start."),
+            _kb_row("VU meter",            "Level of the selected audio monitoring device. "
                                            "Click the ▾ button to pick the device. Choice is saved."),
+            _kb_row("Conn mode",           "Connection mode (Change / Pull)."),
             _kb_row("Mode: …",             "Current instrument operating mode. Detected from the screen "
                                            "image when reference images are available; otherwise polled "
                                            "from the daemon every 1 s."),
