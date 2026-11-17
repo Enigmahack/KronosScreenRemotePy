@@ -102,9 +102,19 @@ Pre-commit runs tier 0: enable with `git config core.hooksPath pipeline/hooks`.
   is older than the `.KSC`. A collection with no local sibling is pushed without one; the instrument's copy is left as is.
 - **Bank names follow the connected instrument.** `Conversion.push.bank_label/dest_label(..., nautilus)`: Nautilus
   user banks are G..T, Kronos user banks are U-A..U-GG (`restore_from_backup` and push messages use the service's family).
-- **Conversion push (`Conversion/push.py`).** Programs, Drum Kits and Wave Sequences are written and Stored first. A Combi
-  or Song Timbre Set is written only if every Program it points at in the same run was committed (written and its
-  bank Stored); otherwise it is skipped with a warning naming the Program.
+- **Conversion push (`Conversion/push.py`).** Three phases, each written and Stored before the next: Drum Kits and Wave
+  Sequences, then Programs, then Combis / Song Timbre Sets. A referrer converted alongside what it references is
+  re-pointed at where the run writes it (Combi Timbre -> Program; Program oscillator zone -> Drum Kit / Wave Sequence,
+  `_placements` / `_repoint_media`) and is written only if every such object was committed (written and its bank
+  Stored); otherwise it is skipped with a warning naming the object.
+- **PCG -> Merge / Fill Sequentially.** A PCG of the other family is converted on entry, and the converted body holds
+  destination addresses; dependencies are walked on the SOURCE body (`_pcg_pull_resolvers`), and a site the conversion
+  re-pointed (factory equivalent) is not a dependency. PCG Fill Sequentially goes through the Merge Window like a
+  Merge->Local drag (dependencies staged, gaps recorded), never placing a raw PCG body.
+- **Instrument-family provenance.** `LocalLibraryIndex.content_family` (content hash -> family, set by pulls, PCG pulls,
+  placements and body edits) and `MergeEntry.family` record which instrument a body was made for. The push gate uses
+  `body_family` first, then this record: Drum Kits and Wave Sequences are the same size on both instruments. Bodies
+  stored before it existed are unknown and not gated (never guessed).
 - **Librarian sync.** `index.incomplete_banks` is `{bank_key: {slot: consecutive_failures}}`. A pull advances a bank's
   baseline for the slots that answered and records those that did not; later pulls re-fetch only the unread slots
   (the record forces this whatever the digest says). After `UNREADABLE_AFTER` (3) failed pulls a slot is "unreadable":
@@ -564,7 +574,7 @@ not loaded by hardware - send over SysEx instead), Librarian right-click "Conver
 bank S = wire 0x4C), live-verified 8 Programs into S000-S007. Tests: `tests/test_conversion.py`, `test_conversion_push.py`,
 `test_conversion_ui.py`; live: `tests/live_nautilus_push.py`. Arp patterns: the convert flow asks for a first bank-B slot (default B043; B000-B042 and B127 held earlier test patterns),
 allocates one slot per distinct GE, writes obj 0x19 bank 0x40 before the Programs and aborts a patch whose pattern failed
-(live-verified: Airy Shakuhachi -> B043, Dyna Hits -> B044). Live-verified 2026-10-22: Combis (G000-G002, bank G = wire 0x40), arp patterns, EXi Programs (own destination bank, default Q = 0x4A; `EXI_DEST` in `Conversion/push.py`) and `restore_from_backup` for all of them, each re-read byte-identical. Song Timbre Sets (obj 0x02, one bank, 200 songs, 5640 bytes on the Nautilus; `Conversion/song_source.py` reads a Kronos .syx, Librarian toolbar "Songs" menu backs them up and converts them, default target song 020; only the Timbre Set is converted, Song Control (0x08) and song events are never touched) wrote to song 199 and restored, and a Wave Sequence and Drum Kit wrote to U-A:031 / U-A:015 and restored (Drum Kits now convert with zones that have no Nautilus sample switched off and listed: a real kit, "Trance kit", wrote to U-A:015 and restored; 78 of 78 named kits in the reference PCG convert). SNG files: `Data/sng_file.py` + `Data/song_events.py` parse a whole Kronos or Nautilus .SNG (header, lossless chunk tree, every MIDI/master/pattern event, audio records; `kronosology/docs/interfaces/sng_file_format.md`; fixtures in `Z:/SNG EXAMPLES/{Kronos,Nautilus}/`), `Data/song_model.py` is the one Song form for both the file path (with events) and the SysEx path (Timbre Set + Control only), `Data/sng_writer.py` builds a .SNG (rebuilds all four reference files byte-for-byte), `Conversion/song_convert.py` + `Conversion/combi_reverse.py` convert songs and whole .SNG files Kronos <-> Nautilus (Timbre Set converted, events and Song Control carried unchanged, audio .WAV files not included; NOT verified on a real instrument loading the result), `Data/song_library.py` + `Views/song_library_window.py` are the Song Library (songs kept as single-song .SNG files; SysEx-only songs kept as whole-Song objects and cannot be exported), and the Librarian "Songs" menu has Song Library, Convert a .SNG file, and Timbre Set conversion to the Nautilus (six real Kronos songs wrote to songs 194-199 and were restored). Songs are deliberately NOT in the Local library/Sync/changeset machinery: a Song Control cannot be pushed without its events. A .syx can also be a DX7 bank (Yamaha, F0 43): the song importer recognises and skips those. DX7 plan (not built): `Z:/DX7 EXAMPLES/SysexFormat/` holds 1,218 files from the SSD1 backup (1,170 are 4104-byte DX7 32-voice bulk dumps, 1,154 distinct, one with a bad checksum; 42 are 5232-byte `F0 43 00 06 08 60` DX7II-style messages). A DX7 voice is 155 bytes; the MOD-7 engine stores its patch as section 7 of an EXi Program (1108 parameter bytes, `Prog_EXi.txt` / `SysExParams/VoiceModels/MOD-7.txt`: algorithm 0-78, six oscillators, mixers, EG1-9), so loading a DX7 sound over SysEx means writing an EXi Program with a converted MOD-7 patch; the instrument's own DX7 import does that conversion in firmware and the mapping is not documented. GROUND TRUTH NOW EXISTS (2026-10-23): the owner loaded ROM1A.SYX / ROM1B.SYX natively into Nautilus user EXi banks Q / R (wire 0x4A / 0x4B, slots 0-31); the 64 resulting Programs (4954 B) are in `Z:/DX7 EXAMPLES/NautilusLoaded/` next to an Init EXi Program for comparison, and `Data/dx7_voice.py` unpacks the DX7 voices. Findings so far: names carry over (64/64); 300 Program offsets vary between the voices, all inside the synth-model area (about 2680-3560); per-operator envelope levels sit at a 23-byte stride (L1 at 3031, 3054, 3077, 3100, 3123, 3146 for operators stored 0-5) and an exact value-to-byte function search finds LFO speed/wave/delay, transpose, pitch-mod-sens and key-velocity-sens candidates; 125 offsets have an exact match but many are ambiguous because small-range parameters coincide. Next: fit each field across the 64 voices (identity vs scaled), work out the algorithm (DX7 0-31 -> MOD-7 0-78) and operator order, then write the converter and check it by predicting the loaded Programs byte for byte. Unexplained: bank P slots 25 and 53 (wire 0x49) changed in the same area during the session without a name change. The 'ground truth' method was: load a DX7 .syx natively into a MOD-7 Program on the Nautilus (front panel), read the Program over SysEx, diff against the DX7 voice; the factory MOD-7 Programs (EXi bank A, e.g. slot 127 'MOD-7 E.Piano') probably derive from the DX7 factory voices and give a first set of pairs. Song events (MIDI) cannot be read over SysEx (object 0x09 is disabled), so full-song storage must come from the .SNG; a Song Control holds offsets into those events, so never push one onto a song with different events. Still to do: Song Timbre Sets are not a Librarian object type (no Sync/tree/reference dispatch: a Program move would not repoint songs), and the Nautilus answers a digest for 0x18 only, not 0x02. (The dialog and reports use Nautilus bank letters, G.. for wire 0x40+, via `Conversion.push.bank_label`.)
+(live-verified: Airy Shakuhachi -> B043, Dyna Hits -> B044). Live-verified 2026-10-22: Combis (G000-G002, bank G = wire 0x40), arp patterns, EXi Programs (own destination bank, default Q = 0x4A; `EXI_DEST` in `Conversion/push.py`) and `restore_from_backup` for all of them, each re-read byte-identical. Song Timbre Sets (obj 0x02, one bank, 200 songs, 5640 bytes on the Nautilus; `Conversion/song_source.py` reads a Kronos .syx, Librarian toolbar "Songs" menu backs them up and converts them, default target song 020; only the Timbre Set is converted, Song Control (0x08) and song events are never touched) wrote to song 199 and restored, and a Wave Sequence and Drum Kit wrote to U-A:031 / U-A:015 and restored (Drum Kits now convert with zones that have no Nautilus sample switched off and listed: a real kit, "Trance kit", wrote to U-A:015 and restored; 78 of 78 named kits in the reference PCG convert). SNG files: `Data/sng_file.py` + `Data/song_events.py` parse a whole Kronos or Nautilus .SNG (header, lossless chunk tree, every MIDI/master/pattern event, audio records; `kronosology/docs/interfaces/sng_file_format.md`; fixtures in `Z:/SNG EXAMPLES/{Kronos,Nautilus}/`), `Data/song_model.py` is the one Song form for both the file path (with events) and the SysEx path (Timbre Set + Control only), `Data/sng_writer.py` builds a .SNG (rebuilds all four reference files byte-for-byte), `Conversion/song_convert.py` + `Conversion/combi_reverse.py` convert songs and whole .SNG files Kronos <-> Nautilus (Timbre Set converted, Program Change events re-pointed like a Timbre, other events and Song Control carried unchanged, audio .WAV files not included; NOT verified on a real instrument loading the result), `Data/song_library.py` + `Views/song_library_window.py` are the Song Library (songs kept as single-song .SNG files; SysEx-only songs kept as whole-Song objects and cannot be exported), and the Librarian "Songs" menu has Song Library, Convert a .SNG file, and Timbre Set conversion to the Nautilus (six real Kronos songs wrote to songs 194-199 and were restored). Songs are deliberately NOT in the Local library/Sync/changeset machinery: a Song Control cannot be pushed without its events. A .syx can also be a DX7 bank (Yamaha, F0 43): the song importer recognises and skips those. DX7 plan (not built): `Z:/DX7 EXAMPLES/SysexFormat/` holds 1,218 files from the SSD1 backup (1,170 are 4104-byte DX7 32-voice bulk dumps, 1,154 distinct, one with a bad checksum; 42 are 5232-byte `F0 43 00 06 08 60` DX7II-style messages). A DX7 voice is 155 bytes; the MOD-7 engine stores its patch as section 7 of an EXi Program (1108 parameter bytes, `Prog_EXi.txt` / `SysExParams/VoiceModels/MOD-7.txt`: algorithm 0-78, six oscillators, mixers, EG1-9), so loading a DX7 sound over SysEx means writing an EXi Program with a converted MOD-7 patch; the instrument's own DX7 import does that conversion in firmware and the mapping is not documented. GROUND TRUTH NOW EXISTS (2026-10-23): the owner loaded ROM1A.SYX / ROM1B.SYX natively into Nautilus user EXi banks Q / R (wire 0x4A / 0x4B, slots 0-31); the 64 resulting Programs (4954 B) are in `Z:/DX7 EXAMPLES/NautilusLoaded/` next to an Init EXi Program for comparison, and `Data/dx7_voice.py` unpacks the DX7 voices. Findings so far: names carry over (64/64); 300 Program offsets vary between the voices, all inside the synth-model area (about 2680-3560); per-operator envelope levels sit at a 23-byte stride (L1 at 3031, 3054, 3077, 3100, 3123, 3146 for operators stored 0-5) and an exact value-to-byte function search finds LFO speed/wave/delay, transpose, pitch-mod-sens and key-velocity-sens candidates; 125 offsets have an exact match but many are ambiguous because small-range parameters coincide. Next: fit each field across the 64 voices (identity vs scaled), work out the algorithm (DX7 0-31 -> MOD-7 0-78) and operator order, then write the converter and check it by predicting the loaded Programs byte for byte. Unexplained: bank P slots 25 and 53 (wire 0x49) changed in the same area during the session without a name change. The 'ground truth' method was: load a DX7 .syx natively into a MOD-7 Program on the Nautilus (front panel), read the Program over SysEx, diff against the DX7 voice; the factory MOD-7 Programs (EXi bank A, e.g. slot 127 'MOD-7 E.Piano') probably derive from the DX7 factory voices and give a first set of pairs. Song events (MIDI) cannot be read over SysEx (object 0x09 is disabled), so full-song storage must come from the .SNG; a Song Control holds offsets into those events, so never push one onto a song with different events. Still to do: Song Timbre Sets are not a Librarian object type (no Sync/tree/reference dispatch: a Program move would not repoint songs), and the Nautilus answers a digest for 0x18 only, not 0x02. (The dialog and reports use Nautilus bank letters, G.. for wire 0x40+, via `Conversion.push.bank_label`.)
 
 Phases 1–3 (above) are done; the live to-do list is the Pass 4 "Remaining" list right above.
 C# itself calls the whole Nautilus area preliminary (its own
@@ -583,8 +593,8 @@ A PCG of the other instrument family is converted when its objects are used, for
 the bank-realign heuristic is Kronos-only. The Combi and Program accessors in `Data/librarian_sysex.py`, the sample walker
 and the dependency scanner recognise Nautilus bodies by length (Combi 5640, Program 4954/3700) and translate the Timbre bank
 byte to the Kronos numbering, so everything downstream keeps one numbering. `changeset_sync` takes `device_family` and
-REFUSEs a Program/Combi in the other family's format (Drum Kits and Wave Sequences are the same size on both and cannot be
-checked). The manual "Convert to Nautilus..." path reads the raw Kronos body (`raw=True`) and still writes arp patterns,
+REFUSEs a Program/Combi in the other family's format (Drum Kits and Wave Sequences are the same size on both: their
+recorded provenance, `LocalLibraryIndex.content_family`, decides). The manual "Convert to Nautilus..." path reads the raw Kronos body (`raw=True`) and still writes arp patterns,
 which the conversion-on-entry path cannot. Nautilus factory content lives in user banks too, so a Combi Timbre in a user
 bank whose slot holds factory content is re-pointed to the other instrument's factory equivalent (`ProgramRefMap`).
 `KronosToNautilusProgramRefs.json` counts Kronos user banks from 17 (U-A) although a Kronos Combi Timbre byte counts from 18;
@@ -598,6 +608,27 @@ real Kronos slots resolve with the shift; the old no-shift reading left 1,698 da
 hide that and the stride, so everything downstream still sees func-33 numbering. Program slots are re-pointed with the same
 factory-name rule as Combi Timbres; Combi/Song slots keep their numbers and are listed in the warnings. Not verified on hardware
 (`# HW-VERIFY:` in `Conversion/setlist.py`, `Data/librarian_sysex.py`).
+
+### Conversion losses, KARMA and identity (2026-11-17)
+A KARMA module always holds a GE (#0 "Arp Model 01" is real and is also the Init value): `karma.module_ge` counts GE 0 only
+when KARMA is on or the module differs from the Init module (49 of 804 corpus GE-0 Programs). Nautilus -> Kronos carries tempo
+and latch (`karma.carry_scene_common`), never the arp switch (the template GE would start). Every conversion message goes to the
+Librarian's session Conversion Report (`Conversion/report.py`, toolbar button; PCG-on-entry, Convert to Nautilus, Convert .SNG,
+Song Library export); the PCG-on-entry log shows one line per object. A reference whose source slot is unknown (Combi-only PCG,
+Song, unpulled Program) follows Settings > Librarian `convert_unknown_program_identity` ("assume" = re-point to the factory
+equivalent and say ASSUMING, "keep" = keep the slot); this still depends on live checklist 10 (the Kronos Timbre byte).
+Song Program Change bank (low 7 bits) = Timbre byte b as INT 122+b, GM/g(n) b-6, user b-5 (both families' fixtures;
+the Kronos INT/GM part is inferred and, like the Timbre byte, depends on live checklist 10/11).
+An EXi Program runs two engines (EXi2 = EXi1 + 1052 bytes); MOD-7/STR-1 PCM and SGX-2 Piano Type pass through and are
+reported (`Conversion/exi.py`): Kronos pianos use 0-63 (German 0-15, Japanese 16-31, Berlin 48-63), the Nautilus factory 64-127,
+so no mapping yet. RAM / user-.KSC sample references that pass through are reported too. Convert to Nautilus from the Local pane
+leaves out bodies already in the connected instrument's format and skips a Drum Kit / Wave Sequence of unknown
+provenance (both listed). The action is "Convert to <connected instrument>": `Conversion/push.py` targets the service's
+family (sizes, codec for the backup check, Timbre bytes of placed Programs, reverse converters; arp patterns Nautilus only),
+and `combi_reverse` takes `placed`. The PCG pane's Object Dependencies walk the object as stored and show a reference the
+conversion re-pointed as such (`PcgSource.converted`), never a lookup of the destination address in the source PCG.
+Songs: a .SNG holds no Program data (chunks SDK1/RGN1/SPR1/BMT1/BMT2/TRK1/ADT1); its Timbres and Program Changes name
+slots exactly as a Combi does (153/153 active non-GM Timbres of the Nautilus PRELOAD.SNG land on PRELOAD.PCG Programs).
 
 ### Sample references between instruments (2026-10-29)
 `Resources/Conversion/NautilusSampleEvidence.json` is layered over the hand-made `NautilusRomWaveformMap.json` by
@@ -690,11 +721,19 @@ line here only after the live check. Back up any slot before writing (the conver
    byte-identical, `tests/live_kronos_push.py`); NOT yet verified by ear: open a Nautilus .pcg while connected to the Kronos, place a Program (EXi and HD-1), a Combi
    whose Timbres use user-bank Programs, a Drum Kit and a Wave Sequence, push, and check they sound right and the Combi
    plays its own Programs. The Kronos-only S/PDIF, Drum Track and KARMA block comes from `KronosInitProgram.bin`.
-10. The Combi Timbre bank byte: Kronos user banks start at 18 (U-A), Nautilus at 17 (G) - checked only against the
-    Combis of the factory Nautilus PCG (1,635 of 1,635 user-bank references land on real Programs). Confirm on the
-    Kronos with a Combi pulled over SysEx.
-11. Nautilus `g(d)` (GM drum) Timbre references: byte 17 is G on the Nautilus, so a Kronos Combi that references
-    `g(d)` cannot be converted faithfully; nothing flags it yet.
+10. The Combi Timbre bank byte: the code reads Kronos user banks from 18 (U-A, func-33) and Nautilus from 17 (G) - the
+    Nautilus side checked against the factory Nautilus PCG (1,635 of 1,635 user-bank references land on real Programs).
+    Conflicting corpus evidence (2026-11-17, many files are near-duplicate saves of the same sets; 122 PCGs under `PCG EXAMPLES`, Combi wire bodies, user-bank Timbres
+    whose slot is non-Init under exactly one reading): byte 18-31 resolves 40,801 times reading U-A = 17 vs 28,075
+    reading U-A = 18; per file 53 favour 17, 13 favour 18, 32 mixed (e.g. April_2019 919:39, CONTEMP-SAMPLES 304:6).
+    Byte 17 is also the most used Timbre bank in the corpus (46k), which as g(d) makes no sense. If the Kronos Combi
+    byte is 17-based like the Set List byte (func-33 - 1 from GM up), the Kronos accessors, `ProgramRefMap`'s +1 shift,
+    `kronos_user_to_nautilus_bank` and `_realign_program_banks` (which may be compensating for it) are all off by one.
+    Decide it on the Kronos: set a Combi Timbre to U-A000, pull the Combi over SysEx and read the byte.
+11. GM / g(n) Timbre references (follows from 10): the Nautilus factory Combis use bytes 6-13 although its INT banks are
+    0-5, so on the Nautilus GM = 6, g(1)-g(9) = 7-15, g(d) = 16. If the Kronos byte is 18-based, Kronos 7-17 must move
+    to 6-16 (today only 18-31 move, so g(d) = 17 lands on bank G); if it is 17-based, no GM shift is needed at all.
+    Not changed until 10 is settled.
 
 12. Sample references (`Conversion/zones.py`, `NautilusSampleEvidence.json`): on the Nautilus, convert Programs that use
     (a) a REV sample, (b) a REV sample and a normal one in the same oscillator, (c) a Kronos EXs1 sample, (d) EXs22, (e) a
@@ -710,6 +749,11 @@ line here only after the live check. Back up any slot before writing (the conver
     not Multisample zones. So the id form is confirmed for pack Wave Sequences; a pack MULTISAMPLE zone (type 1) has still not been seen. Both apps'
     `iter_program_sample_zone_refs` read type 1 only, so these zones were skipped silently; the Kronos->Nautilus Program conversion now NOTES them
     (`zones._wave_sequence_pack_zones`). Still open: push a Nautilus Program that uses Bank330's Pulse/Sine waves to the Kronos and check it plays.
+
+14. EXi content (`Conversion/exi.py` HW-VERIFY): convert a MOD-7 / STR-1 Program with its PCM oscillator on and listen (does the
+    number use HD-1 ROM numbering?), and find which Nautilus SGX-2 Piano Type numbers load German / Italian / Berlin.
+15. Song Program Changes (`Conversion/song_convert.py` HW-VERIFY): on the Kronos, record Program Changes to an INT, a GM and a
+    user-bank Program and read the bank bytes (fixtures only had Kronos user banks).
 
 **Older, still-relevant items:**
 
