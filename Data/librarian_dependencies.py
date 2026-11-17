@@ -77,7 +77,27 @@ class LocalSource:
 
 @dataclass
 class PcgSource:
-    get: Callable[[ObjLoc], Optional[Tuple[str, bytes]]]   # (name, wire body)
+    """`get` gives the object AS STORED in the PCG, so its references are addresses in that PCG. For a PCG of the other
+    instrument family, `converted` gives the body converted for the connected instrument (None: same family or
+    refused): its samples are what the instrument needs, and a reference the conversion re-pointed (a Timbre moved to
+    the other instrument's factory Program) names content already on the instrument, not something in this PCG."""
+    get: Callable[[ObjLoc], Optional[Tuple[str, bytes]]]   # (name, wire body as stored)
+    converted: Optional[Callable[[ObjLoc], Optional[bytes]]] = None
+
+
+def _repointed(obj_type: int, body: bytes, converted: Optional[bytes]) -> Dict[Tuple[str, int], ObjLoc]:
+    """(ref kind, site) -> where the conversion points it, for every reference it moved."""
+    if converted is None or converted == body:
+        return {}
+    after = {(r.ref_kind, r.site): r.ref for r in depscan.walk_display_references(obj_type, converted)}
+    return {(r.ref_kind, r.site): after[(r.ref_kind, r.site)]
+            for r in depscan.walk_display_references(obj_type, body)
+            if (r.ref_kind, r.site) in after and after[(r.ref_kind, r.site)] != r.ref}
+
+
+def describe_repointed(old: ObjLoc, new: ObjLoc) -> str:
+    return (f"{type_name(old.obj_type)}: {old.label()} - re-pointed by the conversion to {new.label()}, the "
+            "instrument's factory equivalent (not taken from this PCG)")
 
 
 @dataclass
@@ -229,10 +249,16 @@ def collect_pcg_deps(loc: ObjLoc, pcg: PcgSource, src: LocalSource, seen: Set[Ob
     if entry is None:
         return
     name, body = entry
-    _add_sample_rows(samples.walk(loc.obj_type, body), describe_parent(loc, name, "sample"),
+    converted = pcg.converted(loc) if pcg.converted is not None else None
+    _add_sample_rows(samples.walk(loc.obj_type, converted or body), describe_parent(loc, name, "sample"),
                      sample_seen, rows, src.exs_index)
+    moved = _repointed(loc.obj_type, body, converted)
     for r in depscan.walk_display_references(loc.obj_type, body):
         ref_loc = r.ref
+        new = moved.get((r.ref_kind, r.site))
+        if new is not None:
+            rows.append(DependencyRow(describe_repointed(ref_loc, new), describe_parent(loc, name, r.ref_kind)))
+            continue
         if ref_loc in seen:
             continue
         seen.add(ref_loc)
@@ -255,8 +281,13 @@ def describe_pcg_children(loc: ObjLoc, pcg: PcgSource, src: LocalSource) -> List
     if entry is None:
         return []
     _name, body = entry
-    lines = [resolve_sample_description(r, src.exs_index) for r in samples.walk(loc.obj_type, body)]
+    converted = pcg.converted(loc) if pcg.converted is not None else None
+    lines = [resolve_sample_description(r, src.exs_index) for r in samples.walk(loc.obj_type, converted or body)]
+    moved = _repointed(loc.obj_type, body, converted)
     for r in depscan.walk_display_references(loc.obj_type, body):
+        if (r.ref_kind, r.site) in moved:
+            lines.append(f"{describe_repointed(r.ref, moved[(r.ref_kind, r.site)])} (via {r.ref_kind})")
+            continue
         dep = pcg.get(r.ref)
         desc = (describe_rom_dependency(r.ref) if depscan.is_always_available(r.ref)
                 else describe_dependency(r.ref, dep[0] if dep else "", dep is not None, "in this PCG"))

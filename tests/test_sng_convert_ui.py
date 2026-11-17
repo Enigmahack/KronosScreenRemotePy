@@ -68,7 +68,10 @@ orig = read_sng(before)
 conv = read_sng(open(out, "rb").read())
 check("converted-for-the-other-instrument", orig.model == MODEL_KRONOS and conv.model == MODEL_NAUTILUS)
 check("all-songs-kept", [s.name for s in conv.songs] == [s.name for s in orig.songs])
-check("events-untouched", [s.tracks for s in conv.songs] == [s.tracks for s in orig.songs])
+import Data.song_events as sev
+check("other-events-untouched", [[e for e in t if e.kind != sev.PROGRAM] for s in conv.songs for t in s.tracks]
+      == [[e for e in t if e.kind != sev.PROGRAM] for s in orig.songs for t in s.tracks])
+check("conversion-reported", any(e.source == "Convert .SNG" for e in w._conv_report.entries))
 check("source-untouched", open(kr[0], "rb").read() == before)
 check("reported", shown and "Nautilus" in shown[-1][0] and shown[-1][1])
 

@@ -182,6 +182,9 @@ class AppSettings:
     # shows an empty bank-B slot as the 556-byte "InitArpPattern" body (identical in every empty slot, 2026-10-22),
     # so occupancy is readable online.
     convert_arp_next_slot: int = 43
+    # A converted Combi / Set List / Song reference whose source slot is not known (Combi-only PCG, Song, unpulled
+    # Program): "assume" re-points it to the other instrument's factory equivalent and says so; "keep" keeps the slot.
+    convert_unknown_program_identity: str = "assume"
 
     # MIDI / SysEx (Settings > MIDI/SysEx)
     proactive_sysex_polling: bool = False

@@ -366,17 +366,19 @@ def _build_html() -> str:
                 "identifies the product; it does not prove the pack is installed on your instrument. To pick up "
                 "packs released later, drop a newer <b>exs_catalog.json</b> in the data folder. Drum Kit "
                 "and Wave Sequence references are not shown yet.")),
-        _h2("Convert to Nautilus"),
-        _p("Right-click Programs, Combinations, Drum Kits or Wave Sequences in the <b>Loaded PCG File</b> or "
-           "<b>Keyboard Library</b> pane and choose <b>Convert to Nautilus…</b> to write them, converted, into "
-           "consecutive slots on the connected Nautilus. The item is greyed out, with the reason in its tooltip, "
-           "until a Nautilus is connected and something convertible is selected."),
+        _h2("Convert to Nautilus / Kronos"),
+        _p("Right-click Programs, Combinations, Drum Kits or Wave Sequences of the other instrument in the "
+           "<b>Loaded PCG File</b> or <b>Keyboard Library</b> pane and choose <b>Convert to Nautilus…</b> (or "
+           "<b>Convert to Kronos…</b>, after the connected instrument) to write them, converted, into "
+           "consecutive slots. The item is greyed out, with the reason in its tooltip, until an instrument is "
+           "connected and something convertible is selected. Keyboard Library items already in the connected "
+           "instrument's format are left out, as are Drum Kits / Wave Sequences whose instrument is not known."),
         _kbd_table(
             _kb_row("Destination", "Pick the first bank and slot for each type. The last box lists the exact "
                                    "range (for example S000-S007) and flags anything past the end of the bank."),
-            _kb_row("Arp patterns", "Tick <b>Also write arp patterns (bank B)</b> to write a transcribed KARMA "
-                                    "pattern, one slot per distinct GE, for patches whose GE has no Nautilus "
-                                    "preset. The next conversion offers the slot after the last one used."),
+            _kb_row("Arp patterns", "Nautilus only: tick <b>Also write arp patterns (bank B)</b> to write a "
+                                    "transcribed KARMA pattern, one slot per distinct GE, for patches whose GE has no "
+                                    "Nautilus preset. The next conversion offers the slot after the last one used."),
             _kb_row("Backup",      "Every target slot is saved to a .syx in the Librarian's backup folder first, "
                                    "and nothing is written unless that file reads back correctly. The path is "
                                    "shown before and after."),
@@ -389,6 +391,13 @@ def _build_html() -> str:
         _p(_dim("A write or Store the instrument never answers is reported as unknown rather than refused: the "
                 "app re-reads to find out, and says so when it can't. Nothing restores a backup from the "
                 "menu yet.")),
+        _h2("Conversion Report"),
+        _p("Everything a conversion between instruments changed, dropped, substituted or assumed is kept for the "
+           "session under <b>Conversion Report</b> on the Librarian toolbar: objects converted when a PCG of the "
+           "other instrument is used, Convert to …, Convert a .SNG file and Song Library exports. "
+           "<b>Save as Text…</b> keeps a copy. A Timbre, Set List slot or Song whose source Program is unknown "
+           "follows <b>Settings &gt; Librarian &gt; Converting between instruments</b>. Converted .SNG files have "
+           "not yet been checked by loading them on a real instrument."),
         _h2("Sync button"),
         _p("One button whose label names what a plain click does; the <b>▾</b> beside it picks the mode, "
            "and your choice is remembered."),

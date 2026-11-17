@@ -754,6 +754,17 @@ class SettingsWindow(QDialog):
         vb.addWidget(self._lib_preserve_order)
         vb.addWidget(_hint("Off sorts the Merge Window by name and fills in staging order."))
 
+        vb.addSpacing(10)
+        vb.addWidget(_section("Converting between instruments"))
+        vb.addWidget(QLabel("When the source does not show which Program a reference uses:"))
+        self._lib_unknown_identity = QComboBox()
+        self._lib_unknown_identity.addItem("Assume factory Programs", "assume")
+        self._lib_unknown_identity.addItem("Keep slot numbers", "keep")
+        vb.addWidget(self._lib_unknown_identity)
+        vb.addWidget(_hint("A Combi Timbre, Set List slot or Song whose Program is not in the source (a Combi-only "
+                           "PCG, a Song): Assume re-points it to the other instrument's factory equivalent and says "
+                           "so in the Conversion Report; Keep leaves it at its slot number."))
+
         vb.addStretch()
         return w
 
@@ -975,6 +986,8 @@ class SettingsWindow(QDialog):
         self._lib_sync_on_launch.setChecked(s.librarian_full_sync_on_launch)
         self._lib_force_destructive.setChecked(s.librarian_force_destructive_write)
         self._lib_preserve_order.setChecked(s.librarian_preserve_placement_order)
+        i = self._lib_unknown_identity.findData(s.convert_unknown_program_identity)
+        self._lib_unknown_identity.setCurrentIndex(i if i >= 0 else 0)
 
         # Sample Editor
         i = self._se_device.findData(s.sample_editor_output_device_id)
@@ -1065,6 +1078,7 @@ class SettingsWindow(QDialog):
         s.librarian_full_sync_on_launch     = self._lib_sync_on_launch.isChecked()
         s.librarian_force_destructive_write = self._lib_force_destructive.isChecked()
         s.librarian_preserve_placement_order = self._lib_preserve_order.isChecked()
+        s.convert_unknown_program_identity = self._lib_unknown_identity.currentData()
         self._save_sample_editor_fields(s)
 
         # Streaming
@@ -1502,6 +1516,7 @@ class SettingsWindow(QDialog):
         s.librarian_full_sync_on_launch     = self._lib_sync_on_launch.isChecked()
         s.librarian_force_destructive_write = self._lib_force_destructive.isChecked()
         s.librarian_preserve_placement_order = self._lib_preserve_order.isChecked()
+        s.convert_unknown_program_identity = self._lib_unknown_identity.currentData()
         self._save_sample_editor_fields(s)
         s.pull_mode              = self._stream_mode.currentIndex() == 1
         s.max_fps                = self._fps_slider.value()

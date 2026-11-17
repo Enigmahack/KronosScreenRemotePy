@@ -37,8 +37,12 @@ class SongLibraryWindow(QDialog):
     _bg_done = Signal(object, object, object)     # callback, result, exception
 
     def __init__(self, library: SongLibrary, get_service: Callable[[], object],
-                 send_to_nautilus: Optional[Callable[[list], None]] = None, parent=None) -> None:
+                 send_to_nautilus: Optional[Callable[[list], None]] = None, parent=None,
+                 get_tables: Optional[Callable[[], ConvertTables]] = None,
+                 record: Optional[Callable[[str, str, str, list], object]] = None) -> None:
         super().__init__(parent)
+        self._get_tables = get_tables or ConvertTables.load
+        self._record = record   # (source, name, status, messages) -> the Librarian's Conversion Report
         self._lib = library
         self._get_service = get_service
         self._send = send_to_nautilus
@@ -71,8 +75,8 @@ class SongLibraryWindow(QDialog):
         row.addStretch(1)
         self._btn_export = self._button(row, "Export .SNG...", "Write the selected songs to a .SNG file for the "
                                         "Kronos or the Nautilus", self.export_sng)
-        self._btn_send = self._button(row, "Send Timbre Sets to Nautilus...", "Write the selected songs' Timbre Sets to "
-                                      "song slots on the connected Nautilus", self.send_timbre_sets)
+        self._btn_send = self._button(row, "Send Timbre Sets...", "Write the selected songs' Timbre Sets, converted "
+                                      "where needed, to song slots on the connected instrument", self.send_timbre_sets)
         self._btn_remove = self._button(row, "Remove", "Remove the selected songs from the library", self.remove_selected)
         root.addLayout(row)
         self._pulled.connect(self._on_pulled)
@@ -287,6 +291,10 @@ class SongLibraryWindow(QDialog):
                 self._show("Export .SNG", f"Export failed: {type(exc).__name__}: {exc}", [])
                 return
             data, warnings, refusals = result
+            if self._record is not None:
+                names = {e.id: e.name for e in self._lib.entries()}
+                self._record("Song Library export", f"{', '.join(names.get(i, i) for i in ids)} -> {choice}",
+                             "refused" if data is None else "converted", refusals + warnings)
             if not self.isVisible():
                 return                 # closed while converting: do not pop a save dialog out of nowhere
             if data is None:
@@ -306,8 +314,9 @@ class SongLibraryWindow(QDialog):
             self._set_status(f"Wrote {len(sel)} song(s) for the {choice} to {path}")
             self._show("Export .SNG", f"Wrote {len(sel)} song(s) for the {choice}.", warnings)
 
+        tables = self._get_tables()
         self._run_bg(f"Converting {len(ids)} song(s) for the {choice}...",
-                     lambda: lib.export_sng(ids, target, ConvertTables.load()), done)
+                     lambda: lib.export_sng(ids, target, tables), done)
 
     def send_timbre_sets(self) -> None:
         if self._send is None or self._busy:

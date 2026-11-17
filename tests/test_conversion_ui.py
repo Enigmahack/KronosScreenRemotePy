@@ -88,7 +88,7 @@ QMessageBox.information = staticmethod(lambda *a, **k: shown.append(a[2]))
 dlg = L._DestinationDialog(OBJ_PROGRAM, "x", None, default=L.LibrarianShellWindow._CONVERT_DEFAULT_DEST[OBJ_PROGRAM])
 assert dlg.selected() == (0x4C, 0), dlg.selected()
 
-w._convert_to_nautilus("pcg")
+w._convert_to_instrument("pcg")
 assert wait(lambda: not w._converting and shown), "conversion finished"
 written = sorted(k for k in fake.slots if k[0] == OBJ_PROGRAM)
 print("written:", written)
@@ -98,12 +98,13 @@ assert all(len(fake.slots[k]) == (4954 if k[1] == 0x4A else 3700) for k in writt
 assert fake.calls[0] == "backup" and 2 <= fake.calls.count("store") <= 3, fake.calls   # +1 when arp bank B is written
 assert "[WRITTEN]" in shown[-1] and "bank; this is a" not in shown[-1], shown[-1]
 
-# not connected to a Nautilus -> explains, writes nothing
+# connected to a Kronos with a Kronos PCG loaded -> explains, writes nothing
 fake.is_nautilus = False
+w._pcg = pcg
 n = len(fake.calls)
 noted = []
 w._log = noted.append
-w._convert_to_nautilus("pcg")
-assert len(fake.calls) == n and any("Connect to a Nautilus" in m for m in noted), noted
+w._convert_to_instrument("pcg")
+assert len(fake.calls) == n and any("already in the Kronos format" in m for m in noted), noted
 w._closed = True
 print("ALL PASS")

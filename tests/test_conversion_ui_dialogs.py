@@ -115,10 +115,17 @@ def action(source="pcg"):
 # --- menu enablement and tooltip reasons
 a = action()
 check("menu: enabled when a Nautilus is connected and Programs are selected", a.isEnabled() and "backed up first" in a.toolTip())
-fake.is_nautilus = False
+fake.can_dump = False
 a = action()
-check("menu: disabled without a Nautilus, tooltip says why and mentions detection",
-      not a.isEnabled() and "Connect to a Nautilus first" in a.toolTip() and "detected" in a.toolTip())
+check("menu: disabled without a connection, tooltip says why and mentions detection",
+      not a.isEnabled() and "Connect to an instrument first" in a.toolTip() and "detected" in a.toolTip())
+fake.can_dump = True
+fake.is_nautilus = False
+w._pcg = SimpleNamespace(family="kronos")
+a = action()
+check("menu: on a Kronos it is Convert to Kronos, disabled for a Kronos PCG",
+      a.text() == "Convert to Kronos..." and not a.isEnabled() and "already in the Kronos format" in a.toolTip())
+w._pcg = None
 fake.is_nautilus = True
 w._selected_pcg_object_locs = lambda: []
 check("menu: disabled with nothing convertible selected", not action().isEnabled() and "Select Programs" in action().toolTip())
@@ -128,11 +135,11 @@ check("menu: disabled while busy", not action().isEnabled() and "Another Librari
 w._busy = False
 
 # --- clicking while not connected explains instead of silently returning, and sends nothing
-fake.is_nautilus = False
-w._convert_to_nautilus("pcg")
-check("click without a Nautilus: logged and shown in the status line, nothing sent",
-      any("Connect to a Nautilus first" in m for m in logs) and any(m.startswith("status:") for m in logs) and not fake.calls)
-fake.is_nautilus = True
+fake.can_dump = False
+w._convert_to_instrument("pcg")
+check("click without a connection: logged and shown in the status line, nothing sent",
+      any("Connect to an instrument first" in m for m in logs) and any(m.startswith("status:") for m in logs) and not fake.calls)
+fake.can_dump = True
 
 # --- confirm dialog
 tables = ConvertTables(RomWaveformMap(), ExsOptionIndex.from_catalog("{}"), KarmaGeCatalog(), ProgramRefMap())
@@ -169,12 +176,12 @@ check("confirm: arp on but no patch needs one says so", "No patch here needs" in
 # --- a running conversion: busy, protected, a second click explained, result box
 fake.release = threading.Event()
 logs.clear()
-w._convert_to_nautilus("pcg")
+w._convert_to_instrument("pcg")
 check("running: hardware transaction flag set", wait(lambda: w._hardware_transaction_active, 10))
 check("running: window is busy", w._busy and w._converting)
 check("running: MainWindow's request_shutdown() refuses (disconnect/close/reconnect blocked)", not w.request_shutdown())
 n_calls = len(fake.calls)
-w._convert_to_nautilus("pcg")
+w._convert_to_instrument("pcg")
 check("running: a second click is explained, not silently ignored", any("Another Librarian operation" in m for m in logs))
 check("running: the second click sent nothing", len(fake.calls) == n_calls)
 fake.release.set()
@@ -187,7 +194,7 @@ check("result: information icon when everything was written", icon == QMessageBo
 w._sync_cancel.clear()
 fake.release, fake.refuse_index, fake.slots = None, 1, {}
 boxes.clear()
-w._convert_to_nautilus("pcg")
+w._convert_to_instrument("pcg")
 check("partial: finished", wait(lambda: not w._converting and boxes, 30))
 icon, text, detail = boxes[-1]
 check("partial: warning icon, 2 of 3, names what was not written",
@@ -198,7 +205,7 @@ check("partial: details hold the per-object messages", "[REFUSED]" in detail or 
 w._sync_cancel.clear()
 fake.refuse_index, fake.explode = None, True
 boxes.clear()
-w._convert_to_nautilus("pcg")
+w._convert_to_instrument("pcg")
 check("crash: finished and protection cleared", wait(lambda: not w._converting and boxes, 30) and not w.hardware_transaction_active and not w._busy)
 check("crash: says it stopped with an error", boxes and "stopped with an error" in boxes[-1][1] and boxes[-1][0] == QMessageBox.Icon.Warning)
 fake.explode = False

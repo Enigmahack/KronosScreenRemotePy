@@ -174,6 +174,7 @@ Changes, opening a local .pcg file) are cheap disk/CPU work and run synchronousl
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import os
@@ -192,7 +193,7 @@ from PySide6.QtGui import QActionGroup, QBrush, QColor, QDrag, QIcon, QPainter, 
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QFrame, QMenu, QToolButton, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
     QGraphicsOpacityEffect, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget,
-    QInputDialog, QListWidgetItem, QMenu, QMessageBox, QProgressBar, QPushButton, QSpinBox, QSplitter,
+    QInputDialog, QListWidgetItem, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QSpinBox, QSplitter,
     QStackedLayout, QStyle, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -225,8 +226,8 @@ from Data.local_library_store import (
     BlobStore, LocalIndexEntry, LocalLibraryIndex, LocalLibraryWriteError, OpLog,
 )
 from Data.merge_cache import MergeCache, MergeEntry, MergeRefSite
-from Data.pcg_file import (FAMILY_KRONOS, FAMILY_NAUTILUS, PcgFile, PcgObjectEntry, WIRE_SIZE_EXI, open_pcg,
-                           wire_body_from_pcg_entry, wire_body_is_exi)
+from Data.pcg_file import (FAMILY_KRONOS, FAMILY_NAUTILUS, PcgFile, PcgObjectEntry, WIRE_SIZE_EXI, body_family,
+                           open_pcg, wire_body_from_pcg_entry, wire_body_is_exi)
 from Commands.session_dependency_clipboard import SessionDependencyClipboard, SessionDependencyEntry
 from Utils.setlist_colors import ALL_COLORS as SETLIST_COLORS, get_by_index_or_default as setlist_color
 from Tools.setlist_data import MAX_COUNT
@@ -236,7 +237,8 @@ from Conversion.push import (ARP_BANK_B_SLOTS, CONVERTIBLE_TYPES, EXI_DEST, Conv
                              slot_count as conv_slot_count, type_name as conv_type_name)
 from Conversion.song_source import read_song_timbre_sets
 from Conversion.auto import CONVERTIBLE as AUTO_CONVERTIBLE, convert_object
-from Conversion.data import kronos_timbre_bank_for_obj
+from Conversion.data import UnknownProgramIdentity, kronos_timbre_bank_for_obj, nautilus_timbre_bank_for_wire
+from Conversion.report import ConversionReport
 from Conversion.result import ConversionResult
 from Conversion.song_convert import MODEL_NAMES, convert_sng
 from Data.sng_file import MODEL_KRONOS, MODEL_NAUTILUS, SngError, read_sng
@@ -342,11 +344,12 @@ def _group_pcg(objects: List[PcgObjectEntry]) -> Dict[int, Dict[int, List[PcgObj
     return groups
 
 
-def _KRONOS_TIMBRE_TO_OBJ_BANK(bank_byte: int) -> Optional[int]:
+def _KRONOS_TIMBRE_TO_OBJ_BANK(bank_byte: int, first_user: int = 18) -> Optional[int]:
+    """Program object bank for a Combi Timbre bank byte; `first_user` is 18 on a Kronos (U-A), 17 on a Nautilus (G)."""
     if 0 <= bank_byte <= 5:
         return bank_byte
-    if 18 <= bank_byte <= 31:
-        return 0x40 + bank_byte - 18
+    if first_user <= bank_byte <= first_user + 13:
+        return 0x40 + bank_byte - first_user
     return None
 
 
@@ -741,12 +744,12 @@ def _slot_range(obj_type: int, bank: int, first: int, n: int) -> str:
 
 
 class _ConvertConfirmDialog(QDialog):
-    """Final step of Convert to Nautilus: the exact slot ranges, the optional arp patterns and where the backup
-    goes. Cancel is the default button: this overwrites instrument slots."""
+    """Final step of Convert to <instrument>: the exact slot ranges, the optional arp patterns (Nautilus only) and
+    where the backup goes. Cancel is the default button: this overwrites instrument slots."""
 
-    def __init__(self, parent, items, dest, tables, arp_default: int, backup_path: str):
+    def __init__(self, parent, items, dest, tables, arp_default: int, backup_path: str, nautilus: bool = True):
         super().__init__(parent)
-        self.setWindowTitle("Convert to Nautilus")
+        self.setWindowTitle(f"Convert to {'Nautilus' if nautilus else 'Kronos'}")
         self.setStyleSheet(f"QDialog {{ background-color: {T.BG}; color: {T.TEXT}; }}")
         self._items, self._dest, self._tables = items, dest, tables
         v = QVBoxLayout(self)
@@ -755,7 +758,7 @@ class _ConvertConfirmDialog(QDialog):
         self._arp_chk: Optional[QCheckBox] = None
         self._arp_spin: Optional[QSpinBox] = None
         self._arp_line = QLabel()
-        if any(i.obj_type in (OBJ_PROGRAM, OBJ_COMBI, OBJ_SONG_TIMBRE) for i in items):
+        if nautilus and any(i.obj_type in (OBJ_PROGRAM, OBJ_COMBI, OBJ_SONG_TIMBRE) for i in items):
             row = QHBoxLayout()
             self._arp_chk = QCheckBox("Also write arp patterns (bank B)")
             self._arp_chk.setToolTip("A transcribed KARMA pattern for patches whose GE has no Nautilus preset. "
@@ -1404,7 +1407,7 @@ class LibrarianShellWindow(QDialog):
         self._pcg_dep_cache: Dict[Tuple[int, int, int], Optional[Tuple[str, bytes]]] = {}
         self._pcg_conv_cache: Dict[tuple, Optional[bytes]] = {}
         self._pcg_conv_refused: Dict[Tuple[int, int, int], str] = {}
-        self._pcg_conv_replaced: List[Tuple[str, List[str]]] = []   # (object name, zones that now play the default piano)
+        self._conv_report = ConversionReport()   # every conversion this window ran, whole; kept for the session
         self._convert_tables: Optional[ConvertTables] = None
         self._bg_jobs = 0          # _run_bg workers in flight (file reads, parsing, digests)
         self._pcg_load_gen = 0     # newest Open PCG from computer; older reads finishing later are dropped
@@ -1584,17 +1587,26 @@ class LibrarianShellWindow(QDialog):
         sync_row.addWidget(self._btn_undo)
         self._btn_songs = QToolButton()
         self._btn_songs.setText("Songs ▾")
-        self._btn_songs.setToolTip("Song Timbre Sets: back them up from an instrument, or convert a backup to the Nautilus")
+        self._btn_songs.setToolTip("Songs: the Song Library, .SNG conversion, and Song Timbre Set backup / conversion "
+                                   "for the connected instrument")
         self._btn_songs.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         songs_menu = QMenu(self._btn_songs)
         songs_menu.addAction("Song Library...", self._open_song_library)
         songs_menu.addAction("Convert a .SNG file to the other instrument...", self._convert_sng_file)
         songs_menu.addSeparator()
         songs_menu.addAction("Back up Song Timbre Sets to .syx...", self._backup_song_timbre_sets)
-        songs_menu.addAction("Convert Song Timbre Sets from .SNG or .syx to Nautilus...", self._convert_song_timbre_sets)
+        self._act_song_convert = songs_menu.addAction("Convert Song Timbre Sets from .SNG or .syx...",
+                                                      self._convert_song_timbre_sets)
+        songs_menu.setToolTipsVisible(True)
+        songs_menu.aboutToShow.connect(self._refresh_songs_menu)
         self._btn_songs.setMenu(songs_menu)
         sync_row.addSpacing(8)
         sync_row.addWidget(self._btn_songs)
+        self._btn_conv_report = QPushButton("Conversion Report")
+        self._btn_conv_report.setToolTip("Everything conversions between instruments changed, dropped, substituted or "
+                                         "assumed in this session")
+        self._btn_conv_report.clicked.connect(self._show_conversion_report)
+        sync_row.addWidget(self._btn_conv_report)
         sync_row.addStretch(1)
         root.addLayout(sync_row)
 
@@ -2047,14 +2059,22 @@ class LibrarianShellWindow(QDialog):
                            exs_index=self._ensure_exs_names())
 
     def _pcg_dep_source(self) -> PcgSource:
+        """References are walked on the object as stored (its addresses are this PCG's); the converted body, when the
+        PCG is of the other family, supplies the samples and shows which references the conversion re-pointed."""
         def get(loc: ObjLoc):
             k = (loc.obj_type, loc.bank, loc.number)
             if k not in self._pcg_dep_cache:
                 e = self._pcg_by_addr.get(k)
-                body = self._pcg_wire_body(e) if e is not None else None
+                body = self._pcg_wire_body(e, raw=True) if e is not None else None
                 self._pcg_dep_cache[k] = (e.name, body) if e is not None and body is not None else None
             return self._pcg_dep_cache[k]
-        return PcgSource(get=get)
+
+        def converted(loc: ObjLoc) -> Optional[bytes]:
+            if self._pcg is None or self._pcg.family == self._device_family():
+                return None
+            e = self._pcg_by_addr.get((loc.obj_type, loc.bank, loc.number))
+            return self._pcg_wire_body(e) if e is not None else None
+        return PcgSource(get=get, converted=converted)
 
     def _merge_dep_source(self) -> MergeSource:
         return MergeSource(
@@ -2208,16 +2228,14 @@ class LibrarianShellWindow(QDialog):
             if not found:
                 return [], _msg_scan_not_found(missing[0].label(), file_name)
 
-            def resolve_content(obj_type: int, bank: int, number: int):
-                e = by_addr.get((obj_type, bank, number))
-                return self._pcg_wire_body(e, pcg) if e is not None else None
+            resolve_content, resolve_refs, family_of = self._pcg_pull_resolvers(lambda t, b, n: by_addr.get((t, b, n)), pcg)
 
             # One undo step for the whole sweep: the user made one decision (this file).
             scope = self._undo.begin(f"Staged dependencies found in {file_name}")
             try:
                 for loc in found:
                     self._merge.pull_recursive((loc.obj_type, loc.bank, loc.number), resolve_content,
-                                               self._resolve_refs, source=file_name)
+                                               resolve_refs, source=file_name, family_of=family_of)
             finally:
                 if scope is not None:
                     scope.dispose()
@@ -2482,7 +2500,6 @@ class LibrarianShellWindow(QDialog):
         self._pcg_dep_cache = {}
         self._pcg_conv_cache = {}
         self._pcg_conv_refused = {}
-        self._pcg_conv_replaced = []
         groups = _group_pcg(objects)
         for obj_type in _ROOT_ORDER:
             by_bank = groups.get(obj_type, {})
@@ -2731,6 +2748,7 @@ class LibrarianShellWindow(QDialog):
         display_name = ksx._ascii_trim(new_body, 0, 24)
         now = _now_iso()
         new_entry = _advance_entry_after_write(entry, new_hash, display_name, entry.version, now)
+        self._index.note_family(new_hash, self._index.family_of(entry.current_hash))
         self._index.set_entry(loc.obj_type, loc.bank, loc.number, new_entry)
         self._oplog.append({
             "id": str(uuid.uuid4()), "timestamp_utc": now, "op_kind": "PropertyEdit",
@@ -2907,7 +2925,7 @@ class LibrarianShellWindow(QDialog):
         for loc in locs:
             added, gaps = self._merge.pull_recursive(
                 (loc.obj_type, loc.bank, loc.number), self._local_resolve_content, self._resolve_refs,
-                source=MergeCache.LOCAL_SOURCE_LABEL)
+                source=MergeCache.LOCAL_SOURCE_LABEL, family_of=self._index.family_of)
             total_added += len(added)
             total_gaps.extend(gaps)
         self._log(f"Staged into Merge Window: {total_added} new item(s), {len(total_gaps)} unresolved "
@@ -3433,6 +3451,7 @@ class LibrarianShellWindow(QDialog):
         now = _now_iso()
         new_entry = _advance_entry_after_write(existing, write_hash, entry.display_name,
                                                entry.version, now)
+        self._index.note_family(write_hash, entry.family)
         new_entry.has_resolved_dependencies = not unresolved
         self._index.set_entry(entry.obj_type, dst_bank, dst_number, new_entry)
         self._oplog.append({
@@ -3694,18 +3713,6 @@ class LibrarianShellWindow(QDialog):
         label = entry.display_name or entry.content_hash[:8]
         return SequentialFillItem(origin, dump, label), unresolved
 
-    def _seq_item_from_pcg(self, obj_type: int, bank: int, index: int) -> Optional[SequentialFillItem]:
-        e = self._pcg_by_addr.get((obj_type, bank, index))
-        if e is None:
-            return None
-        body = self._pcg_resolve_content(obj_type, bank, index)
-        if body is None:
-            return None
-        origin = ObjLoc(obj_type, bank, index)
-        dump = ObjectDump(obj_type, bank, index, object_version(obj_type, body), body)
-        label = e.name or origin.label()
-        return SequentialFillItem(origin, dump, label)
-
     def _dest_occupants_for(self, placements: List[BatchPlacement]) -> Dict[ObjLoc, ObjectDump]:
         out: Dict[ObjLoc, ObjectDump] = {}
         for p in placements:
@@ -3720,8 +3727,8 @@ class LibrarianShellWindow(QDialog):
 
     def _apply_batch_placements(self, placed: List[BatchPlacement], obj_type: int,
                                 oplog_kind: str, description: str,
-                                hash_by_label: Optional[Dict[str, str]] = None,
-                                unresolved_by_label: Optional[Dict[str, List[MergeRefSite]]] = None,
+                                hash_by_item: Optional[Dict[int, str]] = None,
+                                unresolved_by_item: Optional[Dict[int, List[MergeRefSite]]] = None,
                                 force_overwrite: bool = False) -> bool:
         """The shared "write a resolved batch of BatchPlacements into the Local Library index
         + OpLog" core — factored out of _run_sequential_fill so the Copy clipboard's paste
@@ -3729,9 +3736,11 @@ class LibrarianShellWindow(QDialog):
         own resolve_sequential_fill call) can apply the exact same plan_batch_move logic
         without re-deriving the placements a second time. Returns False (nothing applied) if
         plan_batch_move refuses the whole batch; the caller decides what to log about that.
-        `force_overwrite` is the Merge Window's Force Overwrite checkbox (req 3)."""
-        hash_by_label = hash_by_label or {}
-        unresolved_by_label = unresolved_by_label or {}
+        `force_overwrite` is the Merge Window's Force Overwrite checkbox (req 3). `hash_by_item` /
+        `unresolved_by_item` are keyed by id() of the placed item's ObjectDump (carried unchanged from its
+        SequentialFillItem), not by its label: two staged items may share a name."""
+        hash_by_item = hash_by_item or {}
+        unresolved_by_item = unresolved_by_item or {}
         scope = self._undo.begin(description)
         catalog = self._build_local_catalog(_referrer_types_for(obj_type))
         occupants = self._dest_occupants_for(placed)
@@ -3749,6 +3758,12 @@ class LibrarianShellWindow(QDialog):
 
         now = _now_iso()
         label_by_dst = {p.dst: p.label for p in placed}
+        item_by_dst = {p.dst: id(p.dump) for p in placed}
+        family_by_dst = {}
+        for p in placed:
+            staged = self._merge.try_get(hash_by_item[id(p.dump)]) if id(p.dump) in hash_by_item else None
+            family_by_dst[p.dst] = (staged.family if staged is not None
+                                    else self._index.family_of(BlobStore.compute_hash(p.dump.body)))
         targets = []
         for w in plan.writes:
             key = LocalLibraryIndex.key(w.obj, w.bank, w.index)
@@ -3757,8 +3772,8 @@ class LibrarianShellWindow(QDialog):
             dst_loc = ObjLoc(w.obj, w.bank, w.index)
             name = label_by_dst.get(dst_loc) or ksx._ascii_trim(w.body, 0, 24)
             new_entry = _advance_entry_after_write(existing, new_hash, name, w.version, now)
-            label = label_by_dst.get(dst_loc)
-            unresolved = unresolved_by_label.get(label) if label is not None else None
+            self._index.note_family(new_hash, family_by_dst.get(dst_loc))
+            unresolved = unresolved_by_item.get(item_by_dst[dst_loc]) if dst_loc in item_by_dst else None
             if unresolved is not None:
                 new_entry.has_resolved_dependencies = not unresolved
                 for s in unresolved:
@@ -3776,7 +3791,7 @@ class LibrarianShellWindow(QDialog):
         self._index.save()
 
         for p in placed:
-            h = hash_by_label.get(p.label)
+            h = hash_by_item.get(id(p.dump))
             if h is not None:
                 self._merge.mark_placed(h, (p.dst.obj_type, p.dst.bank, p.dst.number))
                 self._merge.remove(h)
@@ -3789,14 +3804,14 @@ class LibrarianShellWindow(QDialog):
 
     def _run_sequential_fill(self, seq_items: List[SequentialFillItem], obj_type: int,
                              dest_bank: int, start_slot: int,
-                             hash_by_label: Optional[Dict[str, str]] = None,
-                             unresolved_by_label: Optional[Dict[str, List[MergeRefSite]]] = None,
+                             hash_by_item: Optional[Dict[int, str]] = None,
+                             unresolved_by_item: Optional[Dict[int, List[MergeRefSite]]] = None,
                              force_overwrite: bool = False) -> None:
         """Port of resolve_sequential_fill() -> plan_batch_move(), the pipeline behind both
         the "Fill Sequentially…" toolbar buttons and a multi-item Merge->Local drag. Shared
-        so neither path duplicates the other's placement logic. `hash_by_label` maps a
-        placed item's label back to its Merge content hash (empty/None for PCG sources,
-        which have nothing to remove from a cache)."""
+        so neither path duplicates the other's placement logic. `hash_by_item` maps a
+        placed item (id of its ObjectDump) back to its Merge content hash, removed from the
+        Merge Window once placed."""
         # Auto-fill skips slots that hold real content (INIT placeholders count as free —
         # port of BatchMoveModel.ResolveSequentialFill's slotAvailable filter fed by
         # LocalEditOps.AvailableSlotsFrom). Scattered free slots are the norm once init
@@ -3820,7 +3835,7 @@ class LibrarianShellWindow(QDialog):
             placed, obj_type, "Place",
             f"Filled {len(placed)} item(s) sequentially starting at "
             f"{ObjLoc(obj_type, dest_bank, start_slot).label()}",
-            hash_by_label, unresolved_by_label, force_overwrite=force_overwrite)
+            hash_by_item, unresolved_by_item, force_overwrite=force_overwrite)
         if not ok:
             self._log("Fill Sequentially refused (see warnings above).")
             return
@@ -4023,13 +4038,14 @@ class LibrarianShellWindow(QDialog):
             return None
         return self._pcg_wire_body(e, raw=raw)
 
-    def _kronos_program_namer(self, source: str):
-        """Names the Program at a Kronos Combi Timbre reference in the pane `source` converts from."""
+    def _program_namer(self, source: str, family: str = FAMILY_KRONOS):
+        """Names the Program at a Combi Timbre reference (numbered for `family`) in the pane `source` converts from."""
         if source == "pcg":
             return _program_name_lookup(self._pcg) if self._pcg is not None else None
+        first_user = 17 if family == FAMILY_NAUTILUS else 18
 
         def local_name(bank_byte: int, number: int) -> Optional[str]:
-            ob = _KRONOS_TIMBRE_TO_OBJ_BANK(bank_byte)
+            ob = _KRONOS_TIMBRE_TO_OBJ_BANK(bank_byte, first_user)
             entry = self._index.get(OBJ_PROGRAM, ob, number) if ob is not None else None
             return entry.display_name if entry is not None else None
         return local_name
@@ -4050,30 +4066,59 @@ class LibrarianShellWindow(QDialog):
         # The cache is cleared whenever self._pcg changes. A transient PcgFile (a PCG search) is not kept alive, and a
         # later one could be allocated at the same address, so its conversions are never cached.
         cacheable = pcg is self._pcg
+        tables = self._conversion_tables()   # first: a changed Settings policy drops conversions made under the old one
         if not cacheable or key not in self._pcg_conv_cache:
             if e.obj_type not in AUTO_CONVERTIBLE:
                 result = ConversionResult(None, [], [f"{_ROOT_LABEL.get(e.obj_type, 'this kind of object')} are not "
                                                      "converted between instruments"])
             else:
-                if self._convert_tables is None:
-                    self._convert_tables = ConvertTables.load()
-                result = convert_object(e.obj_type, body, e.is_exi, pcg.family, target, self._convert_tables,
+                result = convert_object(e.obj_type, body, e.is_exi, pcg.family, target, tables,
                                         _program_name_lookup(pcg))
+            name = e.name or "(unnamed)"
             if result.body is None:
-                reason = "; ".join(result.refusals[:2])
-                self._pcg_conv_refused[addr] = reason[:90]
-                self._log(f"Not converted to the {target.title()} format: {e.name or '(unnamed)'} - {reason}")
-            else:
-                name = e.name or "(unnamed)"
-                for w in result.warnings:
-                    if "default piano" in w or "may differ slightly" in w or "mixes reversed" in w:
-                        self._log(f"Converted to the {target.title()} format: {name} - {w}")
-                if result.substitutions:
-                    self._pcg_conv_replaced.append((name, result.substitutions))
+                reason = "; ".join(result.refusals)
+                self._pcg_conv_refused[addr] = reason[:90]   # tree tooltip; the whole reason is logged and reported
+                self._log(f"Not converted to the {target.title()} format: {name} - {reason}")
+                self._record_conversion(self._pcg_report_source(), name, "refused", result.refusals + result.warnings)
+            elif result.warnings and self._record_conversion(self._pcg_report_source(), name, "converted",
+                                                             result.warnings):
+                self._log(f"Converted to the {target.title()} format: {name} - {len(result.warnings)} note(s), "
+                          "see Conversion Report.")
             if not cacheable:
                 return result.body
             self._pcg_conv_cache[key] = result.body
         return self._pcg_conv_cache[key]
+
+    def _pcg_pull_resolvers(self, entry_at: Callable[[int, int, int], Optional[PcgObjectEntry]],
+                            pcg: Optional[PcgFile] = None):
+        """resolve_content / resolve_refs for MergeCache.pull_recursive over a PCG. A body converted for the connected
+        instrument holds destination addresses (e.g. a Timbre re-pointed to the other instrument's factory Program),
+        which must never be looked up in the source PCG. So references are walked on the source body, and a site the
+        conversion re-pointed is dropped: it names content that is already on the instrument, not a dependency.
+        The third callable is pull_recursive's family_of: every body comes back in the connected instrument's format."""
+        raw_of: Dict[Tuple[int, bytes], bytes] = {}
+        target = self._device_family()
+
+        def resolve_content(obj_type: int, bank: int, number: int) -> Optional[bytes]:
+            e = entry_at(obj_type, bank, number)
+            if e is None:
+                return None
+            body = self._pcg_wire_body(e, pcg)
+            raw = wire_body_from_pcg_entry(obj_type, e)
+            if body is not None and raw is not None and raw != body:
+                raw_of[(obj_type, body)] = raw
+            return body
+
+        def resolve_refs(obj_type: int, body: bytes) -> List[Tuple[str, int, Tuple[int, int, int]]]:
+            refs = self._resolve_refs(obj_type, body)
+            raw = raw_of.get((obj_type, body))
+            if raw is None:
+                return refs
+            dest = {(kind, site): addr for kind, site, addr in refs}
+            return [(kind, site, addr) for kind, site, addr in self._resolve_refs(obj_type, raw)
+                    if dest.get((kind, site)) == addr]
+
+        return resolve_content, resolve_refs, lambda _h: target
 
     @staticmethod
     def _resolve_refs(obj_type: int, body: bytes) -> List[Tuple[str, int, Tuple[int, int, int]]]:
@@ -4147,8 +4192,9 @@ class LibrarianShellWindow(QDialog):
         """The actual PCG->Merge pull — factored out of _pull_pcg_selected_into_merge so
         the PCG pane's drag-drop handler (a PCG leaf dropped onto the Merge tree,
         _on_merge_dropped) can call the exact same logic for each dragged item."""
-        added, gaps = self._merge.pull_recursive(address, self._pcg_resolve_content, self._resolve_refs,
-                                                 source=self._pcg_source_label or "PCG")
+        resolve_content, resolve_refs, family_of = self._pcg_pull_resolvers(lambda t, b, n: self._pcg_by_addr.get((t, b, n)))
+        added, gaps = self._merge.pull_recursive(address, resolve_content, resolve_refs,
+                                                 source=self._pcg_source_label or "PCG", family_of=family_of)
         self._log(f"Pulled into Merge Window: {len(added)} new item(s), {len(gaps)} unresolved "
                  f"reference(s) (gaps reconcile automatically if pulled from elsewhere later).")
         for addr, kind in gaps:
@@ -4156,6 +4202,10 @@ class LibrarianShellWindow(QDialog):
         self._refresh_merge_tree()
 
     def _fill_sequentially_pcg(self) -> None:
+        """PCG items are placed through the Merge Window, exactly like a multi-item Merge->Local drag: each is pulled
+        with its dependencies (which stay staged in the Merge Window), its references are re-pointed at what the
+        Keyboard Library already holds, and whatever is still missing is recorded as a dependency gap. Placing the raw
+        PCG body would leave a Combi / Set List / Program pointing at the slots its dependencies had in the PCG."""
         payloads = [p for p in self._selected_payloads(self._tree_pcg) if p[0] == "pcg"]
         if not payloads:
             self._log("Select one or more PCG items to fill sequentially.")
@@ -4166,57 +4216,97 @@ class LibrarianShellWindow(QDialog):
             return
         if self._settings.librarian_preserve_placement_order:
             payloads = sorted(payloads, key=lambda p: (p[2], p[3]))
-        seq_items = [it for it in (self._seq_item_from_pcg(p[1], p[2], p[3]) for p in payloads)
-                    if it is not None]
-        if not seq_items:
+        resolve_content, resolve_refs, family_of = self._pcg_pull_resolvers(lambda t, b, n: self._pcg_by_addr.get((t, b, n)))
+        bodies = [(tuple(p[1:4]), resolve_content(*p[1:4])) for p in payloads]
+        bodies = [(addr, body) for addr, body in bodies if body is not None]
+        if not bodies:
             self._log("Fill Sequentially: nothing resolvable from the selected PCG items.")
             return
         dlg = _DestinationDialog(obj_type, "Fill Sequentially starting at…", self)
         if _exec_modal(dlg) != QDialog.DialogCode.Accepted:
             return
         dest_bank, start_slot = dlg.selected()
-        self._run_sequential_fill(seq_items, obj_type, dest_bank, start_slot)
+        scope = self._undo.begin(f"Filled {len(bodies)} PCG item(s) sequentially")
+        try:
+            with self._index.defer_saves(), self._merge.defer_saves(), self._oplog.defer_appends():
+                entries: Dict[str, MergeEntry] = {}
+                staged = 0
+                for addr, body in bodies:
+                    added, _gaps = self._merge.pull_recursive(addr, resolve_content, resolve_refs,
+                                                              source=self._pcg_source_label or "PCG", family_of=family_of)
+                    staged += sum(1 for a in added if not a.is_top_level_pull)
+                    e = self._merge.try_get(BlobStore.compute_hash(body))
+                    if e is not None:
+                        entries.setdefault(e.content_hash, e)   # a dedup hit adds nothing; identical items place once
+                if staged:
+                    self._log(f"Fill Sequentially: {staged} dependency item(s) staged in the Merge Window.")
+                seq_pairs = [self._seq_item_from_merge(e) for e in entries.values()]
+                seq_items = [it for it, _ in seq_pairs]
+                hash_by_item = {id(it.dump): h for it, h in zip(seq_items, entries)}
+                unresolved_by_item = {id(it.dump): unresolved for it, unresolved in seq_pairs if unresolved}
+                self._run_sequential_fill(seq_items, obj_type, dest_bank, start_slot, hash_by_item, unresolved_by_item)
+        except LocalLibraryWriteError as e:
+            log.error("PCG fill aborted: %s", e)
+            self._log(f"Placement failed: {e}")
+            self._report_storage_failure("Placement", str(e))
+        finally:
+            if scope is not None:
+                scope.dispose()
+            self._refresh_merge_tree()
 
     # ── Convert to Nautilus ──────────────────────────────────────────────────
 
     _CONVERT_DEFAULT_DEST = {OBJ_PROGRAM: (0x4C, 0), OBJ_SONG_TIMBRE: (0, 20)}   # bank S slot 000; songs 0-18 can hold real songs
     _CONVERT_DEFAULT_EXI_DEST = (0x4A, 0)              # first all-Init EXi user bank on the instrument tested
-    _CONVERT_TIP = "Write the selected objects to the connected Nautilus. Target slots are backed up first."
+    _CONVERT_DEFAULT_DEST_KRONOS = {OBJ_PROGRAM: (0x4D, 0), OBJ_SONG_TIMBRE: (0, 20)}   # U-GG slot 000
+    _CONVERT_DEFAULT_EXI_DEST_KRONOS = (0x4B, 0)
+    _CONVERT_TIP = "Write the selected objects to the connected {target}. Target slots are backed up first."
+
+    def _target_name(self) -> str:
+        """The connected instrument, as the conversion menus name it."""
+        return "Nautilus" if self._device_family() == FAMILY_NAUTILUS else "Kronos"
+
+    def _convert_defaults(self) -> Tuple[Dict[int, Tuple[int, int]], Tuple[int, int]]:
+        if self._device_family() == FAMILY_NAUTILUS:
+            return self._CONVERT_DEFAULT_DEST, self._CONVERT_DEFAULT_EXI_DEST
+        return self._CONVERT_DEFAULT_DEST_KRONOS, self._CONVERT_DEFAULT_EXI_DEST_KRONOS
 
     def _convert_selected_locs(self, source: str):
         return self._selected_pcg_object_locs() if source == "pcg" else self._selected_local_object_locs()
 
     def _convert_block_reason(self, source: str) -> Optional[str]:
-        """Why Convert to Nautilus can't run right now (shown as the menu tooltip / status line), or None."""
+        """Why Convert to <connected instrument> can't run right now (menu tooltip / status line), or None."""
         if self._busy or getattr(self, "_auto_fill_active", False) or getattr(self, "_converting", False):
             return "Another Librarian operation is running."
         service = self._service
-        if service is None or not service.can_dump or not getattr(service, "is_nautilus", False):
-            return ("Connect to a Nautilus first. Just connected? Wait a moment: the instrument type "
+        if service is None or not service.can_dump:
+            return ("Connect to an instrument first. Just connected? Wait a moment: the instrument type "
                     "is still being detected.")
-        if source == "pcg" and self._pcg is not None and self._pcg.family != FAMILY_KRONOS:
-            return "This PCG is already in the Nautilus format."
+        if source == "pcg" and self._pcg is not None and self._pcg.family == self._device_family():
+            return f"This PCG is already in the {self._target_name()} format."
         if not any(loc.obj_type in CONVERTIBLE_TYPES for loc in self._convert_selected_locs(source)):
             return "Select Programs, Combinations, Drum Kits or Wave Sequences."
         return None
 
     def _add_convert_action(self, menu: QMenu, source: str) -> None:
         reason = self._convert_block_reason(source)
-        act = menu.addAction("Convert to Nautilus...", lambda: self._convert_to_nautilus(source))
+        act = menu.addAction(f"Convert to {self._target_name()}...", lambda: self._convert_to_instrument(source))
         act.setEnabled(reason is None)
-        act.setToolTip(reason or self._CONVERT_TIP)
+        act.setToolTip(reason or self._CONVERT_TIP.format(target=self._target_name()))
         menu.setToolTipsVisible(True)
 
-    def _convert_to_nautilus(self, source: str) -> None:
-        """Kronos Programs/Combis/Drum Kits/Wave Sequences from the PCG or Keyboard Library pane -> consecutive slots
-        on the connected Nautilus, over SysEx. Every target slot is backed up to a .syx first."""
+    def _convert_to_instrument(self, source: str) -> None:
+        """Programs/Combis/Drum Kits/Wave Sequences of the other instrument family, from the PCG or Keyboard Library
+        pane -> consecutive slots on the connected instrument, over SysEx. Every target slot is backed up first."""
+        target, what = self._device_family(), f"Convert to {self._target_name()}"
         reason = self._convert_block_reason(source)
         if reason:
-            self._log(f"Convert to Nautilus: {reason}")
+            self._log(f"{what}: {reason}")
             self._set_status(reason)
             return
-        service = self._service
         items: List[ConvertItem] = []
+        skipped: List[str] = []       # unknown provenance
+        same: List[str] = []          # already in the connected instrument's format
         for loc in self._convert_selected_locs(source):
             if loc.obj_type not in CONVERTIBLE_TYPES:
                 continue
@@ -4224,43 +4314,79 @@ class LibrarianShellWindow(QDialog):
                 body = self._pcg_resolve_content(loc.obj_type, loc.bank, loc.number, raw=True)
                 entry = self._pcg_by_addr.get((loc.obj_type, loc.bank, loc.number))
                 name, is_exi = (entry.name, entry.is_exi) if entry is not None else ("", False)
+                family = self._pcg.family if self._pcg is not None else None
             else:
                 body = self._local_resolve_content(loc.obj_type, loc.bank, loc.number)
                 entry = self._index.get(loc.obj_type, loc.bank, loc.number)
                 name = entry.display_name if entry is not None else ""
                 is_exi = body is not None and loc.obj_type == OBJ_PROGRAM and wire_body_is_exi(len(body))
+                if body is not None:
+                    # Drum Kits and Wave Sequences are the same size on both instruments: only the recorded
+                    # provenance says which one a body was made for. Unknown provenance is never guessed.
+                    family = body_family(loc.obj_type, len(body)) or self._index.family_of(entry.current_hash)
+                    if family is None:
+                        skipped.append(name or "(unnamed)")
+                        continue
             if body is not None:
-                tbank = kronos_timbre_bank_for_obj(loc.bank) if loc.obj_type == OBJ_PROGRAM else None
-                items.append(ConvertItem(loc.obj_type, name, body, is_exi,
-                                         src_ref=None if tbank is None else (tbank, loc.number),
-                                         program_name=self._kronos_program_namer(source)))
+                if family == target:
+                    same.append(name or "(unnamed)")
+                    continue
+                if loc.obj_type == OBJ_PROGRAM:
+                    tbank = (nautilus_timbre_bank_for_wire if family == FAMILY_NAUTILUS
+                             else kronos_timbre_bank_for_obj)(loc.bank)
+                    src_ref = None if tbank is None else (tbank, loc.number)
+                else:   # a Drum Kit / Wave Sequence is addressed by its location; Combis are never referenced here
+                    src_ref = (loc.bank, loc.number) if loc.obj_type in (OBJ_DRUM_KIT, OBJ_WAVE_SEQ) else None
+                items.append(ConvertItem(loc.obj_type, name, body, is_exi, src_ref=src_ref,
+                                         program_name=self._program_namer(source, family)))
+        notes = []
+        if skipped:
+            notes.append(f"{len(skipped)} skipped: not known which instrument they were made for (pull their bank "
+                         f"again from that instrument, or place them again from their PCG): {', '.join(skipped)}")
+            for n in skipped:
+                self._record_conversion(what, n, "skipped", ["Not known which instrument it was made for. Pull its "
+                                                             "bank again from that instrument, or place it again from "
+                                                             "its PCG."])
+        if same:
+            notes.append(f"{len(same)} already in the {self._target_name()} format, nothing to convert: "
+                         f"{', '.join(same)}")
+        for n in notes:
+            self._log(f"{what}: {n}")
         if not items:
-            self._log("Convert to Nautilus: select Programs, Combinations, Drum Kits or Wave Sequences.")
+            msg = "; ".join(notes) or "select Programs, Combinations, Drum Kits or Wave Sequences."
+            self._log(f"{what}: nothing to convert." if notes else f"{what}: {msg}")
+            self._set_status(notes[0] if notes else msg)
             return
+        if notes:
+            self._set_status(notes[0])
         self._run_convert(items)
 
     def _run_convert(self, items: List[ConvertItem]) -> None:
         service = self._service
+        nautilus = self._device_family() == FAMILY_NAUTILUS
+        target_name = self._target_name()
+        defaults, exi_default = self._convert_defaults()
         dest: Dict[int, Tuple[int, int]] = {}
         for obj_type in CONVERTIBLE_TYPES:
             if obj_type == OBJ_PROGRAM and any(i.is_exi for i in items if i.obj_type == OBJ_PROGRAM):
-                steps = [(OBJ_PROGRAM, "HD-1 Program", lambda i: not i.is_exi, self._CONVERT_DEFAULT_DEST[OBJ_PROGRAM]),
-                         (EXI_DEST, "EXi Program", lambda i: i.is_exi, self._CONVERT_DEFAULT_EXI_DEST)]
+                steps = [(OBJ_PROGRAM, "HD-1 Program", lambda i: not i.is_exi, defaults[OBJ_PROGRAM]),
+                         (EXI_DEST, "EXi Program", lambda i: i.is_exi, exi_default)]
             else:
                 steps = [(obj_type, conv_type_name(obj_type), lambda i, t=obj_type: i.obj_type == t,
-                          self._CONVERT_DEFAULT_DEST.get(obj_type))]
+                          defaults.get(obj_type))]
             for dkey, label, pick, default in steps:
                 n = sum(1 for i in items if i.obj_type == obj_type and pick(i))
                 if not n:
                     continue
                 dlg = _DestinationDialog(obj_type, f"Convert {n} {label}(s) - start at", self, default=default,
-                                         bank_label=lambda b, t=obj_type: nautilus_bank_label(t, b))
+                                         bank_label=lambda b, t=obj_type: nautilus_bank_label(t, b, nautilus))
                 if _exec_modal(dlg) != QDialog.DialogCode.Accepted:
                     return
                 dest[dkey] = dlg.selected()
         tables = self._conversion_tables()
-        backup_path = _unique_backup_path("nautilus_convert")
-        confirm = _ConvertConfirmDialog(self, items, dest, tables, self._settings.convert_arp_next_slot, backup_path)
+        backup_path = _unique_backup_path(f"{target_name.lower()}_convert")
+        confirm = _ConvertConfirmDialog(self, items, dest, tables, self._settings.convert_arp_next_slot, backup_path,
+                                        nautilus)
         if _exec_modal(confirm) != QDialog.DialogCode.Accepted:
             return
         arp_start = confirm.arp_start()
@@ -4272,7 +4398,7 @@ class LibrarianShellWindow(QDialog):
             self._hardware_transaction_active = True
         self._converting = True
         self._set_busy(True)
-        self._log(f"Converting {len(items)} object(s) to the Nautilus...")
+        self._log(f"Converting {len(items)} object(s) to the {target_name}...")
 
         def worker() -> None:
             try:
@@ -4280,7 +4406,7 @@ class LibrarianShellWindow(QDialog):
                                          progress=lambda m: self._safe_emit(self._progress, m), arp_start=arp_start,
                                          still_valid=lambda: self._service is service)
             except Exception as e:
-                log.exception("Convert to Nautilus failed")
+                log.exception("Convert to %s failed", target_name)
                 reports = [ItemReport("(conversion)", "", "failed", [f"{type(e).__name__}: {e}"])]
             finally:
                 with self._transaction_lock:
@@ -4336,15 +4462,29 @@ class LibrarianShellWindow(QDialog):
     def _song_convert_block_reason(self) -> Optional[str]:
         if self._busy or getattr(self, "_auto_fill_active", False) or getattr(self, "_converting", False):
             return "Another Librarian operation is running."
-        if self._service is None or not self._service.can_dump or not getattr(self._service, "is_nautilus", False):
-            return "Connect to a Nautilus first. Just connected? Wait a moment: the instrument type is still being detected."
+        if self._service is None or not self._service.can_dump:
+            return ("Connect to an instrument first. Just connected? Wait a moment: the instrument type is still being "
+                    "detected.")
         return None
+
+    def _refresh_songs_menu(self) -> None:
+        reason = self._song_convert_block_reason()
+        self._act_song_convert.setText(f"Convert Song Timbre Sets from .SNG or .syx to {self._target_name()}...")
+        self._act_song_convert.setEnabled(reason is None)
+        self._act_song_convert.setToolTip(reason or "")
+
+    def _song_items_for_target(self, items):
+        """Song items mark `native` for a Nautilus Timbre Set; for a connected Kronos the Kronos ones are native."""
+        if self._device_family() == FAMILY_NAUTILUS:
+            return items
+        return [dataclasses.replace(i, native=not i.native) for i in items]
 
     def _open_song_library(self) -> None:
         win = getattr(self, "_song_library_win", None)
         if win is None:
             win = SongLibraryWindow(SongLibrary(Models.storage.data_dir() / "song_library"),
-                                    lambda: self._service, self._send_song_items, self)
+                                    lambda: self._service, self._send_song_items, self,
+                                    get_tables=self._conversion_tables, record=self._record_conversion)
             self._song_library_win = win
         win.refresh()
         win.show()
@@ -4352,26 +4492,36 @@ class LibrarianShellWindow(QDialog):
 
     def _convert_sng_file(self) -> None:
         """A whole .SNG (every song, all MIDI data) -> a new .SNG for the other instrument; the source is not changed."""
+        if getattr(self, "_sng_converting", False):
+            self._set_status("A .SNG file is already being converted.")
+            return
         path, _ = QFileDialog.getOpenFileName(self, "Convert a .SNG file", "", "Song files (*.SNG *.sng)")
         if not path:
             return
+        self._sng_converting = True
+
+        tables = self._conversion_tables()   # on the GUI thread: it may drop the conversion cache
 
         def work():
             with open(path, "rb") as f:
                 data = f.read()
             target = MODEL_NAUTILUS if read_sng(data).model == MODEL_KRONOS else MODEL_KRONOS
-            return (target,) + tuple(convert_sng(data, target, self._conversion_tables()))
+            return (target,) + tuple(convert_sng(data, target, tables))
 
         # A big .SNG takes a few seconds to read and convert: the window keeps repainting meanwhile.
         self._run_bg(f"Converting {os.path.basename(path)}...", work,
                      lambda result, exc: self._on_sng_converted(path, result, exc))
 
     def _on_sng_converted(self, path: str, result, exc) -> None:
+        self._sng_converting = False
         if exc is not None:
             self._log(f"Convert .SNG: cannot read {path}: {exc}")
             self._set_status(f"Cannot read that file: {exc}")
+            QMessageBox.warning(self, "Convert .SNG", f"Cannot read {os.path.basename(path)}:\n{exc}")
             return
         target, out, warnings, refusals = result
+        self._record_conversion("Convert .SNG", os.path.basename(path), "refused" if out is None else "converted",
+                                refusals + warnings)
         if out is None:
             self._log("Convert .SNG: " + " ".join(refusals))
             QMessageBox.warning(self, "Convert .SNG", "Nothing was written.\n\n" + "\n".join(refusals))
@@ -4395,24 +4545,26 @@ class LibrarianShellWindow(QDialog):
         box = QMessageBox(self)
         box.setWindowTitle("Convert .SNG")
         box.setText(f"Wrote the {MODEL_NAMES[target]} version:\n{dest}")
-        box.setInformativeText("The original file was not changed. Not yet checked on a real instrument.")
+        box.setInformativeText("The original file was not changed." + (
+            f" {len(warnings)} note(s): see Details or the Conversion Report." if warnings else ""))
         if warnings:
+            box.setIcon(QMessageBox.Icon.Warning)
             box.setDetailedText("\n".join(warnings))
         _exec_modal(box)
 
     def _send_song_items(self, items) -> None:
         reason = self._song_convert_block_reason()
         if reason:
-            self._log(f"Convert to Nautilus: {reason}")
+            self._log(f"Convert to {self._target_name()}: {reason}")
             self._set_status(reason)
             return
         if items:
-            self._run_convert(items)
+            self._run_convert(self._song_items_for_target(items))
 
     def _convert_song_timbre_sets(self) -> None:
         reason = self._song_convert_block_reason()
         if reason:
-            self._log(f"Convert to Nautilus: {reason}")
+            self._log(f"Convert to {self._target_name()}: {reason}")
             self._set_status(reason)
             return
         path, _ = QFileDialog.getOpenFileName(self, "Songs", "", "Songs (*.SNG *.sng *.syx);;Song files (*.SNG *.sng);;SysEx (*.syx)")
@@ -4423,21 +4575,22 @@ class LibrarianShellWindow(QDialog):
 
     def _on_song_timbre_sets_read(self, path: str, result, exc) -> None:
         if exc is not None:
-            self._log(f"Convert to Nautilus: cannot read {path}: {exc}")
+            self._log(f"Convert to {self._target_name()}: cannot read {path}: {exc}")
             self._set_status(f"Cannot read that file: {exc}")
             return
         items, notes = result
         reason = self._song_convert_block_reason()      # the instrument may have gone while reading
+        what = f"Convert to {self._target_name()}"
         if reason:
-            self._log(f"Convert to Nautilus: {reason}")
+            self._log(f"{what}: {reason}")
             self._set_status(reason)
             return
         for n in notes:
-            self._log(f"Convert to Nautilus: {n}")
+            self._log(f"{what}: {n}")
         if not items:
             self._set_status("No Song Timbre Sets in that file.")
             return
-        self._run_convert(items)
+        self._run_convert(self._song_items_for_target(items))
 
     def _on_convert_done(self, reports, backup_path: str) -> None:
         self._converting = False
@@ -4450,19 +4603,23 @@ class LibrarianShellWindow(QDialog):
         for r in reports:
             lines.append(f"[{r.status.upper()}] {r.name} -> {r.dest}")
             lines += [f"    {m}" for m in r.messages]
+            self._record_conversion(f"Convert to {self._target_name()}", f"{r.name} -> {r.dest}" if r.dest else r.name,
+                                    r.status,
+                                    r.messages)
         for line in lines:
             self._log(line)
         crashed = len(reports) == 1 and reports[0].name == "(conversion)"
         not_written = [r for r in reports if r.status != "written"]
         ok = len(reports) - len(not_written)
-        self._log(f"Convert to Nautilus: {ok} of {len(reports)} written. Backup: {backup_path}")
+        target_name = self._target_name()
+        self._log(f"Convert to {target_name}: {ok} of {len(reports)} written. Backup: {backup_path}")
         box = QMessageBox(self)
-        box.setWindowTitle("Convert to Nautilus")
+        box.setWindowTitle(f"Convert to {target_name}")
         box.setIcon(QMessageBox.Icon.Warning if not_written else QMessageBox.Icon.Information)
         if crashed:
             text = "The conversion stopped with an error before it finished."
         else:
-            text = f"{ok} of {len(reports)} object(s) written to the Nautilus."
+            text = f"{ok} of {len(reports)} object(s) written to the {target_name}."
             if not_written:
                 names = [f"{r.name or r.dest} ({r.status})" for r in not_written[:5]]
                 text += "\n\nNot written: " + ", ".join(names) + (
@@ -4556,14 +4713,14 @@ class LibrarianShellWindow(QDialog):
                     entries = _placement_order(list(entries))
                 seq_pairs = [self._seq_item_from_merge(e) for e in entries]
                 seq_items = [p[0] for p in seq_pairs]
-                hash_by_label = {it.label: e.content_hash for it, e in zip(seq_items, entries)}
-                unresolved_by_label = {it.label: unresolved for it, unresolved in seq_pairs if unresolved}
+                hash_by_item = {id(it.dump): e.content_hash for it, e in zip(seq_items, entries)}
+                unresolved_by_item = {id(it.dump): unresolved for it, unresolved in seq_pairs if unresolved}
                 # One deferred batch: the sequential path writes every placement's index
                 # save and merge-cache rewrite individually otherwise.
                 with self._index.defer_saves(), self._merge.defer_saves(), \
                         self._oplog.defer_appends():
                     self._run_sequential_fill(seq_items, obj_type, dst_bank, dst_number,
-                                              hash_by_label, unresolved_by_label,
+                                              hash_by_item, unresolved_by_item,
                                               force_overwrite=self._chk_force_overwrite.isChecked())
         except LocalLibraryWriteError as e:
             log.error("drop placement aborted: %s", e)
@@ -5301,12 +5458,14 @@ class LibrarianShellWindow(QDialog):
             elif mode in (SYNC_PULL_ONLY, "LaunchPull"):
                 pull_result = pull_pipeline.pull(
                     self._index, self._blobs, self._get_live_digest, self._get_bank_objects,
-                    full=full, progress=self._emit_progress, cancel=self._sync_cancelled)
+                    full=full, progress=self._emit_progress, cancel=self._sync_cancelled,
+                    family=common["device_family"])
                 plan = ChangesetPlan()
             elif mode == "Recheck":
                 pull_result = pull_pipeline.recheck_unread(
                     self._index, self._blobs, self._get_bank_objects,
-                    progress=self._emit_progress, cancel=self._sync_cancelled)
+                    progress=self._emit_progress, cancel=self._sync_cancelled,
+                    family=common["device_family"])
                 plan = ChangesetPlan()
             else:
                 plan, result = commit_changes(
@@ -5651,10 +5810,81 @@ class LibrarianShellWindow(QDialog):
                 return open_pcg(fh.read())
         self._run_bg(f"Reading {os.path.basename(path)}...", work, on_loaded)
 
+    def _record_conversion(self, source: str, name: str, status: str, messages) -> bool:
+        """Adds one object's complete conversion messages to the session's Conversion Report (False: already there)."""
+        added = self._conv_report.add(source, name, status, messages)
+        if added:
+            self._btn_conv_report.setText(f"Conversion Report ({len(self._conv_report)})")
+        return added
+
+    def _pcg_report_source(self) -> str:
+        return f"Opened {self._pcg_source_label or 'PCG'}"
+
+    def _show_conversion_report(self) -> None:
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Conversion Report")
+        dlg.resize(820, 520)
+        lay = QVBoxLayout(dlg)
+        view = QPlainTextEdit(dlg)
+        view.setReadOnly(True)
+        view.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
+        view.setPlainText(self._conv_report.text() or "No conversions between instruments yet in this session.")
+        lay.addWidget(view)
+        row = QHBoxLayout()
+        save = QPushButton("Save as Text...")
+        save.setEnabled(len(self._conv_report) > 0)
+        clear = QPushButton("Clear")
+        clear.setEnabled(len(self._conv_report) > 0)
+        close = QPushButton("Close")
+        row.addWidget(save)
+        row.addWidget(clear)
+        row.addStretch(1)
+        row.addWidget(close)
+        lay.addLayout(row)
+
+        def do_save() -> None:
+            path, _ = QFileDialog.getSaveFileName(dlg, "Save Conversion Report", "conversion_report.txt",
+                                                  "Text files (*.txt)")
+            if not path:
+                return
+            data = self._conv_report.text().encode("utf-8")
+
+            def done(_result, exc) -> None:
+                if exc is not None:
+                    self._log(f"Conversion Report: could not write {path}: {exc}")
+                    self._set_status(f"Could not write the report: {exc}")
+                else:
+                    self._set_status(f"Saved the Conversion Report to {path}")
+            self._run_bg("Saving the Conversion Report...",
+                         lambda: Models.storage.atomic_write_bytes(Path(path), data), done)
+
+        def do_clear() -> None:
+            if QMessageBox.question(dlg, "Clear Conversion Report", "Clear the record of this session's conversions?",
+                                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                    QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+                return
+            self._conv_report.clear()
+            clear.setEnabled(False)
+            self._btn_conv_report.setText("Conversion Report")
+            view.setPlainText("No conversions between instruments yet in this session.")
+            save.setEnabled(False)
+
+        save.clicked.connect(do_save)
+        clear.clicked.connect(do_clear)
+        close.clicked.connect(dlg.accept)
+        _exec_modal(dlg)
+
     def _conversion_tables(self) -> ConvertTables:
-        """ConvertTables.load() costs a quarter to half a second; load once per window."""
+        """ConvertTables.load() costs a quarter to half a second; load once per window. The unknown-Program policy
+        follows Settings; a change drops the cached PCG conversions made under the old one."""
         if self._convert_tables is None:
             self._convert_tables = ConvertTables.load()
+        policy = UnknownProgramIdentity.of(getattr(self._settings, "convert_unknown_program_identity", "assume"))
+        if self._convert_tables.unknown_identity is not policy:
+            self._convert_tables.unknown_identity = policy
+            self._pcg_conv_cache.clear()
+            self._pcg_conv_refused.clear()
+            self._pcg_dep_cache.clear()
         return self._convert_tables
 
 
