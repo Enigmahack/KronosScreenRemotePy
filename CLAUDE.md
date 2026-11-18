@@ -124,6 +124,7 @@ Pre-commit runs tier 0: enable with `git config core.hooksPath pipeline/hooks`.
   explicit confirm, and still fails if the slot cannot be backed up.
 - **Test fakes mirror the real instruments.** If a test passes only because a fake is more forgiving than the
   hardware, fix the fake (and the contract), not the test.
+- **Every platform.** The app runs on Windows, macOS and Linux. Any OS-specific behavior (drives/volumes, file open/reveal, paths, audio devices, sockets, settings locations) gets a branch for all three, or a portable stdlib/Qt call; never ship a Windows-only path. Keep the OS-specific part in a small pure helper that a test can feed fake input (`Tools/file_manager.parse_linux_mounts`, `list_local_drives`), since a test only runs on the host OS.
 - **Line endings.** Most tracked files are CRLF. Preserve each file's endings when editing (a script that replaces a
   multi-line string must use the file's own `
 `), or the edit silently does not apply and diffs fill with noise.
