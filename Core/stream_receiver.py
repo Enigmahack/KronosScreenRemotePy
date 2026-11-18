@@ -83,6 +83,7 @@ class StreamReceiver(QThread):
         self._username  = username
         self._password  = password
         self._sock: Optional[socket.socket] = None
+        self._connecting_sock: Optional[socket.socket] = None
         self._stop      = False
         # Latest-frame slot: the worker composites into _canvas under _frame_lock
         # and posts _frame_ready only when nothing is pending yet; the owner-thread
@@ -119,7 +120,10 @@ class StreamReceiver(QThread):
         except OSError:
             pass  # platform may not support all options
         s.settimeout(10.0)
+        self._connecting_sock = s
         try:
+            if self._stop:
+                raise ConnectionError("Connection cancelled")
             log.debug("connecting to %s:%s mode=%s fps=%s",
                       self._host, self._port, self._mode, self._fps)
             s.connect((self._host, self._port))
@@ -190,6 +194,7 @@ class StreamReceiver(QThread):
             log.info("handshake complete: %dx%d", self.width, self.height)
             s.settimeout(None)   # switch to blocking for the recv loop
             self._sock = s
+            self._connecting_sock = None
         except Exception:
             try:
                 s.close()
@@ -202,6 +207,17 @@ class StreamReceiver(QThread):
         # issued between start() and the worker reaching run() must not be undone.
         self._stop = False
         super().start(*args, **kwargs)
+
+    def abort_connect(self):
+        """Any thread: cancel a connect_to_host() in flight (closing the socket
+        unblocks its connect/recv at once instead of after the 10 s timeout)."""
+        self._stop = True
+        s = self._connecting_sock
+        if s is not None:
+            try:
+                s.close()
+            except Exception:
+                pass
 
     def stop(self):
         self._stop = True

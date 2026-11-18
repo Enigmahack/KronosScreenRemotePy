@@ -1771,6 +1771,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         self._measured_fps = 0.0
 
         self._connecting  = False
+        self._pending_rx  = None
         self._auto_reconnect_enabled = True   # False only when user explicitly disconnects
         self._poll_in_progress = False        # guard: only one STATE query at a time
         self._layout_preset = settings.layout_preset
@@ -2514,10 +2515,12 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         return True
 
     def _connect_async(self):
-        if self._connecting or not self._host or self._shutting_down:
+        if not self._host or self._shutting_down:
             return
         if not self._ensure_ftp_credentials():
             return
+        # A newer request supersedes one still connecting: _disconnect bumps the
+        # generation (so the old result is discarded) and we abort its socket.
         if not self._disconnect(quiet=True):
             return
         self._auto_reconnect_enabled = True
@@ -2525,6 +2528,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         self._set_conn_state("connecting", f"Connecting to {self._host}…")
         self._act_disconnect.setEnabled(False)
         rx = self._new_stream_receiver()
+        self._pending_rx = rx
         threading.Thread(target=self._connect_bg, args=(rx, self._session_generation),
                          daemon=True, name="Connect").start()
 
@@ -2553,6 +2557,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         if generation != self._session_generation or self._shutting_down:
             return
         self._connecting = False
+        self._pending_rx = None
         if isinstance(error, PermissionError):
             self._settings.ftp_username = ""
             self._settings.ftp_password = ""
@@ -2598,6 +2603,9 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             return False
         self._session_generation += 1
         self._connecting = False
+        pending, self._pending_rx = self._pending_rx, None
+        if pending is not None:
+            pending.abort_connect()
         self._frame_w.cancel_drag()
         if not quiet:
             self._auto_reconnect_enabled = False  # explicit user disconnect — no auto-reconnect
@@ -2786,6 +2794,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         self._connecting = True
         self._set_conn_state("connecting", f"Reconnecting to {self._host}…")
         rx = self._new_stream_receiver()
+        self._pending_rx = rx
         threading.Thread(target=self._connect_bg, args=(rx, self._session_generation, True),
                          daemon=True, name="Reconnect").start()
 
@@ -2799,6 +2808,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             rx.deleteLater()
             return
         self._connecting = False
+        self._pending_rx = None
         self._receiver = rx
         self._palette  = list(rx.palette)
         self._frame_w._palette = self._palette
@@ -3810,6 +3820,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             return
         self._settings.kronos_host = host
         self._host = host
+        self._ctrl.set_endpoint(host, self._ctrl_port)
         cred = self._settings.host_credentials.get(host)
         if cred:
             self._settings.ftp_username = cred["username"]
