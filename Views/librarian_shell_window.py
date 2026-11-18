@@ -188,6 +188,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 log = logging.getLogger(__name__)
 
+from Views.tree_search import TreeSearchBox, apply_tree_filter
 from PySide6.QtCore import QByteArray, QMimeData, Qt, QTimer, Signal
 from PySide6.QtGui import QActionGroup, QBrush, QColor, QDrag, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
@@ -1721,6 +1722,9 @@ class LibrarianShellWindow(QDialog):
         self._tree_local.itemsDropped.connect(self._on_local_dropped)
         self._tree_local.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._tree_local.customContextMenuRequested.connect(self._show_local_context_menu)
+        self._search_local = TreeSearchBox()
+        self._search_local.queryChanged.connect(lambda _q: self._apply_search("local"))
+        v.addWidget(self._search_local)
         v.addWidget(self._tree_local)
         # Empty-state hint shown in the tree's place (port of
         # LocalLibraryPaneViewModel.ShowEmptyHint) when the library holds nothing yet
@@ -1864,6 +1868,9 @@ class LibrarianShellWindow(QDialog):
         self._tree_merge.itemsDropped.connect(self._on_merge_dropped)
         self._tree_merge.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._tree_merge.customContextMenuRequested.connect(self._show_merge_context_menu)
+        self._search_merge = TreeSearchBox()
+        self._search_merge.queryChanged.connect(lambda _q: self._apply_search("merge"))
+        v.addWidget(self._search_merge)
         v.addWidget(self._tree_merge)
         return box
 
@@ -1896,6 +1903,9 @@ class LibrarianShellWindow(QDialog):
             lambda: self._update_object_dependencies("pcg", self._tree_pcg))
         self._tree_pcg.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._tree_pcg.customContextMenuRequested.connect(self._show_pcg_context_menu)
+        self._search_pcg = TreeSearchBox()
+        self._search_pcg.queryChanged.connect(lambda _q: self._apply_search("pcg"))
+        v.addWidget(self._search_pcg)
         v.addWidget(self._tree_pcg)
         return box
 
@@ -2130,7 +2140,15 @@ class LibrarianShellWindow(QDialog):
         self._dep_rerun = None
         self._rebuild_object_dependencies()
 
+    def _apply_search(self, pane: str) -> None:
+        """Filter a pane's tree by its search box (also re-run after every rebuild of that tree)."""
+        box = getattr(self, f"_search_{pane}", None)
+        if box is not None and (box.text().strip() or getattr(self, f"_search_active_{pane}", False)):
+            apply_tree_filter(getattr(self, f"_tree_{pane}"), box.text())
+            setattr(self, f"_search_active_{pane}", bool(box.text().strip()))
+
     def _on_tree_rebuilt(self, pane: str) -> None:
+        self._apply_search(pane)
         """A tree was rebuilt (which drops its selection). The red gap rows are recomputed from the
         Merge Window; the selection half is re-run if its tree was NOT the one just rebuilt (so
         e.g. staging a found dependency shrinks the red section and refreshes the Local selection's
