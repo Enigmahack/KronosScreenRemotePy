@@ -10,20 +10,23 @@ from __future__ import annotations
 
 import ftplib
 import logging
+import math
 import os
 import pathlib
 import re
 import shutil
+import sys
 import threading
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from typing import List, Optional, Tuple
 
-from PySide6.QtCore import QMimeData, QPoint, Qt, QTimer, Signal, Slot
-from PySide6.QtGui import QColor, QDrag, QKeyEvent
+from PySide6.QtCore import QMimeData, QPointF, QSize, Qt, QTimer, Signal, Slot
+from PySide6.QtGui import QColor, QDrag, QIcon, QKeyEvent, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QComboBox, QDialog,
+    QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout,
     QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit, QMainWindow,
     QMenu, QMessageBox, QProgressBar, QPushButton, QSplitter,
     QStatusBar, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
@@ -199,7 +202,9 @@ QLabel { color: white; }
 QMenu {
     background: #282828; color: white; border: 1px solid #555555; padding: 2px;
 }
+QMenu { icon-size: 16px; }
 QMenu::item { padding: 6px 20px; }
+QMenu::icon { padding-left: 6px; }
 QMenu::item:selected { background: #1A4E6E; }
 QMenu::item:disabled { color: #606060; }
 QMenu::separator { height: 1px; background: #444444; margin: 3px 4px; }
@@ -453,6 +458,14 @@ class _FtpWorker:
         self._ftp.rename(old, new)
 
     @_serialized
+    def rmdir(self, path: str):
+        """Remove ONE empty folder (fails if anything is left in it, unlike delete_dir)."""
+        if _is_top_level_ftp_path(path):
+            raise FtpTopLevelPathError(path, "delete")
+        self.ensure_connected()
+        self._ftp.rmd(path)
+
+    @_serialized
     def mkdir(self, path: str):
         if len(path) > _MAX_REMOTE_PATH_LENGTH:
             raise FtpPathTooLongError(path)
@@ -622,7 +635,6 @@ def _default_local_folder() -> str:
 # ── Drag-drop constants and tree subclass ─────────────────────────────────────
 
 _DRAG_MIME = "application/x-kronos-fileentries"
-_DRAG_THRESHOLD = 8
 
 
 @dataclass
@@ -645,63 +657,26 @@ class _DragTreeWidget(QTreeWidget):
         self.setDefaultDropAction(Qt.DropAction.MoveAction)
         self.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
 
-        self._drag_start_pos: Optional[QPoint] = None
-        self._drag_started = False
-
-    def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
-            item = self.itemAt(event.position().toPoint())
-            if item and item.isSelected() and len(self.selectedItems()) >= 1:
-                self._drag_start_pos = event.position().toPoint()
-                self._drag_started = False
-                return
-        self._drag_start_pos = None
-        self._drag_started = False
-        super().mousePressEvent(event)
-
-    def mouseMoveEvent(self, event):
-        if (self._drag_start_pos is not None
-                and not self._drag_started
-                and event.buttons() & Qt.MouseButton.LeftButton):
-            delta = event.position().toPoint() - self._drag_start_pos
-            if (abs(delta.x()) > _DRAG_THRESHOLD
-                    or abs(delta.y()) > _DRAG_THRESHOLD):
-                self._drag_started = True
-                self._initiate_drag()
-                return
-        super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event):
-        if self._drag_start_pos is not None and not self._drag_started:
-            item = self.itemAt(self._drag_start_pos)
-            if item:
-                mods = event.modifiers()
-                if not (mods & (Qt.ControlModifier | Qt.ShiftModifier)):
-                    self.clearSelection()
-                    item.setSelected(True)
-                    self.setCurrentItem(item)
-        self._drag_start_pos = None
-        self._drag_started = False
-        super().mouseReleaseEvent(event)
-
-    def _initiate_drag(self):
+    # Qt's own press/move handling does the drag detection (so a row you have not clicked yet can be dragged
+    # straight away, and Ctrl/Shift multi-selections survive the press); we only supply the drag itself.
+    def startDrag(self, supportedActions):
         w = self._window
-        entries = self._entries()
-        items = w._selected_entries(self, entries)
-        if not items or w._busy:
+        items = w._selected_entries(self, self._entries())
+        if not items:
+            return
+        if w._busy:
+            w._set_status("Wait for the current transfer to finish before dragging.")
             return
 
         w._drag_payload = DragPayload(from_remote=self._is_remote, items=items)
-
-        drag = QDrag(self)
-        mime = QMimeData()
-        mime.setData(_DRAG_MIME, b"1")
-        drag.setMimeData(mime)
-        drag.exec(Qt.DropAction.CopyAction | Qt.DropAction.MoveAction)
-        w._drag_payload = None
-
-    def startDrag(self, supportedActions):
-        pass
+        try:
+            drag = QDrag(self)
+            mime = QMimeData()
+            mime.setData(_DRAG_MIME, b"1")
+            drag.setMimeData(mime)
+            drag.exec(Qt.DropAction.CopyAction | Qt.DropAction.MoveAction, Qt.DropAction.CopyAction)
+        finally:
+            w._drag_payload = None
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasFormat(_DRAG_MIME):
@@ -761,6 +736,365 @@ class _DragTreeWidget(QTreeWidget):
         return w._remote_entries if self._is_remote else w._local_entries
 
 
+# ── Toolbar icons ────────────────────────────────────────────────────────────
+
+def _toolbar_icon(kind: str, color: str = "#E6E6E6", size: int = 16) -> QIcon:
+    """Crisp white line icons drawn with QPainter (a font glyph like U+21BA is thin, tiny and missing from some
+    fonts): 'up' = arrow rising out of a folder level, 'refresh' = circular arrow. Rendered at 2x for HiDPI."""
+    ratio = 2
+    pm = QPixmap(size * ratio, size * ratio)
+    pm.setDevicePixelRatio(ratio)
+    pm.fill(Qt.transparent)
+    qp = QPainter(pm)
+    qp.setRenderHint(QPainter.Antialiasing)
+    qp.scale(size / 16, size / 16)   # every shape below is drawn on a 16x16 grid
+    pen = QPen(QColor(color), 1.9, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+    qp.setPen(pen)
+    if kind == "up":
+        qp.drawLine(QPointF(8, 14), QPointF(8, 3.5))                    # shaft
+        qp.drawLine(QPointF(3.5, 7.5), QPointF(8, 3))                   # head
+        qp.drawLine(QPointF(12.5, 7.5), QPointF(8, 3))
+    elif kind in ("right", "left"):   # big transfer arrows that fill the whole icon box
+        if kind == "left":
+            qp.translate(16, 0)
+            qp.scale(-1, 1)
+        qp.setPen(QPen(QColor(color), 2.4, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        qp.drawLine(QPointF(1.5, 8), QPointF(14.2, 8))                  # shaft
+        qp.drawLine(QPointF(8.2, 2.2), QPointF(14.2, 8))                # head
+        qp.drawLine(QPointF(8.2, 13.8), QPointF(14.2, 8))
+    elif kind in ("open", "newfolder"):
+        folder = QPainterPath()
+        folder.moveTo(1.5, 4); folder.lineTo(6, 4); folder.lineTo(7.5, 5.8); folder.lineTo(14.5, 5.8)
+        folder.lineTo(14.5, 13.2); folder.lineTo(1.5, 13.2); folder.closeSubpath()
+        qp.drawPath(folder)
+        if kind == "newfolder":
+            qp.setPen(QPen(QColor("#8FD88F"), 2.0, Qt.SolidLine, Qt.RoundCap))
+            qp.drawLine(QPointF(11.2, 7.6), QPointF(11.2, 11.8))
+            qp.drawLine(QPointF(9.1, 9.7), QPointF(13.3, 9.7))
+    elif kind == "star":
+        pts = [QPointF(8 + (6.8 if i % 2 == 0 else 2.9) * math.sin(i * math.pi / 5),
+                       8.6 - (6.8 if i % 2 == 0 else 2.9) * math.cos(i * math.pi / 5)) for i in range(10)]
+        qp.drawPolygon(QPolygonF(pts))
+    elif kind == "cut":
+        qp.drawEllipse(QPointF(4.2, 12.2), 2.3, 2.3)
+        qp.drawEllipse(QPointF(11.8, 12.2), 2.3, 2.3)
+        qp.drawLine(QPointF(5.2, 10.2), QPointF(11.2, 1.8))
+        qp.drawLine(QPointF(10.8, 10.2), QPointF(4.8, 1.8))
+    elif kind == "copy":
+        qp.drawRoundedRect(5.5, 1.5, 8.5, 9.5, 1.2, 1.2)
+        qp.setBrush(QColor("#282828"))
+        qp.drawRoundedRect(2, 5, 8.5, 9.5, 1.2, 1.2)
+    elif kind == "paste":
+        qp.drawRoundedRect(2.8, 3, 10.4, 11.5, 1.2, 1.2)
+        qp.setBrush(QColor(color))
+        qp.drawRoundedRect(5.8, 1.4, 4.4, 3.2, 0.8, 0.8)
+        qp.drawLine(QPointF(5.3, 8.2), QPointF(10.7, 8.2))
+        qp.drawLine(QPointF(5.3, 11), QPointF(10.7, 11))
+    elif kind == "rename":
+        pencil = QPainterPath()
+        pencil.moveTo(2.5, 13.5); pencil.lineTo(3.4, 10); pencil.lineTo(11.4, 2); pencil.lineTo(14, 4.6)
+        pencil.lineTo(6, 12.6); pencil.closeSubpath()
+        qp.drawPath(pencil)
+        qp.drawLine(QPointF(9.6, 3.8), QPointF(12.2, 6.4))
+    elif kind == "delete":
+        qp.setPen(QPen(QColor("#F29A9A"), 1.8, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        qp.drawLine(QPointF(2.8, 4.6), QPointF(13.2, 4.6))
+        qp.drawPolyline(QPolygonF([QPointF(6.2, 4.4), QPointF(6.2, 2.6), QPointF(9.8, 2.6), QPointF(9.8, 4.4)]))
+        qp.drawPolyline(QPolygonF([QPointF(4.4, 4.8), QPointF(5, 14), QPointF(11, 14), QPointF(11.6, 4.8)]))
+        qp.drawLine(QPointF(7, 7.2), QPointF(7, 11.6))
+        qp.drawLine(QPointF(9, 7.2), QPointF(9, 11.6))
+    elif kind == "info":
+        qp.drawEllipse(QPointF(8, 8), 6.3, 6.3)
+        qp.drawLine(QPointF(8, 7.3), QPointF(8, 11.2))
+        qp.setBrush(QColor(color))
+        qp.drawEllipse(QPointF(8, 4.9), 0.7, 0.7)
+    elif kind == "refresh":
+        path = QPainterPath()
+        path.arcMoveTo(2.5, 2.5, 11, 11, 60)
+        path.arcTo(2.5, 2.5, 11, 11, 60, 270)                           # open circle, gap at upper right
+        qp.drawPath(path)
+        qp.setBrush(QColor(color))
+        qp.drawPolygon(QPolygonF([QPointF(9.2, 0.8), QPointF(14.4, 2.6), QPointF(10.6, 6.0)]))   # arrowhead
+    qp.end()
+    return QIcon(pm)
+
+
+# ── Drive names ──────────────────────────────────────────────────────────────
+
+_DRIVE_TYPE_NAMES = {2: "Removable Disk", 3: "Local Disk", 4: "Network Drive", 5: "CD/DVD Drive", 6: "RAM Disk"}
+
+
+def _windows_drive_labels(roots: List[str]) -> dict:
+    """{'C:\\': 'Windows'}: the volume name, else the drive kind ('Local Disk'); a network drive with no volume
+    name shows its UNC share. Windows only; a drive that is not ready is simply left as its letter."""
+    import ctypes
+    k32 = ctypes.windll.kernel32
+    old_mode = k32.SetErrorMode(1)   # SEM_FAILCRITICALERRORS: no "insert a disk" popup for empty drives
+    out = {}
+    try:
+        for root in roots:
+            name = ctypes.create_unicode_buffer(261)
+            ok = k32.GetVolumeInformationW(root, name, 261, None, None, None, None, 0)
+            label = name.value if ok else ""
+            kind = k32.GetDriveTypeW(root)
+            if not label and kind == 4:
+                buf = ctypes.create_unicode_buffer(1024)
+                size = ctypes.c_ulong(1024)
+                if ctypes.windll.mpr.WNetGetConnectionW(root[:2], buf, ctypes.byref(size)) == 0:
+                    label = buf.value
+            if not label and ok:
+                label = _DRIVE_TYPE_NAMES.get(kind, "")
+            out[root] = label
+    finally:
+        k32.SetErrorMode(old_mode)
+    return out
+
+
+_PSEUDO_FS = {"proc", "sysfs", "devtmpfs", "devpts", "tmpfs", "cgroup", "cgroup2", "securityfs", "debugfs",
+              "tracefs", "pstore", "bpf", "autofs", "mqueue", "hugetlbfs", "configfs", "fusectl", "overlay",
+              "squashfs", "efivarfs", "binfmt_misc", "ramfs", "nsfs", "rpc_pipefs", "fuse.gvfsd-fuse",
+              "fuse.portal"}
+_NETWORK_FS = {"nfs", "nfs4", "cifs", "smb3", "smbfs", "9p", "fuse.sshfs", "afs", "ceph"}
+_USER_MOUNT_PREFIXES = ("/media/", "/mnt/", "/run/media/")   # where desktops and admins mount removable/extra disks
+
+
+def _unescape_mount(s: str) -> str:
+    """/proc/mounts writes space, tab, newline and backslash as octal escapes (\\040)."""
+    return re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), s)
+
+
+def parse_linux_mounts(mounts_text: str, labels: dict) -> List[Tuple[str, str]]:
+    """[(mount_point, name)] for '/' and every user-visible disk in /proc/self/mounts text. `labels` maps a device
+    path (/dev/sdb1) to its volume label. Pseudo filesystems and system mounts (/boot, /snap, /sys ...) are left
+    out; network mounts and anything under /media, /mnt or /run/media are kept. Pure: no I/O."""
+    out: List[Tuple[str, str]] = []
+    seen = set()
+    for line in mounts_text.splitlines():
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        dev, mnt, fstype = _unescape_mount(parts[0]), _unescape_mount(parts[1]), parts[2]
+        if mnt in seen or fstype in _PSEUDO_FS:
+            continue
+        real_disk = dev.startswith("/dev/") or fstype in _NETWORK_FS
+        if mnt == "/":
+            pass
+        elif not real_disk or not mnt.startswith(_USER_MOUNT_PREFIXES):
+            continue
+        seen.add(mnt)
+        name = labels.get(dev) or ("root" if mnt == "/" else os.path.basename(mnt.rstrip("/")) or mnt)
+        out.append((mnt, name))
+    return out
+
+
+def _linux_volume_labels() -> dict:
+    """{'/dev/sdb1': 'BACKUP'} from /dev/disk/by-label (udev); {} when unavailable."""
+    base = "/dev/disk/by-label"
+    labels = {}
+    try:
+        for n in os.listdir(base):
+            labels[os.path.realpath(os.path.join(base, n))] = _unescape_label(n)
+    except OSError:
+        pass
+    return labels
+
+
+def _unescape_label(n: str) -> str:
+    return re.sub(r"\\x([0-9a-fA-F]{2})", lambda m: chr(int(m.group(1), 16)), n)   # udev: \x20 = space
+
+
+def list_local_drives() -> List[Tuple[str, str]]:
+    """[(root_path, combo_text)] for the local pane's drive selector, on every platform. No volume-name lookup that
+    can stall on Windows (those arrive later via _windows_drive_labels)."""
+    disk = "\U0001F4BD"
+    home = str(pathlib.Path.home())
+    items: List[Tuple[str, str]] = []
+    if os.name == "nt":
+        import ctypes
+        bitmask = ctypes.windll.kernel32.GetLogicalDrives()
+        for i in range(26):
+            if bitmask & (1 << i):
+                letter = chr(ord("A") + i)
+                items.append((f"{letter}:\\", f"{disk} {letter}:"))
+        return items
+    items.append(("/", "/ (root)"))
+    if sys.platform == "darwin":
+        try:
+            for n in sorted(os.listdir("/Volumes")):
+                path = f"/Volumes/{n}"
+                if os.path.realpath(path) != "/" and os.path.isdir(path):   # skip the 'Macintosh HD' -> / link
+                    items.append((path, f"{disk} {n} ({path})"))
+        except OSError:
+            pass
+    else:
+        try:
+            with open("/proc/self/mounts", encoding="utf-8", errors="replace") as f:
+                mounts = parse_linux_mounts(f.read(), _linux_volume_labels())
+        except OSError:
+            mounts = []
+        for mnt, name in mounts:
+            if mnt != "/":
+                items.append((mnt, f"{disk} {name} ({mnt})"))
+    items.append((home, f"~ ({home})"))
+    return items
+
+
+def _is_under(path: str, root: str) -> bool:
+    path, root = os.path.normcase(os.path.abspath(path)), os.path.normcase(root)
+    stem = root.rstrip("/\\")
+    return path == stem or path.startswith(stem + os.sep) or (stem == "" and path.startswith(os.sep))
+
+
+# ── Properties ───────────────────────────────────────────────────────────────
+
+def _fmt_bytes(n: int) -> str:
+    if n < 1024:
+        return f"{n} bytes"
+    size, unit = float(n), "B"
+    for unit in ("KB", "MB", "GB", "TB"):
+        size /= 1024
+        if size < 1024:
+            break
+    return f"{size:.2f} {unit} ({n:,} bytes)"
+
+
+def _fmt_duration(sec: float) -> str:
+    sec = int(max(sec, 0))
+    h, rem = divmod(sec, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h}h {m:02d}m" if h else f"{m}m {s:02d}s" if m else f"{s}s"
+
+
+def _local_children(path: str) -> List[FileEntry]:
+    out: List[FileEntry] = []
+    with os.scandir(path) as it:
+        for c in it:
+            try:
+                if c.is_dir(follow_symlinks=False):
+                    out.append(FileEntry(c.name, c.path, True, 0, None))
+                elif c.is_file():
+                    st = c.stat()
+                    out.append(FileEntry(c.name, c.path, False, st.st_size, datetime.fromtimestamp(st.st_mtime)))
+            except OSError:
+                continue
+    return out
+
+
+def gather_properties(entries: List[FileEntry], listdir, cancel: threading.Event, publish) -> dict:
+    """Walks `entries` (folders recursively through `listdir(path) -> [FileEntry]`) and totals what is inside.
+    `publish(totals)` is called every few dozen items and once at the end (with done=True). Pure: no Qt."""
+    t = {"files": 0, "folders": 0, "bytes": 0, "newest": None, "errors": 0, "done": False}
+    seen = [0]
+
+    def note(e: FileEntry):
+        if e.modified and (t["newest"] is None or e.modified > t["newest"]):
+            t["newest"] = e.modified
+        seen[0] += 1
+        if seen[0] % 25 == 0:
+            publish(dict(t))
+
+    def walk(path: str):
+        if cancel.is_set():
+            return
+        try:
+            kids = listdir(path)
+        except Exception:
+            t["errors"] += 1
+            return
+        for k in kids:
+            if cancel.is_set():
+                return
+            if k.is_directory:
+                t["folders"] += 1
+                walk(k.full_path)
+            else:
+                t["files"] += 1
+                t["bytes"] += k.size
+            note(k)
+
+    for e in entries:
+        if e.is_directory:
+            walk(e.full_path)
+        else:
+            t["files"] += 1
+            t["bytes"] += e.size
+            note(e)
+    t["done"] = not cancel.is_set()
+    publish(dict(t))
+    return t
+
+
+class _PropertiesDialog(QDialog):
+    _update = Signal(object)
+
+    def __init__(self, entries: List[FileEntry], is_remote: bool, listdir, parent=None):
+        super().__init__(parent)
+        self._entries = entries
+        self._cancel = threading.Event()
+        self.setWindowTitle("Properties")
+        self.setMinimumWidth(460)
+        lay = QVBoxLayout(self)
+        form = QFormLayout()
+        lay.addLayout(form)
+        self._rows = {}
+
+        def row(key: str, text: str):
+            lbl = QLabel(text)
+            lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            lbl.setWordWrap(True)
+            form.addRow(key + ":", lbl)
+            self._rows[key] = lbl
+
+        first = entries[0]
+        multi = len(entries) > 1
+        n_dirs = sum(1 for e in entries if e.is_directory)
+        if multi:
+            row("Name", f"{len(entries)} items ({len(entries) - n_dirs} files, {n_dirs} folders selected)")
+            row("Type", "Multiple items")
+            parents = {(_ftp_parent(e.full_path) if is_remote else os.path.dirname(e.full_path)) for e in entries}
+            row("Location", parents.pop() if len(parents) == 1 else "(several folders)")
+        else:
+            row("Name", first.name)
+            row("Type", "Folder" if first.is_directory else "File")
+            row("Location", _ftp_parent(first.full_path) if is_remote else os.path.dirname(first.full_path))
+            row("Full path", first.full_path)
+        row("Where", "Instrument" if is_remote else "This PC")
+        row("Size", "Calculating…" if (multi or first.is_directory) else _fmt_bytes(first.size))
+        if multi or first.is_directory:
+            row("Contains", "Calculating…")
+        row("Modified", first.modified.strftime("%Y-%m-%d %H:%M:%S") if (not multi and first.modified) else
+            ("Calculating…" if (multi or first.is_directory) else "unknown"))
+        if not multi:
+            row("Attributes", "Read-only" if first.read_only else "Normal")
+        self._note = QLabel("")
+        lay.addWidget(self._note)
+        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        buttons.rejected.connect(self.reject)
+        lay.addWidget(buttons)
+
+        self._update.connect(self._apply)
+        self._multi = multi
+        if multi or first.is_directory:
+            threading.Thread(target=lambda: gather_properties(entries, listdir, self._cancel, self._update.emit),
+                             daemon=True, name="Properties").start()
+
+    def _apply(self, t: dict):
+        self._rows["Size"].setText(_fmt_bytes(t["bytes"]) + ("" if t["done"] else "  (counting…)"))
+        self._rows["Contains"].setText(f"{t['files']:,} files, {t['folders']:,} folders"
+                                       + ("" if t["done"] else "  (counting…)"))
+        if t["newest"] is not None or t["done"]:
+            label = "Newest file" if (self._multi or self._entries[0].is_directory) else "Modified"
+            if "Modified" in self._rows and (self._multi or self._entries[0].is_directory):
+                self._rows["Modified"].setText(
+                    (t["newest"].strftime("%Y-%m-%d %H:%M:%S") + f" ({label.lower()})") if t["newest"] else "unknown")
+        if t["errors"]:
+            self._note.setText(f"{t['errors']} folder(s) could not be read; totals are partial.")
+
+    def done(self, r):
+        self._cancel.set()
+        super().done(r)
+
+
 # ── File manager window ──────────────────────────────────────────────────────
 
 class FileManagerWindow(QMainWindow):
@@ -769,6 +1103,8 @@ class FileManagerWindow(QMainWindow):
     _refresh_remote_signal = Signal(list)
     _busy_signal = Signal(bool, str)
     _progress_signal = Signal(int)
+    _drive_labels_signal = Signal(object)   # {root: label}
+    _count_signal = Signal(int, int, float)   # done, total, eta seconds (<0: unknown)
     _conflict_signal = Signal(object)   # _ConflictRequest, filled in on the GUI thread
 
     def __init__(self, host: str, ftp_port: int, user: str, password: str, parent=None, settings=None):
@@ -808,6 +1144,8 @@ class FileManagerWindow(QMainWindow):
         self._refresh_remote_signal.connect(self._on_remote_listing)
         self._busy_signal.connect(self._on_busy)
         self._progress_signal.connect(self._on_progress)
+        self._count_signal.connect(self._on_count)
+        self._drive_labels_signal.connect(self._on_drive_labels)
         self._conflict_signal.connect(self._on_conflict_request)
 
         QTimer.singleShot(0, self._initial_connect)
@@ -838,13 +1176,14 @@ class FileManagerWindow(QMainWindow):
         ln_lay.setContentsMargins(6, 4, 6, 4)
         ln_lay.setSpacing(4)
         self._drive_combo = QComboBox()
-        self._drive_combo.setFixedWidth(135)
+        self._drive_combo.setMinimumWidth(230)
         self._drive_combo.setFixedHeight(24)
-        self._drive_combo.setToolTip("Select drive")
+        self._drive_combo.setToolTip("Switch to a different drive or volume on this computer")
         ln_lay.addWidget(self._drive_combo)
-        self._btn_local_up = QPushButton("↑")
-        self._btn_local_up.setFixedSize(28, 24)
-        self._btn_local_up.setToolTip("Parent directory — drag files here to move up")
+        self._btn_local_up = QPushButton()
+        self._btn_local_up.setIcon(_toolbar_icon("up"))
+        self._btn_local_up.setFixedSize(32, 26)
+        self._btn_local_up.setToolTip("Go up one folder (Backspace)\nOr drop files here to move them up a folder")
         self._btn_local_up.setAcceptDrops(True)
         ln_lay.addWidget(self._btn_local_up)
         lbl_local = QLabel("Local: ")
@@ -852,6 +1191,7 @@ class FileManagerWindow(QMainWindow):
         ln_lay.addWidget(lbl_local)
         self._local_path_box = QLineEdit()
         self._local_path_box.setReadOnly(True)
+        self._local_path_box.setToolTip("Current folder on this computer")
         ln_lay.addWidget(self._local_path_box, 1)
         nav_row.addWidget(local_nav, 1)
 
@@ -861,9 +1201,10 @@ class FileManagerWindow(QMainWindow):
         rn_lay = QHBoxLayout(remote_nav)
         rn_lay.setContentsMargins(6, 4, 6, 4)
         rn_lay.setSpacing(4)
-        self._btn_remote_up = QPushButton("↑")
-        self._btn_remote_up.setFixedSize(28, 24)
-        self._btn_remote_up.setToolTip("Parent directory — drag files here to move up")
+        self._btn_remote_up = QPushButton()
+        self._btn_remote_up.setIcon(_toolbar_icon("up"))
+        self._btn_remote_up.setFixedSize(32, 26)
+        self._btn_remote_up.setToolTip("Go up one folder (Backspace)\nOr drop files here to move them up a folder")
         self._btn_remote_up.setAcceptDrops(True)
         rn_lay.addWidget(self._btn_remote_up)
         lbl_remote = QLabel("Instrument: ")
@@ -871,6 +1212,7 @@ class FileManagerWindow(QMainWindow):
         rn_lay.addWidget(lbl_remote)
         self._remote_path_box = QLineEdit()
         self._remote_path_box.setReadOnly(True)
+        self._remote_path_box.setToolTip("Current folder on the instrument")
         rn_lay.addWidget(self._remote_path_box, 1)
         nav_row.addWidget(remote_nav, 1)
 
@@ -899,13 +1241,21 @@ class FileManagerWindow(QMainWindow):
         lt_lay = QHBoxLayout(local_tb)
         lt_lay.setContentsMargins(6, 4, 6, 4)
         lt_lay.setSpacing(4)
-        self._btn_upload = QPushButton("→ Send to Instrument")
-        self._btn_upload.setToolTip("Upload selected local files to the instrument")
+        self._btn_upload = QPushButton("Send to Instrument")
+        self._btn_upload.setIcon(_toolbar_icon("right"))
+        self._btn_upload.setIconSize(QSize(16, 16))
+        self._btn_upload.setMinimumWidth(self._btn_upload.sizeHint().width())
+        self._btn_upload.setToolTip("Copy the selected files and folders to the instrument folder on the right")
         self._btn_local_new = QPushButton("New Folder")
+        self._btn_local_new.setToolTip("Create a new folder in the current folder on this computer")
         self._btn_local_del = QPushButton("Delete")
+        self._btn_local_del.setToolTip("Delete the selected files and folders from this computer (Del)")
         self._btn_local_ren = QPushButton("Rename")
-        self._btn_local_ref = QPushButton("↺")
-        self._btn_local_ref.setFixedWidth(32)
+        self._btn_local_ren.setToolTip("Rename the selected item on this computer (F2)")
+        self._btn_local_ref = QPushButton()
+        self._btn_local_ref.setIcon(_toolbar_icon("refresh"))
+        self._btn_local_ref.setFixedSize(32, 26)
+        self._btn_local_ref.setToolTip("Refresh this folder listing (F5)")
         for b in (self._btn_upload, self._btn_local_new, self._btn_local_del,
                   self._btn_local_ren, self._btn_local_ref):
             lt_lay.addWidget(b)
@@ -918,13 +1268,21 @@ class FileManagerWindow(QMainWindow):
         rt_lay = QHBoxLayout(remote_tb)
         rt_lay.setContentsMargins(6, 4, 6, 4)
         rt_lay.setSpacing(4)
-        self._btn_download = QPushButton("← Send to PC")
-        self._btn_download.setToolTip("Download selected instrument files to local")
+        self._btn_download = QPushButton("Send to PC")
+        self._btn_download.setIcon(_toolbar_icon("left"))
+        self._btn_download.setIconSize(QSize(16, 16))
+        self._btn_download.setMinimumWidth(self._btn_download.sizeHint().width())
+        self._btn_download.setToolTip("Copy the selected files and folders to the folder on the left (this computer)")
         self._btn_remote_new = QPushButton("New Folder")
+        self._btn_remote_new.setToolTip("Create a new folder in the current folder on the instrument")
         self._btn_remote_del = QPushButton("Delete")
+        self._btn_remote_del.setToolTip("Delete the selected files and folders from the instrument (Del)")
         self._btn_remote_ren = QPushButton("Rename")
-        self._btn_remote_ref = QPushButton("↺")
-        self._btn_remote_ref.setFixedWidth(32)
+        self._btn_remote_ren.setToolTip("Rename the selected item on the instrument (F2)")
+        self._btn_remote_ref = QPushButton()
+        self._btn_remote_ref.setIcon(_toolbar_icon("refresh"))
+        self._btn_remote_ref.setFixedSize(32, 26)
+        self._btn_remote_ref.setToolTip("Refresh this folder listing (F5)")
         for b in (self._btn_download, self._btn_remote_new, self._btn_remote_del,
                   self._btn_remote_ren, self._btn_remote_ref):
             rt_lay.addWidget(b)
@@ -939,7 +1297,8 @@ class FileManagerWindow(QMainWindow):
         self._status_label = QLabel("Ready")
         self._status_label.setStyleSheet("color: #CCCCCC;")
         self._progress_bar = QProgressBar()
-        self._progress_bar.setFixedWidth(180)
+        self._progress_bar.setMinimumWidth(300)
+        self._progress_bar.setFormat("%p%")
         self._progress_bar.setRange(0, 100)
         self._progress_bar.setVisible(False)
         self._status_bar.addWidget(self._status_label, 1)
@@ -1131,17 +1490,16 @@ class FileManagerWindow(QMainWindow):
     def _on_upload(self):
         if self._busy:
             return
-        items = self._selected_files(self._local_tree, self._local_entries)
+        items = self._selected_entries(self._local_tree, self._local_entries)
         if not items:
-            self._set_status("Select one or more local files to upload.")
+            self._set_status("Select one or more local files or folders to upload.")
             return
-        self._set_busy(True, f"Uploading {len(items)} file(s)…")
+        self._set_busy(True, f"Uploading {len(items)} item(s)…")
         self._run_bg(self._bg_upload, items, False)
 
     def _bg_upload(self, items: List[FileEntry], delete_source: bool):
-        total = len(items)
         done, cancelled = self._do_upload_batch(items, self._remote_path, delete_source)
-        status = "Upload cancelled." if cancelled else f"Uploaded {done}/{total} file(s) → {self._remote_path}"
+        status = "Upload cancelled." if cancelled else f"Uploaded {done} file(s) → {self._remote_path}"
         self._status_signal.emit(status)
         self._result_note = status
         self._busy_signal.emit(False, "")
@@ -1154,17 +1512,16 @@ class FileManagerWindow(QMainWindow):
     def _on_download(self):
         if self._busy:
             return
-        items = self._selected_files(self._remote_tree, self._remote_entries)
+        items = self._selected_entries(self._remote_tree, self._remote_entries)
         if not items:
-            self._set_status("Select one or more instrument files to download.")
+            self._set_status("Select one or more instrument files or folders to download.")
             return
-        self._set_busy(True, f"Downloading {len(items)} file(s)…")
+        self._set_busy(True, f"Downloading {len(items)} item(s)…")
         self._run_bg(self._bg_download, items, False)
 
     def _bg_download(self, items: List[FileEntry], delete_source: bool):
-        total = len(items)
         done, cancelled = self._do_download_batch(items, self._local_path, delete_source)
-        status = "Download cancelled." if cancelled else f"Downloaded {done}/{total} file(s) → {self._local_path}"
+        status = "Download cancelled." if cancelled else f"Downloaded {done} file(s) → {self._local_path}"
         self._status_signal.emit(status)
         self._busy_signal.emit(False, "")
         self._refresh_local_signal.emit()
@@ -1233,7 +1590,7 @@ class FileManagerWindow(QMainWindow):
         failed: List[str] = []
         try:
             for i, entry in enumerate(items):
-                self._progress_signal.emit(int((i / len(items)) * 100))
+                self._count_signal.emit(i, len(items), -1.0)
                 try:
                     if entry.is_directory:
                         shutil.rmtree(entry.full_path)
@@ -1282,7 +1639,8 @@ class FileManagerWindow(QMainWindow):
 
     def _bg_remote_delete(self, items: List[FileEntry]):
         done = 0
-        for entry in items:
+        for i, entry in enumerate(items):
+            self._count_signal.emit(i, len(items), -1.0)
             try:
                 if entry.is_directory:
                     self._ftp.delete_dir(entry.full_path)
@@ -1370,7 +1728,6 @@ class FileManagerWindow(QMainWindow):
         item = tree.itemAt(pos)
         entry = self._entry_from_item(item, self._remote_entries if is_remote else self._local_entries) if item else None
         entries = self._selected_entries(tree, self._remote_entries if is_remote else self._local_entries)
-        has_files = any(not e.is_directory for e in entries)
         has_selection = len(entries) > 0
         is_single = len(entries) == 1
         # A top-level remote entry (SSD1/SSD2/...) can never be cut, copied,
@@ -1383,53 +1740,72 @@ class FileManagerWindow(QMainWindow):
         menu = QMenu(self)
 
         if entry and entry.is_directory:
-            a = menu.addAction("Open")
+            a = menu.addAction(_toolbar_icon("open"), "Open")
             a.triggered.connect(lambda: self._ctx_open(entry, is_remote))
-            a = menu.addAction("Set as Default Start Folder")
+            a = menu.addAction(_toolbar_icon("star"), "Set as Default Start Folder")
             a.setEnabled(self._settings is not None)
             a.triggered.connect(lambda: self._set_default_start_folder(entry.full_path, is_remote))
-        else:
-            label = "← Send to PC" if is_remote else "→ Send to Instrument"
-            a = menu.addAction(label)
-            a.setEnabled(has_files)
-            a.triggered.connect(self._on_download if is_remote else self._on_upload)
+        a = menu.addAction(_toolbar_icon("left" if is_remote else "right"),
+                           "Send to PC" if is_remote else "Send to Instrument")
+        a.setEnabled(has_selection and not self._busy)
+        a.triggered.connect(self._on_download if is_remote else self._on_upload)
 
         menu.addSeparator()
 
-        a = menu.addAction("Cut")
+        a = menu.addAction(_toolbar_icon("cut"), "Cut")
         a.setEnabled(has_selection and not remote_top_level_selected and not read_only_selected)
         a.triggered.connect(lambda: self._do_cut(tree, is_remote))
 
-        a = menu.addAction("Copy")
+        a = menu.addAction(_toolbar_icon("copy"), "Copy")
         a.setEnabled(has_selection and not remote_top_level_selected and not read_only_selected)
         a.triggered.connect(lambda: self._do_copy(tree, is_remote))
 
-        a = menu.addAction("Paste")
+        a = menu.addAction(_toolbar_icon("paste"), "Paste")
         a.setEnabled(self._clipboard is not None and not self._busy)
         a.triggered.connect(lambda: self._do_paste(is_remote))
 
         menu.addSeparator()
 
-        a = menu.addAction("Rename")
+        a = menu.addAction(_toolbar_icon("rename"), "Rename")
         a.setEnabled(is_single and entry is not None and not remote_top_level_selected
                      and not read_only_selected)
         a.triggered.connect(self._on_remote_rename if is_remote else self._on_local_rename)
 
-        a = menu.addAction("Delete")
+        a = menu.addAction(_toolbar_icon("delete"), "Delete")
         a.setEnabled(has_selection and not remote_top_level_selected and not read_only_selected)
         a.triggered.connect(self._on_remote_delete if is_remote else self._on_local_delete)
 
         menu.addSeparator()
 
-        a = menu.addAction("New Folder")
+        a = menu.addAction(_toolbar_icon("info"), "Properties")
+        a.triggered.connect(lambda: self._on_properties(is_remote))
+
+        menu.addSeparator()
+
+        a = menu.addAction(_toolbar_icon("newfolder"), "New Folder")
         a.setEnabled(not self._busy)
         a.triggered.connect(self._on_remote_new_folder if is_remote else self._on_local_new_folder)
 
-        a = menu.addAction("Refresh")
+        a = menu.addAction(_toolbar_icon("refresh"), "Refresh")
         a.setEnabled(not self._busy)
         a.triggered.connect(self._refresh_remote if is_remote else self._refresh_local)
 
         menu.exec(tree.viewport().mapToGlobal(pos))
+
+    def _on_properties(self, is_remote: bool):
+        """Properties of the selection, or of the folder being viewed when nothing is selected."""
+        tree = self._remote_tree if is_remote else self._local_tree
+        entries = self._selected_entries(tree, self._remote_entries if is_remote else self._local_entries)
+        if not entries:
+            path = self._remote_path if is_remote else self._local_path
+            name = path.rstrip("/").rsplit("/", 1)[-1] or path if is_remote else (os.path.basename(path) or path)
+            entries = [FileEntry(name, path, True, 0, None)]
+        listdir = (lambda p: self._ftp.list_dir(p, include_hidden=True)) if is_remote else _local_children
+        dlg = _PropertiesDialog(entries, is_remote, listdir, self)
+        try:
+            dlg.exec()
+        finally:
+            dlg.deleteLater()
 
     def _ctx_open(self, entry: FileEntry, is_remote: bool):
         if is_remote:
@@ -1500,18 +1876,16 @@ class FileManagerWindow(QMainWindow):
                 self._set_status("Remote-to-remote copy not supported — download then re-upload.")
         elif not cb.from_remote and to_remote:
             # Local → Remote (upload; delete source inside bg task if cut)
-            file_items = [e for e in items if not e.is_directory]
-            if file_items:
-                self._set_busy(True, f"Uploading {len(file_items)} file(s)…")
-                self._run_bg(self._bg_upload, file_items, cb.is_cut)
+            if items:
+                self._set_busy(True, f"Uploading {len(items)} item(s)…")
+                self._run_bg(self._bg_upload, items, cb.is_cut)
             if cb.is_cut:
                 self._clipboard = None
         else:
             # Remote → Local (download; delete source inside bg task if cut)
-            file_items = [e for e in items if not e.is_directory]
-            if file_items:
-                self._set_busy(True, f"Downloading {len(file_items)} file(s)…")
-                self._run_bg(self._bg_download, file_items, cb.is_cut)
+            if items:
+                self._set_busy(True, f"Downloading {len(items)} item(s)…")
+                self._run_bg(self._bg_download, items, cb.is_cut)
             if cb.is_cut:
                 self._clipboard = None
 
@@ -1612,7 +1986,7 @@ class FileManagerWindow(QMainWindow):
             try:
                 self._status_signal.emit(f"[{i+1}/{total}] {'Moving' if is_move else 'Copying'} "
                                          f"{os.path.basename(dest)}…")
-                self._progress_signal.emit(int((i / total) * 100))
+                self._count_signal.emit(i, total, -1.0)
                 if entry.is_directory:
                     if overwrite:
                         errors: List[str] = []
@@ -1633,7 +2007,8 @@ class FileManagerWindow(QMainWindow):
 
     def _bg_move_remote(self, items: List[FileEntry], dest_folder: str):
         done = 0
-        for entry in items:
+        for i, entry in enumerate(items):
+            self._count_signal.emit(i, len(items), -1.0)
             dest = f"{dest_folder.rstrip('/')}/{entry.name}"
             try:
                 if self._ftp.file_exists(dest):   # RNTO would silently replace it
@@ -1681,34 +2056,28 @@ class FileManagerWindow(QMainWindow):
     def _handle_cross_pane_drop(self, from_remote: bool, to_remote: bool,
                                 items: List[FileEntry],
                                 target_folder: Optional[FileEntry]):
-        file_items = [e for e in items if not e.is_directory]
-        folder_items = [e for e in items if e.is_directory]
-        if not file_items and folder_items:
-            self._set_status("Cross-pane folder transfer not yet supported.")
+        if not items:
             return
-
         if to_remote:
             dest = target_folder.full_path if target_folder else self._remote_path
-            self._set_busy(True, f"Uploading {len(file_items)} file(s)…")
-            self._run_bg(self._bg_upload_to, file_items, dest)
+            self._set_busy(True, f"Uploading {len(items)} item(s)…")
+            self._run_bg(self._bg_upload_to, items, dest)
         else:
             dest = target_folder.full_path if target_folder else self._local_path
-            self._set_busy(True, f"Downloading {len(file_items)} file(s)…")
-            self._run_bg(self._bg_download_to, file_items, dest)
+            self._set_busy(True, f"Downloading {len(items)} item(s)…")
+            self._run_bg(self._bg_download_to, items, dest)
 
     def _bg_upload_to(self, items: List[FileEntry], dest_folder: str):
-        total = len(items)
         done, cancelled = self._do_upload_batch(items, dest_folder)
-        status = "Upload cancelled." if cancelled else f"Uploaded {done}/{total} file(s) → {dest_folder}"
+        status = "Upload cancelled." if cancelled else f"Uploaded {done} file(s) → {dest_folder}"
         self._status_signal.emit(status)
         self._result_note = status
         self._busy_signal.emit(False, "")
         self._bg_refresh_remote()
 
     def _bg_download_to(self, items: List[FileEntry], dest_folder: str):
-        total = len(items)
         done, cancelled = self._do_download_batch(items, dest_folder)
-        status = "Download cancelled." if cancelled else f"Downloaded {done}/{total} file(s) → {dest_folder}"
+        status = "Download cancelled." if cancelled else f"Downloaded {done} file(s) → {dest_folder}"
         self._status_signal.emit(status)
         self._busy_signal.emit(False, "")
         self._refresh_local_signal.emit()
@@ -1739,6 +2108,9 @@ class FileManagerWindow(QMainWindow):
         if any_pane and not event.isAutoRepeat():
             if key == Qt.Key_Delete:
                 (self._on_remote_delete if is_remote else self._on_local_delete)()
+                return
+            if key in (Qt.Key_Return, Qt.Key_Enter) and mods & Qt.AltModifier:
+                self._on_properties(is_remote)
                 return
             if key == Qt.Key_F2:
                 (self._on_remote_rename if is_remote else self._on_local_rename)()
@@ -1805,34 +2177,38 @@ class FileManagerWindow(QMainWindow):
     def _populate_drives(self):
         self._suppress_drive_change = True
         self._drive_combo.clear()
+        for root, text in list_local_drives():
+            self._drive_combo.addItem(text, root)
         if os.name == "nt":
-            import ctypes
-            bitmask = ctypes.windll.kernel32.GetLogicalDrives()
-            for i in range(26):
-                if bitmask & (1 << i):
-                    letter = chr(ord("A") + i)
-                    root = f"{letter}:\\"
-                    self._drive_combo.addItem(f"\U0001F4BD {letter}:", root)
-        else:
-            self._drive_combo.addItem("/ (root)", "/")
-            home = str(pathlib.Path.home())
-            self._drive_combo.addItem(f"~ ({home})", home)
+            # Volume names can stall (empty card reader, sleeping network drive): fetch them off the GUI thread.
+            roots = [self._drive_combo.itemData(i) for i in range(self._drive_combo.count())]
+            QTimer.singleShot(0, lambda: threading.Thread(
+                target=lambda: self._drive_labels_signal.emit(_windows_drive_labels(roots)),
+                daemon=True, name="DriveLabels").start())
         self._sync_drive_combo()
         self._suppress_drive_change = False
 
     def _sync_drive_combo(self):
-        if os.name == "nt":
-            root = os.path.splitdrive(self._local_path)[0] + "\\"
-        else:
-            root = "/"
+        """Select the most specific drive that contains the current local folder (so '~' wins inside the home
+        folder, a USB stick inside its mount, '/' elsewhere)."""
+        best, best_len = -1, -1
         for i in range(self._drive_combo.count()):
-            if self._drive_combo.itemData(i) == root:
-                self._suppress_drive_change = True
-                self._drive_combo.setCurrentIndex(i)
-                self._suppress_drive_change = False
-                return
+            root = self._drive_combo.itemData(i)
+            if root and _is_under(self._local_path, root) and len(root) > best_len:
+                best, best_len = i, len(root)
+        if best >= 0:
+            self._suppress_drive_change = True
+            self._drive_combo.setCurrentIndex(best)
+            self._suppress_drive_change = False
 
     _suppress_drive_change = False
+
+    @Slot(object)
+    def _on_drive_labels(self, labels: dict):
+        for i in range(self._drive_combo.count()):
+            root = self._drive_combo.itemData(i)
+            if labels.get(root):
+                self._drive_combo.setItemText(i, f"\U0001F4BD {root[0]}: ({labels[root]})")
 
     def _on_drive_changed(self, index: int):
         if self._suppress_drive_change or index < 0:
@@ -1886,6 +2262,8 @@ class FileManagerWindow(QMainWindow):
             btn.setEnabled(not busy)
         self._progress_bar.setVisible(busy)
         if busy:
+            self._progress_bar.setRange(0, 100)
+            self._progress_bar.setFormat("%p%")
             self._progress_bar.setValue(0)
             self._set_status(msg)
 
@@ -1896,6 +2274,57 @@ class FileManagerWindow(QMainWindow):
     @Slot(int)
     def _on_progress(self, value: int):
         self._progress_bar.setValue(value)
+
+    @Slot(int, int, float)
+    def _on_count(self, done: int, total: int, eta: float):
+        """x / total on the bar itself, plus an estimate of the time left once a few items have gone."""
+        if total <= 0:
+            return
+        self._progress_bar.setRange(0, total)
+        self._progress_bar.setValue(min(done, total))
+        text = f"{done:,} / {total:,}"
+        if eta >= 0 and done < total:
+            text += f"  ·  ~{_fmt_duration(eta)} left"
+        self._progress_bar.setFormat(text)
+
+    def _emit_tally(self, ctx: dict, advance: bool = True):
+        """Worker thread: publish files completed so far for the running batch; `advance` then counts the file
+        about to be processed."""
+        n, total = ctx["n"], ctx["total"]
+        elapsed = time.monotonic() - ctx["t0"]
+        self._count_signal.emit(n, total, elapsed / n * (total - n) if n >= 3 else -1.0)
+        if advance:
+            ctx["n"] += 1
+
+    def _count_local_files(self, items: List[FileEntry]) -> int:
+        n = 0
+        for e in items:
+            if not e.is_directory:
+                n += 1
+                continue
+            for _root, _dirs, files in os.walk(e.full_path):
+                n += len(files)
+        return n
+
+    def _count_remote_files(self, items: List[FileEntry]) -> int:
+        n = 0
+
+        def walk(path: str):
+            nonlocal n
+            for k in self._ftp.list_dir(path, include_hidden=True):
+                if k.is_directory:
+                    walk(k.full_path)
+                else:
+                    n += 1
+        for e in items:
+            if not e.is_directory:
+                n += 1
+                continue
+            try:
+                walk(e.full_path)
+            except Exception:
+                pass
+        return n
 
     @Slot(object)
     def _on_conflict_request(self, req: _ConflictRequest):
@@ -1926,16 +2355,91 @@ class FileManagerWindow(QMainWindow):
                 return candidate
             n += 1
 
+    def _remote_entry(self, path: str) -> Optional[FileEntry]:
+        parent = _ftp_parent(path)
+        name = path.rstrip("/").rsplit("/", 1)[-1]
+        try:
+            for e in self._ftp.list_dir(parent, include_hidden=True):
+                if e.name == name:
+                    return e
+        except ftplib.error_perm:
+            pass
+        return None
+
+    def _upload_dir(self, entry: FileEntry, remote_dir: str, delete_source: bool, ctx: dict) -> Tuple[int, bool]:
+        """Recursively uploads a local folder into remote_dir (merging into a folder of the same name)."""
+        dest = f"{remote_dir}/{entry.name}"
+        try:
+            existing = self._remote_entry(dest)
+            if existing is not None and not existing.is_directory:
+                self._status_signal.emit(
+                    f"Skipped folder {entry.name}: a file with that name is already on the instrument")
+                return 0, False
+            if existing is None:
+                self._ftp.mkdir(dest)
+            children = []
+            with os.scandir(entry.full_path) as it:
+                for c in it:
+                    if c.is_dir(follow_symlinks=False):
+                        children.append(FileEntry(c.name, c.path, True, 0, None))
+                    elif c.is_file():
+                        children.append(FileEntry(c.name, c.path, False, c.stat().st_size, None))
+        except Exception as e:
+            self._status_signal.emit(f"Failed {entry.name}: {e}")
+            return 0, False
+        done, cancelled = self._do_upload_batch(children, dest, delete_source, ctx)
+        if delete_source and not cancelled:
+            try:
+                os.rmdir(entry.full_path)   # only succeeds when everything inside went across
+            except OSError:
+                pass
+        return done, cancelled
+
+    def _download_dir(self, entry: FileEntry, local_dir: str, delete_source: bool, ctx: dict) -> Tuple[int, bool]:
+        """Recursively downloads an instrument folder into local_dir (merging into a folder of the same name)."""
+        dest = _safe_local_join(local_dir, entry.name)
+        if dest is None:
+            self._status_signal.emit(f"Skipped {entry.name}: unsafe folder name from server")
+            return 0, False
+        try:
+            if os.path.exists(dest) and not os.path.isdir(dest):
+                self._status_signal.emit(f"Skipped folder {entry.name}: a file with that name is already here")
+                return 0, False
+            os.makedirs(dest, exist_ok=True)
+            children = self._ftp.list_dir(entry.full_path, include_hidden=True)
+        except Exception as e:
+            self._status_signal.emit(f"Failed {entry.name}: {e}")
+            return 0, False
+        done, cancelled = self._do_download_batch(children, dest, delete_source, ctx)
+        if delete_source and not cancelled:
+            try:
+                self._ftp.rmdir(entry.full_path)   # only succeeds when everything inside went across
+            except Exception:
+                pass
+        return done, cancelled
+
     def _do_upload_batch(self, items: List[FileEntry], remote_dir: str,
-                         delete_source: bool = False) -> Tuple[int, bool]:
-        """Uploads items into remote_dir, prompting on name collisions.
-        Returns (done_count, cancelled)."""
+                         delete_source: bool = False, _ctx: Optional[dict] = None) -> Tuple[int, bool]:
+        """Uploads items (files, and folders recursively) into remote_dir, prompting on name collisions.
+        Returns (files_uploaded, cancelled)."""
         remote_dir = remote_dir.rstrip("/") or "/"
-        total = len(items)
+        top = _ctx is None
+        ctx = _ctx if _ctx is not None else {"forced": None, "n": 0, "total": 0, "t0": time.monotonic()}
+        if top:   # one ctx per batch, shared so "apply to all" and the x/total count span subfolders
+            self._status_signal.emit("Scanning…")
+            ctx["total"] = self._count_local_files(items)
+            ctx["t0"] = time.monotonic()
         done = 0
-        forced_action: Optional[str] = None   # None='ask' | 'overwrite' | 'skip' | 'rename'
         cancelled = False
         for i, entry in enumerate(items):
+            if entry.is_directory:
+                d, cancelled = self._upload_dir(entry, remote_dir, delete_source, ctx)
+                done += d
+                if cancelled:
+                    break
+                continue
+            self._emit_tally(ctx)
+            forced_action = ctx["forced"]
             name = entry.name
             dest = f"{remote_dir}/{name}"
             if self._ftp.file_exists(dest):
@@ -1951,7 +2455,7 @@ class FileManagerWindow(QMainWindow):
                     action = req.action
                     new_name = req.new_name
                     if req.apply_all:
-                        forced_action = action
+                        ctx["forced"] = action
                 if action == "skip":
                     continue
                 if action == "rename":
@@ -1960,8 +2464,7 @@ class FileManagerWindow(QMainWindow):
                             name, lambda n, d=remote_dir: self._ftp.file_exists(f"{d}/{n}"))
                     dest = f"{remote_dir}/{new_name}"
             try:
-                self._status_signal.emit(f"[{i+1}/{total}] Uploading {os.path.basename(dest)}…")
-                self._progress_signal.emit(int((i / total) * 100))
+                self._status_signal.emit(f"[{ctx['n']}/{ctx['total']}] Uploading {os.path.basename(dest)}…")
                 self._ftp.upload(entry.full_path, dest)
                 done += 1
                 if delete_source:
@@ -1971,18 +2474,31 @@ class FileManagerWindow(QMainWindow):
                         pass
             except Exception as e:
                 self._status_signal.emit(f"Failed {entry.name}: {e}")
-        self._progress_signal.emit(100)
+        if top:
+            self._emit_tally(ctx, advance=False)
         return done, cancelled
 
     def _do_download_batch(self, items: List[FileEntry], local_dir: str,
-                           delete_source: bool = False) -> Tuple[int, bool]:
-        """Downloads items into local_dir, prompting on name collisions.
-        Returns (done_count, cancelled)."""
-        total = len(items)
+                           delete_source: bool = False, _ctx: Optional[dict] = None) -> Tuple[int, bool]:
+        """Downloads items (files, and folders recursively) into local_dir, prompting on name collisions.
+        Returns (files_downloaded, cancelled)."""
+        top = _ctx is None
+        ctx = _ctx if _ctx is not None else {"forced": None, "n": 0, "total": 0, "t0": time.monotonic()}
+        if top:
+            self._status_signal.emit("Scanning…")
+            ctx["total"] = self._count_remote_files(items)
+            ctx["t0"] = time.monotonic()
         done = 0
-        forced_action: Optional[str] = None
         cancelled = False
         for i, entry in enumerate(items):
+            if entry.is_directory:
+                d, cancelled = self._download_dir(entry, local_dir, delete_source, ctx)
+                done += d
+                if cancelled:
+                    break
+                continue
+            self._emit_tally(ctx)
+            forced_action = ctx["forced"]
             name = entry.name
             dest = _safe_local_join(local_dir, name)
             if dest is None:
@@ -2001,7 +2517,7 @@ class FileManagerWindow(QMainWindow):
                     action = req.action
                     new_name = req.new_name
                     if req.apply_all:
-                        forced_action = action
+                        ctx["forced"] = action
                 if action == "skip":
                     continue
                 if action == "rename":
@@ -2013,8 +2529,7 @@ class FileManagerWindow(QMainWindow):
                         self._status_signal.emit(f"Skipped {name}: unsafe replacement name")
                         continue
             try:
-                self._status_signal.emit(f"[{i+1}/{total}] Downloading {os.path.basename(dest)}…")
-                self._progress_signal.emit(int((i / total) * 100))
+                self._status_signal.emit(f"[{ctx['n']}/{ctx['total']}] Downloading {os.path.basename(dest)}…")
                 self._ftp.download(entry.full_path, dest)
                 done += 1
                 if delete_source:
@@ -2024,7 +2539,8 @@ class FileManagerWindow(QMainWindow):
                         pass
             except Exception as e:
                 self._status_signal.emit(f"Failed {entry.name}: {e}")
-        self._progress_signal.emit(100)
+        if top:
+            self._emit_tally(ctx, advance=False)
         return done, cancelled
 
     def eventFilter(self, watched, event):
