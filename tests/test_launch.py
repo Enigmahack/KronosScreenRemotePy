@@ -14,6 +14,11 @@ from Data.local_library_store import LocalIndexEntry, LocalLibraryIndex, BlobSto
 import Views.librarian_shell_window as L
 
 
+def _status(win):
+    """Result text now lives in History once a run completes; the status line only shows work in progress."""
+    n = win._history_list.count()
+    return win._status_label.text() + ' | ' + (win._history_list.item(n - 1).text() if n else '')
+
 def pump(ms=300):
     end = time.time() + ms / 1000
     while time.time() < end:
@@ -95,12 +100,12 @@ def mark_dirty(w, number=5):
 
 s=AppSettings(); s.librarian_full_sync_on_launch=True
 w,fake,s=make(s)
-assert wait(lambda: "Full sync on launch" in w._status_label.text(), 60), w._status_label.text()
+assert wait(lambda: "Full sync on launch" in _status(w), 60), _status(w)
 assert not w._busy
-print("launch pull ok:", w._status_label.text())
+print("launch pull ok:", _status(w))
 # not armed when the setting is off, and never pushes
 s2=AppSettings(); w2,fake2,_=make(s2); assert wait(lambda: not w2._probe_running)
-pump(500); assert not w2._busy and "Full sync" not in w2._status_label.text()
+pump(500); assert not w2._busy and "Full sync" not in _status(w2)
 assert fake2.writes==[]
 print("launch pull off ok")
 w._closed=True; w2._closed=True

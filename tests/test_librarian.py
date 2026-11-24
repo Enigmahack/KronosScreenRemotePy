@@ -14,6 +14,11 @@ from Data.local_library_store import LocalIndexEntry, LocalLibraryIndex, BlobSto
 import Views.librarian_shell_window as L
 
 
+def _status(win):
+    """Result text now lives in History once a run completes; the status line only shows work in progress."""
+    n = win._history_list.count()
+    return win._status_label.text() + ' | ' + (win._history_list.item(n - 1).text() if n else '')
+
 def pump(ms=300):
     end = time.time() + ms / 1000
     while time.time() < end:
@@ -128,8 +133,8 @@ digest_before = fake.digest_calls
 w._start_sync(); assert wait(lambda: not w._busy, 60)
 assert fake.digest_calls - digest_before >= 30, "pull sweep must query every bank's digest (plain click is NOT push-only)"
 assert any(wr[2] == 5 for wr in fake.writes), "dirty slot 5 was pushed"
-print("two-way ok; status:", w._status_label.text())
-assert "Pulled" in w._status_label.text() and "Pushed" in w._status_label.text()
+print("two-way ok; status:", _status(w))
+assert "Pulled" in _status(w) and "Pushed" in _status(w)
 
 # ---- 4. push-only: conflict -> overwrite prompt -> No keeps; Yes forces
 mark_dirty(w, 6)
@@ -175,19 +180,19 @@ assert wait(lambda: not w._busy, 30)
 assert not w._index.get(OBJ_PROGRAM, 0x00, 8).conflicted
 assert w._index.bank_digest_baseline["0:0"] == hashlib.sha1(b"0:0:4").digest().hex()
 assert w._brd_conflict.isHidden()
-print("resolve ok:", w._status_label.text())
+print("resolve ok:", _status(w))
 
 # ---- 7. pull-only discards after confirm; cancel keeps
 mark_dirty(w, 9)
 w._set_sync_mode(L.SYNC_PULL_ONLY)
 QMessageBox.warning = staticmethod(lambda *a, **k: QMessageBox.StandardButton.No)
 w._start_sync()
-assert w._index.get(OBJ_PROGRAM, 0x00, 9).is_dirty and "cancelled" in w._status_label.text()
+assert w._index.get(OBJ_PROGRAM, 0x00, 9).is_dirty and "cancelled" in _status(w)
 QMessageBox.warning = staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes)
 w._start_sync(); assert wait(lambda: not w._busy, 30)
 assert not w._index.get(OBJ_PROGRAM, 0x00, 9).is_dirty
-assert "discarded" in w._status_label.text(), w._status_label.text()
-print("pull-only ok:", w._status_label.text())
+assert "discarded" in _status(w), _status(w)
+print("pull-only ok:", _status(w))
 
 # ---- 7b. a slot that times out: what answered is applied and the bank's baseline ADVANCES (it
 #          reflects the slots that answered); the slot is recorded per slot, the user is told, and
@@ -199,7 +204,7 @@ new_digest = hashlib.sha1(b"0:0:9").digest().hex()
 assert w._index.bank_digest_baseline.get("0:0") == new_digest, "baseline reflects the answered slots"
 assert w._index.incomplete_banks == {"0:0": {3: 1}}, w._index.incomplete_banks
 assert "did not answer" in w._lbl_warning.text(), w._lbl_warning.text()
-assert "did not answer" in w._status_label.text(), w._status_label.text()
+assert "did not answer" in _status(w), _status(w)
 assert w._index.get(OBJ_PROGRAM, 0x00, 4) is not None, "the slots that did answer are applied"
 assert not w._brd_incomplete.isHidden() and "Program I-A slot 3" in w._lbl_incomplete.text()
 assert w._btn_recheck_unread.isHidden(), "Re-check is shown only for unreadable slots"
@@ -232,11 +237,11 @@ assert any(wr[2] == 10 for wr in fake.writes), "a dead slot never blocks another
 assert not w._index.get(OBJ_PROGRAM, 0x00, 10).is_dirty
 assert w._index.incomplete_banks == {"0:0": {3: 1}}, w._index.incomplete_banks
 assert "unread slot" in w._lbl_warning.text() and "slot 3" in w._lbl_warning.text(), w._lbl_warning.text()
-assert "NOT pushed" in w._status_label.text(), w._status_label.text()
+assert "NOT pushed" in _status(w), _status(w)
 assert not w._brd_incomplete.isHidden() and "Program I-A slot 3" in w._lbl_incomplete.text()
 assert w._brd_conflict.isHidden(), "no conflict banner for a timeout"
 assert not answers, "no prompt without force destructive write"
-print("dead slot held back, other slot pushed ok:", w._status_label.text())
+print("dead slot held back, other slot pushed ok:", _status(w))
 
 # restart, OLD index format ({bank: [slots]}): loads as one failed attempt, banner shown straight away
 import json
@@ -298,7 +303,7 @@ answers.clear(); fake.dumps.clear()
 QMessageBox.warning = staticmethod(lambda *a, **k: (answers.append(a[1]) or QMessageBox.StandardButton.No))
 w._start_sync(); assert wait(lambda: not w._busy, 60)
 assert fake.served_dumps() == [], fake.served_dumps()
-assert "did not answer" not in w._lbl_warning.text() and "did not answer" not in w._status_label.text()
+assert "did not answer" not in w._lbl_warning.text() and "did not answer" not in _status(w)
 assert "unreadable slot" in w._lbl_warning.text(), "the held edit still explains itself"
 assert "Unreadable: Program I-A slot 3" in w._lbl_incomplete.text(), w._lbl_incomplete.text()
 assert not w._btn_recheck_unread.isHidden() and w._btn_recheck_unread.isEnabled()
@@ -320,13 +325,13 @@ fake.timeouts = set(); fake.dumps.clear()
 w._start_recheck_unread(); assert wait(lambda: not w._busy, 60)
 assert fake.served_dumps() == [(OBJ_PROGRAM, 0x00, 3)], fake.served_dumps()
 assert w._index.incomplete_banks == {}
-assert "Re-checked 1 unread slot(s): 1 answered." in w._status_label.text(), w._status_label.text()
+assert "Re-checked 1 unread slot(s): 1 answered." in _status(w), _status(w)
 assert w._brd_incomplete.isHidden() and w._index.get(OBJ_PROGRAM, 0x00, 3).is_dirty
 fake.writes.clear()
 w._start_sync(); assert wait(lambda: not w._busy, 60)
 assert any(wr[2] == 3 for wr in fake.writes) and not w._index.get(OBJ_PROGRAM, 0x00, 3).conflicted
 assert not answers
-print("re-check recovers the slot, edit pushed ok:", w._status_label.text())
+print("re-check recovers the slot, edit pushed ok:", _status(w))
 
 # _get_bank_objects: a cancel part-way reports the never-asked slots as skipped (not failed); a subset
 # fetch asks only those slots, with one retry for a dead one

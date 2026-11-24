@@ -292,7 +292,25 @@ def extract_objects(data: bytes) -> Tuple[List[PcgObjectEntry], List[PcgRejected
             consumed_to = pos + consumed
         if reason is not None:
             rejected.append(reason)
-    return results, rejected
+    return _drop_filler_extra_banks(results), rejected
+
+# Highest user-bank byte the instrument itself has, per object type (Combis stop at N = 0x46).
+_LAST_REAL_BANK = {OBJ_PROGRAM: 0x4D, OBJ_COMBI: 0x46, OBJ_DRUM_KIT: 0x4D, OBJ_WAVE_SEQ: 0x4D}
+
+def _drop_filler_extra_banks(objects: List[PcgObjectEntry]) -> List[PcgObjectEntry]:
+    """A Nautilus file pads the banks past the instrument's last one (T) with copies of content it already has (2,432
+    identical 'Init Program' in one real file). An object there is kept only if its body appears nowhere in the real
+    banks and not earlier in the extras, so what is left is real content with nowhere else to live."""
+    seen = {(o.obj_type, o.body) for o in objects
+            if o.bank is not None and o.obj_type in _LAST_REAL_BANK and o.bank.obj_bank <= _LAST_REAL_BANK[o.obj_type]}
+    out = []
+    for o in objects:
+        if o.bank is not None and o.obj_type in _LAST_REAL_BANK and o.bank.obj_bank > _LAST_REAL_BANK[o.obj_type]:
+            if (o.obj_type, o.body) in seen:
+                continue
+            seen.add((o.obj_type, o.body))
+        out.append(o)
+    return out
 
 
 def _try_read_bank(data: bytes, offset: int, obj_type: int, is_exi: bool,

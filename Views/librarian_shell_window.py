@@ -3310,6 +3310,7 @@ class LibrarianShellWindow(QDialog):
             return
         menu = QMenu(self)
         menu.addAction("More Info...", self._show_merge_properties)
+        menu.addAction("Delete with dependencies", self._remove_merge_with_dependencies)
         menu.addSeparator()
         menu.addAction("Remove", self._remove_merge_selected)
         self._add_expand_collapse(menu, self._tree_merge, item)
@@ -3776,6 +3777,26 @@ class LibrarianShellWindow(QDialog):
         removed = sum(1 for p in payloads if self._merge.remove(p[1]))
         self._log("Removed item from the Merge Window." if removed == 1
                  else f"Removed {removed} item(s) from the Merge Window.")
+    def _remove_merge_with_dependencies(self) -> None:
+        payloads = [p for p in self._selected_payloads(self._tree_merge) if p[0] == "merge"]
+        if not payloads:
+            return
+        doomed = self._merge.removal_closure(p[1] for p in payloads)
+        extra = len(doomed) - len({p[1] for p in payloads})
+        if QMessageBox.question(
+                self, "Delete with dependencies",
+                f"Remove {len(doomed)} item(s) from the Merge Window"
+                f"{f' ({extra} of them dependencies)' if extra else ''}?\n\n"
+                "Dependencies shared with other staged items, or staged on their own, are kept.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+            return
+        with self._merge.defer_saves():
+            for h in doomed:
+                self._merge.remove(h)
+        self._log(f"Removed {len(doomed)} item(s) from the Merge Window ({extra} dependencies).")
+        self._refresh_merge_tree()
+
         self._refresh_merge_tree()
 
     # ── Sequential fill (requirement 5) + Merge/PCG drag-drop shared core ────
@@ -5807,7 +5828,9 @@ class LibrarianShellWindow(QDialog):
                 bits.append(f"{len(pull_result.newly_unreadable)} slot(s) now marked unreadable")
             status_text = (status_text + " " if status_text else "") + f"({'; '.join(bits)} - see warning.)"
         if not aborted:
-            self._set_status(status_text)
+            if status_text:
+                self._log(status_text)   # the result lives in History; the line under the button only shows work in progress
+            self._set_status("")
             self._set_warning(warning or None)
         log.info("Librarian %s done: status=%r", mode, status_text)
         self._refresh_local_tree()

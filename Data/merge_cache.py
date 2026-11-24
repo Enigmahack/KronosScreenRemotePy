@@ -58,7 +58,7 @@ import pathlib
 import threading
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Callable, Dict, List, Optional, Set, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 import Core.kronos_sysex as ksx
 from Data.librarian_sysex import object_version
@@ -581,6 +581,26 @@ class MergeCache:
         del self._by_hash[content_hash]
         self.save()
         return True
+
+    def removal_closure(self, content_hashes: Iterable[str]) -> List[str]:
+        """The hashes to drop when deleting `content_hashes` together with their dependencies: the selection plus every
+        transitive dependency that nothing outside the removed set references. A dependency another staged entry
+        still uses, or one the user pulled explicitly, stays."""
+        referrers: Dict[str, Set[str]] = {}
+        for e in self._by_hash.values():
+            for site in e.ref_sites:
+                if site.resolved_content_hash:
+                    referrers.setdefault(site.resolved_content_hash, set()).add(e.content_hash)
+        doomed = {h for h in content_hashes if h in self._by_hash}
+        frontier = list(doomed)
+        while frontier:
+            for site in self._by_hash[frontier.pop()].ref_sites:
+                h = site.resolved_content_hash
+                if (h in self._by_hash and h not in doomed and not self._by_hash[h].is_top_level_pull
+                        and referrers.get(h, set()) <= doomed):
+                    doomed.add(h)
+                    frontier.append(h)
+        return list(doomed)
 
     def clear(self) -> None:
         """Explicit "Clear Merge" -- abandons everything still staged,
