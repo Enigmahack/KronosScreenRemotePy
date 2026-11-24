@@ -158,7 +158,14 @@ def try_get(obj_type: int) -> Optional[ObjectTypeDescriptor]:
     return REGISTRY.get(obj_type)
 
 
-def label_for(obj_type: int, bank: int) -> str:
+def label_for(obj_type: int, bank: int, nautilus: bool = False) -> str:
+    """Bank name as the instrument shows it. Nautilus Programs/Combis are A-F then G.. (wire 0x40 = G;
+    NAUTILUS_MIDI_SysEx.txt *2 and the live-verified Combi G at 0x40), where Kronos says I-A / U-A."""
+    if nautilus and obj_type in (OBJ_PROGRAM, OBJ_COMBI):
+        if obj_type == OBJ_PROGRAM and 0 <= bank <= 5:
+            return "ABCDEF"[bank]
+        if 0x40 <= bank <= 0x4D:
+            return chr(ord("G") + bank - 0x40)
     d = REGISTRY.get(obj_type)
     return d.bank_label(bank) if d else f"?{bank:02X}"
 

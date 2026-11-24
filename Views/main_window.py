@@ -4522,6 +4522,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         svc.value_slider_cc = s.value_slider_cc
         svc.pull_names_on_change = s.pull_names_on_change
         svc.apply_midi_settings(s.proactive_sysex_polling, s.sysex_poll_interval_sec, s.sysex_poll_on_changes)
+        svc.set_reply_poll_ms(s.sysex_reply_poll_ms)
         self._sync_midi_monitor_state()
         self._apply_midi_monitor_menu_state()
 

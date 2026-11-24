@@ -43,6 +43,9 @@ n = lambda t, bk: L._bank_label(t, bk, True)
 check("naut-int", n(OBJ_PROGRAM, 0) == "A" and n(OBJ_PROGRAM, 5) == "F")
 check("naut-user", n(OBJ_PROGRAM, 0x40) == "G" and n(OBJ_PROGRAM, 0x4D) == "T")
 check("kronos-unchanged", L._bank_label(OBJ_PROGRAM, 0x40) == "U-A" and L._bank_label(OBJ_PROGRAM, 0) == "I-A")
+from Data.librarian_model import ObjLoc
+check("loc-label-family", ObjLoc(OBJ_PROGRAM, 0x40, 3).label() == "U-A:003" and ObjLoc(OBJ_PROGRAM, 0x40, 3).label(True) == "G:003"
+      and a._loc_text(ObjLoc(OBJ_PROGRAM, 0x40, 3)) == "U-A:003" and b._loc_text(ObjLoc(OBJ_PROGRAM, 0x40, 3)) == "G:003")
 check("sizes", 4960 not in _BODY_SIZES_BY_FAMILY[True][0] and 4954 not in _BODY_SIZES_BY_FAMILY[False][0]
       and _BODY_SIZES_BY_FAMILY[True][1] == {5640} and _BODY_SIZES_BY_FAMILY[False][1] == {7810})
 for w in (a, b, a2, a3):

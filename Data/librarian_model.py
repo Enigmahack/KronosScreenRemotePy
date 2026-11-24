@@ -50,10 +50,10 @@ class ObjLoc:
     bank: int       # object-dump bank byte
     number: int     # index within bank
 
-    def label(self) -> str:
+    def label(self, nautilus: bool = False) -> str:
         if self.obj_type == OBJ_SET_LIST:
             return f"Set List {self.number:02d}"
-        return f"{object_types.label_for(self.obj_type, self.bank)}:{self.number:03d}"
+        return f"{object_types.label_for(self.obj_type, self.bank, nautilus)}:{self.number:03d}"
 
 
 @dataclass(frozen=True)

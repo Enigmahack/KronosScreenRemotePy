@@ -189,6 +189,7 @@ class AppSettings:
     # MIDI / SysEx (Settings > MIDI/SysEx)
     proactive_sysex_polling: bool = False
     sysex_poll_interval_sec: int  = 60
+    sysex_reply_poll_ms:     int  = 5     # Settings > Connection: how often a dump reply is checked for (1-250 ms)
     sysex_poll_on_changes:   bool = True
     midi_output_channel:     int  = 1
     value_slider_cc:         int  = 18

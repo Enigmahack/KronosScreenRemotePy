@@ -302,16 +302,8 @@ def _legend_text(text: str) -> QLabel:
 
 
 def _bank_label(obj_type: int, bank: int, nautilus: bool = False) -> str:
-    if nautilus and obj_type in (OBJ_PROGRAM, OBJ_COMBI):
-        # Nautilus names its banks A-F then G.. (NAUTILUS_MIDI_SysEx.txt *2), not Kronos's I-A / U-A.
-        if obj_type == OBJ_PROGRAM and 0 <= bank <= 5:
-            return "ABCDEF"[bank]
-        if 0x40 <= bank <= 0x4D:
-            return nautilus_bank_label(obj_type, bank, True)
-    if obj_type == OBJ_PROGRAM:
-        return ksx.program_label(bank)
-    if obj_type == OBJ_COMBI:
-        return ksx.combi_label(bank)
+    if obj_type in (OBJ_PROGRAM, OBJ_COMBI):
+        return object_types.label_for(obj_type, bank, nautilus)
     if obj_type in (OBJ_DRUM_KIT, OBJ_WAVE_SEQ):
         return object_types.label_for(obj_type, bank)
     return ""
@@ -2257,7 +2249,7 @@ class LibrarianShellWindow(QDialog):
                        for e in pcg.objects}
             found = [loc for loc in missing if (loc.obj_type, loc.bank, loc.number) in by_addr]
             if not found:
-                return [], _msg_scan_not_found(missing[0].label(), file_name)
+                return [], _msg_scan_not_found(self._loc_text(missing[0]), file_name)
 
             resolve_content, resolve_refs, family_of = self._pcg_pull_resolvers(lambda t, b, n: by_addr.get((t, b, n)), pcg)
 
@@ -2271,7 +2263,7 @@ class LibrarianShellWindow(QDialog):
                 if scope is not None:
                     scope.dispose()
             self._refresh_merge_tree()
-            return found, (_msg_scan_found(found[0].label(), file_name) if len(found) == 1
+            return found, (_msg_scan_found(self._loc_text(found[0]), file_name) if len(found) == 1
                            else _msg_scan_found_many(len(found), file_name))
         except Exception as e:   # unreadable / corrupt file
             log.error("dependency search failed: %s", e, exc_info=True)
@@ -2767,12 +2759,12 @@ class LibrarianShellWindow(QDialog):
         if body is not None:
             requires_rows = self._walk_local_deps(obj_type, body, 0, set())
             used_by_rows = [
-                f"{loc.label()}  used by  {ObjLoc(ref.ref_obj, ref.ref_bank, ref.ref_index).label()}"
+                f"{self._loc_text(loc)}  used by  {self._loc_text(ObjLoc(ref.ref_obj, ref.ref_bank, ref.ref_index))}"
                 for ref in self._build_local_catalog(_referrer_types_for(obj_type)).referrers_of(loc)]
             dependencies = (requires_rows or ["(none)"], used_by_rows or ["(none)"])
             on_scan_pcg = self._scan_dependencies_for_selected
-        dlg = _PropertiesDialog(f"Properties — {loc.label()}", entry.display_name,
-                                editable_name=True, location=f"Location: {loc.label()}",
+        dlg = _PropertiesDialog(f"Properties — {self._loc_text(loc)}", entry.display_name,
+                                editable_name=True, location=f"Location: {self._loc_text(loc)}",
                                 flag_lines=flags, extra_lines=[],
                                 category_choice=category_choice, setlist_slots=setlist_slots,
                                 category_names=self._category_names, obj_type=obj_type,
@@ -2802,11 +2794,11 @@ class LibrarianShellWindow(QDialog):
             "id": str(uuid.uuid4()), "timestamp_utc": now, "op_kind": "PropertyEdit",
             "targets": [{"obj_type": loc.obj_type, "bank": loc.bank, "number": loc.number,
                         "result_hash": new_hash}],
-            "description": f"Edited {loc.label()}: {description}",
+            "description": f"Edited {self._loc_text(loc)}: {description}",
             "sync_batch_id": None, "synced_at_utc": None,
         })
         self._index.save()
-        self._log(f"Edited {loc.label()}: {description}")
+        self._log(f"Edited {self._loc_text(loc)}: {description}")
 
     def _apply_local_properties_edit(self, loc: ObjLoc, obj_type: int, current_name: str,
                                      dlg: "_PropertiesDialog") -> None:
@@ -2818,7 +2810,7 @@ class LibrarianShellWindow(QDialog):
         EditSetListSlot being two separate LocalEditOps calls in the C# source, the second
         reading whatever body the first one just wrote (see module docstring). One undo
         scope per dialog Accept (one user gesture = one Ctrl+Z)."""
-        scope = self._undo.begin(f"Property edit on {loc.label()}")
+        scope = self._undo.begin(f"Property edit on {self._loc_text(loc)}")
         if obj_type == OBJ_SET_LIST:
             if dlg.new_name and dlg.new_name != current_name:
                 entry = self._index.get(loc.obj_type, loc.bank, loc.number)
@@ -2903,18 +2895,18 @@ class LibrarianShellWindow(QDialog):
         PasteSingle/FinishPaste's own "only clear on confirmed success" semantics)."""
         src_entry = self._index.get(src.obj_type, src.bank, src.number)
         if src_entry is None:
-            self._log(f"Swap aborted: no local content at {src.label()}.")
+            self._log(f"Swap aborted: no local content at {self._loc_text(src)}.")
             return False
         if src == dst:
             self._log("Source and destination are the same location.")
             return False
         dst_entry = self._index.get(dst.obj_type, dst.bank, dst.number)
         if dst_entry is None:
-            QMessageBox.information(self, "Swap", f"{dst.label()} has no local content yet — "
+            QMessageBox.information(self, "Swap", f"{self._loc_text(dst)} has no local content yet — "
                                     "place something there first (e.g. from the Merge Window) "
                                     "before swapping.")
             return False
-        scope = self._undo.begin(f"Swap {src.label()} ↔ {dst.label()}")
+        scope = self._undo.begin(f"Swap {self._loc_text(src)} ↔ {self._loc_text(dst)}")
         src_body = self._blobs.get(src_entry.current_hash)
         dst_body = self._blobs.get(dst_entry.current_hash)
         if src_body is None or dst_body is None:
@@ -2945,11 +2937,11 @@ class LibrarianShellWindow(QDialog):
             targets.append({"obj_type": w.obj, "bank": w.bank, "number": w.index, "result_hash": new_hash})
         self._oplog.append({
             "id": str(uuid.uuid4()), "timestamp_utc": now, "op_kind": "Move",
-            "targets": targets, "description": f"Swapped {src.label()} <-> {dst.label()}",
+            "targets": targets, "description": f"Swapped {self._loc_text(src)} <-> {self._loc_text(dst)}",
             "sync_batch_id": None, "synced_at_utc": None,
         })
         self._index.save()
-        self._log(f"Swapped {src.label()} <-> {dst.label()} (staged locally, pending Sync/Commit).")
+        self._log(f"Swapped {self._loc_text(src)} <-> {self._loc_text(dst)} (staged locally, pending Sync/Commit).")
         self._refresh_local_tree()
         if scope is not None:
             scope.dispose()
@@ -2966,7 +2958,7 @@ class LibrarianShellWindow(QDialog):
         if not locs:
             self._log("Select one or more Keyboard Library items to stage for a batch placement.")
             return
-        label = locs[0].label() if len(locs) == 1 else f"{len(locs)} item(s)"
+        label = self._loc_text(locs[0]) if len(locs) == 1 else f"{len(locs)} item(s)"
         scope = self._undo.begin(f"Pulled {label} into Merge Window")
         total_added = 0
         total_gaps: list = []
@@ -3090,7 +3082,7 @@ class LibrarianShellWindow(QDialog):
             return
         loc = ObjLoc(obj_type, bank, number)
         from PySide6.QtWidgets import QInputDialog
-        new_name, ok = QInputDialog.getText(self, "Rename", f"Rename {loc.label()}:",
+        new_name, ok = QInputDialog.getText(self, "Rename", f"Rename {self._loc_text(loc)}:",
                                             text=entry.display_name or "")
         if not ok or not new_name.strip() or new_name.strip() == (entry.display_name or ""):
             return
@@ -3100,7 +3092,7 @@ class LibrarianShellWindow(QDialog):
         new_body = _name_writer(obj_type)(body, new_name.strip())
         self._write_local_body_edit(loc, new_body, f'name to "{new_name.strip()}"')
         self._local_status_label.setText(
-            f"Renamed {loc.label()} to \"{new_name.strip()}\"")
+            f"Renamed {self._loc_text(loc)} to \"{new_name.strip()}\"")
         self._refresh_local_tree()
 
     def _delete_dependency_warning(self, locs: List[ObjLoc]) -> bool:
@@ -3111,7 +3103,7 @@ class LibrarianShellWindow(QDialog):
         for loc in locs:
             for ref in catalog.referrers_of(loc):
                 dependents.append(
-                    f"  - {loc.label()} - used by {ObjLoc(ref.ref_obj, ref.ref_bank, ref.ref_index).label()}")
+                    f"  - {self._loc_text(loc)} - used by {self._loc_text(ObjLoc(ref.ref_obj, ref.ref_bank, ref.ref_index))}")
         if not dependents:
             return True
         lines = dependents[:8]
@@ -3145,7 +3137,7 @@ class LibrarianShellWindow(QDialog):
                         for l in locs)
         if not restoring and not self._delete_dependency_warning(locs):
             return
-        count_noun = f"{len(locs)} item(s)" if len(locs) > 1 else locs[0].label()
+        count_noun = f"{len(locs)} item(s)" if len(locs) > 1 else self._loc_text(locs[0])
         scope = self._undo.begin(("Restore " if restoring else "Delete ") + count_noun)
         ok = 0
         now = _now_iso()
@@ -3212,7 +3204,7 @@ class LibrarianShellWindow(QDialog):
             self._log("Nothing to paste — Cut or Copy something first.")
             return
         obj_type = self._batch_clip.entries[0].loc.obj_type
-        dlg = _DestinationDialog(obj_type, "Paste at…", self)
+        dlg = _DestinationDialog(obj_type, "Paste at…", self, bank_label=lambda b, t=obj_type: _bank_label(t, b, self._device_family() == FAMILY_NAUTILUS))
         if _exec_modal(dlg) != QDialog.DialogCode.Accepted:
             return
         dest_bank, dest_number = dlg.selected()
@@ -3239,18 +3231,18 @@ class LibrarianShellWindow(QDialog):
         if not placed:
             self._log("Paste: nothing placeable.")
             for entry, reason in pending:
-                self._log(f"  pending: {entry.loc.label()} — {reason}")
+                self._log(f"  pending: {self._loc_text(entry.loc)} — {reason}")
             return
         ok = self._apply_batch_placements(
             placed, obj_type, "Place",
             f"Pasted {len(placed)} item(s) starting at "
-            f"{ObjLoc(obj_type, dest_bank, start_slot).label()}")
+            f"{self._loc_text(ObjLoc(obj_type, dest_bank, start_slot))}")
         if not ok:
             self._log("Paste refused (see warnings above).")
             return
         self._log(f"Pasted {len(placed)} item(s); {len(pending)} left pending.")
         for entry, reason in pending:
-            self._log(f"  pending: {entry.loc.label()} — {reason}")
+            self._log(f"  pending: {self._loc_text(entry.loc)} — {reason}")
 
     def _show_local_context_menu(self, local_pos) -> None:
         menu = QMenu(self)
@@ -3418,7 +3410,7 @@ class LibrarianShellWindow(QDialog):
         placement paths never gate on missing dependencies at placement time — anything
         unresolved is tracked to the session clipboard and only surfaces at Sync/Commit."""
         dst = ObjLoc(entry.obj_type, dst_bank, dst_number)
-        scope = self._undo.begin(f"Place {entry.display_name or entry.content_hash[:8]} at {dst.label()}")
+        scope = self._undo.begin(f"Place {entry.display_name or entry.content_hash[:8]} at {self._loc_text(dst)}")
 
         # Duplicate-content guard (port of LibrarianShellViewModel.FindExistingLocalCopy):
         # if this entry's OWN content already sits somewhere in Local Library byte-identical,
@@ -3446,7 +3438,7 @@ class LibrarianShellWindow(QDialog):
                 self._merge.mark_placed(entry.content_hash, (entry.obj_type, *existing_loc))
                 self._merge.remove(entry.content_hash)
                 self._log(f"Reused existing content already at "
-                         f"{ObjLoc(entry.obj_type, *existing_loc).label()} "
+                         f"{self._loc_text(ObjLoc(entry.obj_type, *existing_loc))} "
                          f"(no duplicate written).")
                 self._refresh_local_tree()
                 self._refresh_merge_tree()
@@ -3477,13 +3469,13 @@ class LibrarianShellWindow(QDialog):
                 displaced_refs = catalog.referrers_of(dst)
                 if displaced_refs:
                     if not self._chk_force_overwrite.isChecked():
-                        self._log(f"REFUSE: {dst.label()} is referenced by "
+                        self._log(f"REFUSE: {self._loc_text(dst)} is referenced by "
                                   f"{len(displaced_refs)} object(s) and would be overwritten "
                                   "- check Force Overwrite to place it anyway.")
                         if scope is not None:
                             scope.dispose()
                         return
-                    self._log(f"CHECK: {dst.label()} was referenced by {len(displaced_refs)} "
+                    self._log(f"CHECK: {self._loc_text(dst)} was referenced by {len(displaced_refs)} "
                               "object(s) - Force Overwrite placed it anyway, so those "
                               "referrer(s) now resolve to the NEW object instead of the old one.")
 
@@ -3506,7 +3498,7 @@ class LibrarianShellWindow(QDialog):
             "id": str(uuid.uuid4()), "timestamp_utc": now, "op_kind": "Place",
             "targets": [{"obj_type": entry.obj_type, "bank": dst_bank, "number": dst_number,
                         "result_hash": write_hash}],
-            "description": f"Placed '{entry.display_name}' at {dst.label()}",
+            "description": f"Placed '{entry.display_name}' at {self._loc_text(dst)}",
             "sync_batch_id": None, "synced_at_utc": None,
         })
         self._index.save()
@@ -3518,7 +3510,7 @@ class LibrarianShellWindow(QDialog):
                 missing_ref=ObjLoc(*s.target_address), ref_kind=s.ref_kind, site=s.site,
                 required_by=dst, expected_content_hash=s.resolved_content_hash))
 
-        self._log(f"Placed '{entry.display_name}' at {dst.label()} "
+        self._log(f"Placed '{entry.display_name}' at {self._loc_text(dst)} "
                  f"(staged locally, pending Sync/Commit).")
         self._refresh_local_tree()
         self._refresh_merge_tree()
@@ -3912,7 +3904,7 @@ class LibrarianShellWindow(QDialog):
                                                    slot_available=_slot_available)
         no_room = sum(1 for _it, reason in pending if reason.startswith("destination bank full"))
         if no_room:
-            self._set_warning(f"Fill Sequentially: destination bank {object_types.label_for(obj_type, dest_bank)} "
+            self._set_warning(f"Fill Sequentially: destination bank {_bank_label(obj_type, dest_bank, self._device_family() == FAMILY_NAUTILUS)} "
                               f"is full - {no_room} item(s) were not placed and are still in the Merge Window.")
         if not placed:
             self._log("Fill Sequentially: nothing placeable.")
@@ -3923,7 +3915,7 @@ class LibrarianShellWindow(QDialog):
         ok = self._apply_batch_placements(
             placed, obj_type, "Place",
             f"Filled {len(placed)} item(s) sequentially starting at "
-            f"{ObjLoc(obj_type, dest_bank, start_slot).label()}",
+            f"{self._loc_text(ObjLoc(obj_type, dest_bank, start_slot))}",
             hash_by_item, unresolved_by_item, force_overwrite=force_overwrite)
         if not ok:
             self._log("Fill Sequentially refused (see warnings above).")
@@ -4265,7 +4257,7 @@ class LibrarianShellWindow(QDialog):
         if not locs:
             self._log("Select one or more PCG items to pull into the Merge Window.")
             return
-        label = locs[0].label() if len(locs) == 1 else f"{len(locs)} item(s)"
+        label = self._loc_text(locs[0]) if len(locs) == 1 else f"{len(locs)} item(s)"
         scope = self._undo.begin(f"Pulled {label} into Merge Window")
         # One merge_cache.json rewrite for the whole selection, not one per address:
         # pulling a whole bank is 128 pulls, each of which used to rewrite (and fsync)
@@ -4315,7 +4307,7 @@ class LibrarianShellWindow(QDialog):
         if not bodies:
             self._log("Fill Sequentially: nothing resolvable from the selected PCG items.")
             return
-        dlg = _DestinationDialog(obj_type, "Fill Sequentially starting at…", self)
+        dlg = _DestinationDialog(obj_type, "Fill Sequentially starting at…", self, bank_label=lambda b, t=obj_type: _bank_label(t, b, self._device_family() == FAMILY_NAUTILUS))
         if _exec_modal(dlg) != QDialog.DialogCode.Accepted:
             return
         dest_bank, start_slot = dlg.selected()
@@ -4735,8 +4727,8 @@ class LibrarianShellWindow(QDialog):
         extra = [f"is_exi: {e.is_exi}"] if obj_type == OBJ_PROGRAM else []
         body = self._pcg_resolve_content(obj_type, bank, number)
         obj_extra, list_rows = self._object_body_readout(obj_type, body)
-        dlg = _PropertiesDialog(f"PCG object — {loc.label()}", e.name, editable_name=False,
-                                location=f"Location: {loc.label()}", flag_lines=[],
+        dlg = _PropertiesDialog(f"PCG object — {self._loc_text(loc)}", e.name, editable_name=False,
+                                location=f"Location: {self._loc_text(loc)}", flag_lines=[],
                                 extra_lines=extra + obj_extra, list_rows=list_rows, parent=self)
         _exec_modal(dlg)
 
@@ -4872,7 +4864,7 @@ class LibrarianShellWindow(QDialog):
         mutable = bytearray(body)
         apply_ref_patch(mutable, kind, entry.site, enc[0], enc[1])
         self._write_local_body_edit(entry.required_by, bytes(mutable),
-                                    f"repointed {entry.ref_kind} to {new_loc.label()}")
+                                    f"repointed {entry.ref_kind} to {self._loc_text(new_loc)}")
         return True
 
     def _retry_resolve_pending_dependencies(self) -> None:
@@ -4917,7 +4909,7 @@ class LibrarianShellWindow(QDialog):
         for e in pending:
             k = (e.missing_ref, e.expected_content_hash)
             grouped[k] = grouped.get(k, 0) + 1
-        rows = [f"{loc.label()}  (needed by {count} placement(s))" for (loc, _h), count in grouped.items()]
+        rows = [f"{self._loc_text(loc)}  (needed by {count} placement(s))" for (loc, _h), count in grouped.items()]
         dlg = _UnresolvedDependenciesDialog(
             f"{len(pending)} dependency(ies) are still pending in the session clipboard. "
             "Place them locally (from the Merge Window or a PCG), or continue anyway and "
@@ -5111,7 +5103,7 @@ class LibrarianShellWindow(QDialog):
                 dump = self._service.dump_object_parsed(obj_type, bank, number)
                 if dump is None:
                     raise RuntimeError(
-                        f"Cannot back up {ObjLoc(obj_type, bank, number).label()}; no object reply")
+                        f"Cannot back up {self._loc_text(ObjLoc(obj_type, bank, number))}; no object reply")
                 pre_images.append(WriteOp(obj_type, bank, number, dump.version, dump.body))
             if pre_images:
                 backup_path = _unique_backup_path("sync")
@@ -5764,6 +5756,10 @@ class LibrarianShellWindow(QDialog):
             self._set_warning(warning or None)
         log.info("Librarian %s done: status=%r", mode, status_text)
         self._refresh_local_tree()
+
+    def _loc_text(self, loc: ObjLoc) -> str:
+        """'U-A:003' / 'G:003': a location named the way the connected instrument names its banks."""
+        return loc.label(self._device_family() == FAMILY_NAUTILUS)
 
     def _bank_display(self, key: str) -> str:
         obj_type, bank, _n = _parse_key(key)

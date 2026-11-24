@@ -265,6 +265,13 @@ class SettingsWindow(QDialog):
         form.addRow("FTP Username:", self._ftp_user)
         form.addRow("FTP Password:", self._ftp_pass)
         form.addRow("FTP Port:",     self._ftp_port_spin)
+
+        form.addRow(_section("Dump speed"))
+        self._reply_poll_spin = QSpinBox(); self._reply_poll_spin.setRange(1, 250); self._reply_poll_spin.setSuffix(" ms")
+        self._reply_poll_spin.setToolTip("Recommended safe value is 50ms, though will vary on different connection types. "
+                                         "Faster connections can go lower.")
+        _lbl = QLabel("Dump reply check interval:"); _lbl.setToolTip(self._reply_poll_spin.toolTip())
+        form.addRow(_lbl, self._reply_poll_spin)
         return w
 
     # ── Saved connections ──────────────────────────────────────────────────────
@@ -1018,6 +1025,7 @@ class SettingsWindow(QDialog):
         self._ftp_user.setText(s.ftp_username)
         self._ftp_pass.setText(s.ftp_password)
         self._ftp_port_spin.setValue(s.ftp_port)
+        self._reply_poll_spin.setValue(s.sysex_reply_poll_ms)
         self._midi_monitor.setChecked(s.midi_monitor_enabled)
         self._poll_on_changes.setChecked(s.sysex_poll_on_changes)
         self._pull_names.setChecked(s.pull_names_on_change)
@@ -1114,6 +1122,7 @@ class SettingsWindow(QDialog):
         s.ftp_username = self._ftp_user.text()
         s.ftp_password = self._ftp_pass.text()
         s.ftp_port     = self._ftp_port_spin.value()
+        s.sysex_reply_poll_ms = self._reply_poll_spin.value()
         s.midi_monitor_enabled = self._midi_monitor.isChecked()
         s.sysex_poll_on_changes   = self._poll_on_changes.isChecked()
         s.pull_names_on_change    = self._pull_names.isChecked()
@@ -1555,6 +1564,7 @@ class SettingsWindow(QDialog):
         s.ftp_username           = self._ftp_user.text()
         s.ftp_password           = self._ftp_pass.text()
         s.ftp_port               = self._ftp_port_spin.value()
+        s.sysex_reply_poll_ms    = self._reply_poll_spin.value()
         s.midi_monitor_enabled   = self._midi_monitor.isChecked()
         s.sysex_poll_on_changes   = self._poll_on_changes.isChecked()
         s.pull_names_on_change    = self._pull_names.isChecked()

@@ -38,6 +38,9 @@ class SysExDumpCollector:
         self._bridge = bridge
         self._codec = codec
         self._gate = threading.Lock()
+        #: How often collect() looks for the reply (Settings > Connection). The reply is usually in within a few ms, so a
+        #: long tick is pure added latency per object; a very slow link needs a longer one.
+        self.poll_s = 0.005
 
     def object_dump_request(self, obj: int, bank: int, index: int) -> str:
         """Codec-aware 0x72 Object Dump Request, hex-string form (for collect())."""
@@ -91,7 +94,7 @@ class SysExDumpCollector:
 
                 start = time.monotonic()
                 while True:
-                    time.sleep(0.05)
+                    time.sleep(self.poll_s)
                     now = time.monotonic()
                     with results_lock:
                         c = len(results)

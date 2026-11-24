@@ -216,6 +216,7 @@ class SysExService(QObject):
         self.pull_names_on_change = False
         self._proactive_poll = False
         self._poll_interval_s = 60
+        self._reply_poll_s = 0.005   # collector reply check tick; set_reply_poll_ms
         self._poll_on_changes = True
         # Perf loop: woken by _wake; _loop_gen invalidates a loop from a previous start();
         # epochs implement non-throwing debounces (a later call supersedes an earlier one).
@@ -226,6 +227,12 @@ class SysExService(QObject):
         self._epoch_lock = threading.Lock()
 
     # ── Settings ─────────────────────────────────────────────────────────────
+
+    def set_reply_poll_ms(self, ms: int) -> None:
+        """Dump reply check interval (Settings > Connection), clamped to 1-250 ms; applies to the live collector too."""
+        self._reply_poll_s = max(1, min(250, int(ms))) / 1000.0
+        if self._dump is not None:
+            self._dump.poll_s = self._reply_poll_s
 
     def apply_midi_settings(self, proactive_poll: bool, poll_interval_s: int, poll_on_changes: bool) -> None:
         """Port of ApplyMidiSettings (the Monitor-MIDI on/off half lives in the caller, which
@@ -285,6 +292,7 @@ class SysExService(QObject):
         self._bridge.message_sent.connect(self._tx_slot)
         self._bridge.start()
         self._dump = SysExDumpCollector(self._bridge, self._codec)
+        self._dump.poll_s = self._reply_poll_s
 
         threading.Thread(target=self._probe, daemon=True, name="SysExProbe").start()
         self._loop_gen += 1
@@ -367,6 +375,7 @@ class SysExService(QObject):
         self._codec = codec
         if self._bridge is not None:
             self._dump = SysExDumpCollector(self._bridge, self._codec)
+            self._dump.poll_s = self._reply_poll_s
 
     @property
     def is_nautilus(self) -> bool:
