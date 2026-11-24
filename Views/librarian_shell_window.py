@@ -204,6 +204,7 @@ from Data.blank_template_store import BlankTemplateStore
 import Tools.dependency_scanner as depscan
 import Data.object_types as object_types
 import Objects.erase_body as erase_body
+import Objects.factory_blank as factory_blank
 import Core.kronos_sysex as ksx
 import Objects.object_body as object_body
 from Data.changeset_sync import ChangesetPlan, SyncResult, commit_changes, sync_library
@@ -2741,6 +2742,16 @@ class LibrarianShellWindow(QDialog):
             return None
         return self._blobs.get(entry.current_hash)
 
+    def _factory_blank_for(self, loc: ObjLoc, original: Optional[bytes], entry: LocalIndexEntry) -> Optional[bytes]:
+        """The instrument's own initialised object for a deleted slot, in the format that slot holds: the family comes
+        from the body it held (a Program is 4960/3706 bytes on a Kronos, 4954/3700 on a Nautilus), else from the connected
+        instrument."""
+        family = (body_family(loc.obj_type, len(original)) if original is not None else None) or self._device_family()
+        exi = program_body_kind(len(original)) if original is not None and loc.obj_type == OBJ_PROGRAM else None
+        if exi is None and loc.obj_type == OBJ_PROGRAM:
+            exi = entry.is_exi
+        return factory_blank.blank_body(loc.obj_type, original or b"", family == FAMILY_NAUTILUS, exi, loc.number)
+
     # ── Local pane actions ───────────────────────────────────────────────────
 
     def _show_local_properties(self) -> None:
@@ -3155,7 +3166,8 @@ class LibrarianShellWindow(QDialog):
                 # order ("BlankTemplates.EnsureAsync ?? EraseBody.Build") — the Kronos
                 # protocol has no delete opcode, so a slot must be overwritten with
                 # something recognizably blank, never left as its original content.
-                blank_body = self._blank_templates.blank_body_for(loc.obj_type, entry.is_exi)
+                original_body = self._blobs.get(entry.baseline_hash)
+                blank_body = self._factory_blank_for(loc, original_body, entry)
                 if blank_body is None:
                     original_body = self._blobs.get(entry.baseline_hash)
                     if original_body is not None:
