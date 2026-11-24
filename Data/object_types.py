@@ -17,6 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple
 
+import Core.bank_names as bank_names
 import Core.kronos_sysex as ksx
 from Data.librarian_sysex import (
     OBJ_COMBI, OBJ_DRUM_KIT, OBJ_PROGRAM, OBJ_SET_LIST, OBJ_WAVE_SEQ,
@@ -28,25 +29,11 @@ SET_LIST_SLOTS = 128   # Tools.setlist_data.MAX_COUNT — duplicated to keep thi
 # ── Labels ───────────────────────────────────────────────────────────────────
 
 def drum_kit_label(ob: int) -> str:
-    if ob == 0:
-        return "INT"
-    if ob == 0x10:
-        return "GM"
-    if 0x40 <= ob <= 0x4D:
-        return ksx._user_label(ob - 0x40)
-    if 0x4E <= ob <= 0x7F:
-        return ksx.extra_bank_label(ob - 0x40)
-    return f"?{ob:02X}"
+    return bank_names.KRONOS.drum_kit(ob)
 
 
 def wave_seq_label(ob: int) -> str:
-    if ob == 0:
-        return "INT"
-    if 0x40 <= ob <= 0x4D:
-        return ksx._user_label(ob - 0x40)
-    if 0x4E <= ob <= 0x7F:
-        return ksx.extra_bank_label(ob - 0x40)
-    return f"?{ob:02X}"
+    return bank_names.KRONOS.wave_seq(ob)
 
 
 def is_read_only_drum_kit_bank(ob: int) -> bool:
@@ -158,19 +145,14 @@ def try_get(obj_type: int) -> Optional[ObjectTypeDescriptor]:
     return REGISTRY.get(obj_type)
 
 
-def label_for(obj_type: int, bank: int, nautilus: bool = False) -> str:
-    """Bank name as the instrument shows it (NAUTILUS_MIDI_SysEx.txt *2, where Kronos says I-A / U-A): Nautilus
-    Programs are A-F (0-5) then G-T (0x40-0x4D); Combis are A-G (0-6) then H-N (0x40-0x46)."""
-    if nautilus and obj_type == OBJ_PROGRAM:
-        if 0 <= bank <= 5:
-            return "ABCDEF"[bank]
-        if 0x40 <= bank <= 0x4D:
-            return chr(ord("G") + bank - 0x40)
-    if nautilus and obj_type == OBJ_COMBI:
-        if 0 <= bank <= 6:
-            return "ABCDEFG"[bank]
-        if 0x40 <= bank <= 0x46:
-            return chr(ord("H") + bank - 0x40)
+def label_for(obj_type: int, bank: int, nautilus: Optional[bool] = None) -> str:
+    """Bank name as the instrument shows it (Core.bank_names): Kronos I-A / U-A.., Nautilus A-F then G-T.
+    nautilus=None: the connected instrument."""
+    names = bank_names.for_family(nautilus)
+    fn = {OBJ_PROGRAM: names.program, OBJ_COMBI: names.combi,
+          OBJ_DRUM_KIT: names.drum_kit, OBJ_WAVE_SEQ: names.wave_seq}.get(obj_type)
+    if fn is not None:
+        return fn(bank)
     d = REGISTRY.get(obj_type)
     return d.bank_label(bank) if d else f"?{bank:02X}"
 

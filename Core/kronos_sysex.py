@@ -11,6 +11,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
+import Core.bank_names as _names
+from Core.bank_names import extra_bank_label  # noqa: F401  (re-exported)
+
 # ── Hex utilities ────────────────────────────────────────────────────────────
 
 
@@ -98,77 +101,24 @@ class CachedName:
     name: str
 
 
-# Combis have SEVEN internal banks (I-A..I-G) — one more than programs (I-A..I-F).
-COMBI_BANKS: List[str] = [
-    "I-A", "I-B", "I-C", "I-D", "I-E", "I-F", "I-G",
-    "U-A", "U-B", "U-C", "U-D", "U-E", "U-F", "U-G",
-]
-
-PROGRAM_BANKS: List[str] = [
-    "I-A", "I-B", "I-C", "I-D", "I-E", "I-F", "I-G",
-    "GM", "g(1)", "g(2)", "g(3)", "g(4)", "g(5)", "g(6)", "g(7)",
-    "g(8)", "g(9)", "g(d)",
-    "U-A", "U-B", "U-C", "U-D", "U-E", "U-F", "U-G",
-    "U-AA", "U-BB", "U-CC", "U-DD", "U-EE", "U-FF", "U-GG",
-]
-
-
 def resolve_bank_label(type_: int, bank: int) -> str:
-    """type: 0=Combi, 1=Program, 2=Song."""
-    if type_ == 0:
-        return COMBI_BANKS[bank] if bank < len(COMBI_BANKS) else f"?{bank}"
-    if type_ == 1:
-        return PROGRAM_BANKS[bank] if bank < len(PROGRAM_BANKS) else f"?{bank}"
+    """type: 0=Combi, 1=Program, 2=Song. `bank` is a func-0x33 bank index; named for the connected instrument."""
     if type_ == 2:
         return ""
-    return f"?{bank}"
-
-
-def _int_label(i: int) -> str:
-    return f"I-{chr(ord('A') + i)}"
-
-
-def _user_label(i: int) -> str:
-    if i <= 6:
-        return f"U-{chr(ord('A') + i)}"
-    j = i - 7
-    c = chr(ord('A') + j)
-    return f"U-{c}{c}"
-
-
-def extra_bank_label(n: int) -> str:
-    """User bank n (0-based) past the 14 the instrument has. Korg's NAUTILUS_MIDI_SysEx.txt *2 lists Program banks
-    A-F (0-5) and G-T (0x40-0x4D) only, Drum Kit / Wave Seq user banks 0x40-0x4D, and the MIDI bank-select table
-    also ends at T; measured on a Nautilus, bank bytes 0x4E-0x60 answer with bank 0x4C's digest. A Nautilus .PCG
-    can still hold more (Programs through 0x20021, Wave Sequences through 0x20012): they are read from the file
-    and placed into real banks, never written to an address of their own."""
-    return f"File bank {n + 1}"
+    ob = _func33_to_obj_bank(type_, bank)
+    if ob < 0:
+        return f"?{bank}"
+    names = _names.for_family()
+    return names.program(ob) if type_ == 1 else names.combi(ob)
 
 
 def program_label(ob: int) -> str:
-    if 0x00 <= ob <= 0x06:
-        return _int_label(ob)
-    if ob == 0x10:
-        return "GM"
-    if 0x11 <= ob <= 0x19:
-        return f"g({ob - 0x10})"
-    if ob == 0x1A:
-        return "g(d)"
-    if 0x40 <= ob <= 0x4D:
-        return _user_label(ob - 0x40)
-    if 0x4E <= ob <= 0x7F:
-        return extra_bank_label(ob - 0x40)
-    return f"?{ob:02X}"
+    """Kronos Program bank name. Instrument-aware callers use Core.bank_names.for_family(...)."""
+    return _names.KRONOS.program(ob)
 
 
 def combi_label(ob: int) -> str:
-    if 0x00 <= ob <= 0x06:
-        return _int_label(ob)
-    if 0x40 <= ob <= 0x46:
-        return _user_label(ob - 0x40)
-    if 0x47 <= ob <= 0x7F:
-        return extra_bank_label(ob - 0x40)
-    return f"?{ob:02X}"
+    return _names.KRONOS.combi(ob)
 
 
 def program_obj_bank(msb: int, lsb: int) -> int:

@@ -31,6 +31,7 @@ from typing import Callable, Dict, List, Optional, Set, Tuple
 
 from PySide6.QtCore import QObject, Signal
 
+import Core.bank_names as bank_names
 import Core.kronos_sysex as ksx
 import Data.librarian_sysex as lsx
 import Data.nautilus_sysex as nsx
@@ -347,6 +348,7 @@ class SysExService(QObject):
         # a stale family guess. set_device_family() re-asserts the real one
         # once the daemon's MODEL reply is back.
         self._codec = lsx
+        bank_names.set_active(False)
         self._is_available = False
         self._performance_display = ""
 
@@ -373,6 +375,7 @@ class SysExService(QObject):
         if codec is self._codec:
             return
         self._codec = codec
+        bank_names.set_active(is_nautilus)
         if self._bridge is not None:
             self._dump = SysExDumpCollector(self._bridge, self._codec)
             self._dump.poll_s = self._reply_poll_s

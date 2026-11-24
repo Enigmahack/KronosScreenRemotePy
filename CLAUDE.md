@@ -100,7 +100,7 @@ Pre-commit runs tier 0: enable with `git config core.hooksPath pipeline/hooks`.
   loads into RAM), so `sample_ftp.pull` never fetches it. Every local save of a `.KSC` rewrites it
   (`_save_collection_with_user_bank`), push uploads the local sibling after the `.KSC`, and regenerates it first if it
   is older than the `.KSC`. A collection with no local sibling is pushed without one; the instrument's copy is left as is.
-- **Bank names follow the connected instrument.** `Conversion.push.bank_label/dest_label(..., nautilus)`: Nautilus
+- **Bank names follow the connected instrument.** `Core/bank_names.py` is the one table: `KronosBankNames`, with `NautilusBankNames` overriding only what differs (Drum Kit / Wave Sequence names are the same on both). `SysExService.set_device_family` sets the active family, so a label asked for without a family (`label_for(..., nautilus=None)`, `ObjLoc.label()`, `resolve_bank_label`) is the connected instrument's; never hardcode `I-A` / `U-GG` in user-visible text. `Conversion.push.bank_label/dest_label(..., nautilus)`: Nautilus
   user banks are G..T, Kronos user banks are U-A..U-GG (`restore_from_backup` and push messages use the service's family).
 - **Conversion push (`Conversion/push.py`).** Three phases, each written and Stored before the next: Drum Kits and Wave
   Sequences, then Programs, then Combis / Song Timbre Sets. A referrer converted alongside what it references is

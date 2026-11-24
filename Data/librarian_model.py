@@ -37,6 +37,7 @@ from Data.librarian_sysex import (
     set_combi_timbre_ref, set_program_drum_track_ref, set_program_zone_number, set_setlist_slot_ref,
 )
 import Data.object_types as object_types
+import Core.bank_names as bank_names
 import Core.kronos_sysex as ksx
 from Data.pcg_file import program_body_kind
 
@@ -51,7 +52,7 @@ class ObjLoc:
     bank: int       # object-dump bank byte
     number: int     # index within bank
 
-    def label(self, nautilus: bool = False) -> str:
+    def label(self, nautilus: Optional[bool] = None) -> str:
         if self.obj_type == OBJ_SET_LIST:
             return f"Set List {self.number:02d}"
         return f"{object_types.label_for(self.obj_type, self.bank, nautilus)}:{self.number:03d}"
@@ -70,11 +71,11 @@ class ReferrerSite:
 
     def describe(self) -> str:
         if self.kind == 'combi_timbre':
-            return f"Combi {ksx.combi_label(self.ref_bank)}:{self.ref_index:03d} timbre {self.site + 1}"
+            return f"Combi {bank_names.for_family().combi(self.ref_bank)}:{self.ref_index:03d} timbre {self.site + 1}"
         if self.kind == 'drum_track':
-            return f"Program {ksx.program_label(self.ref_bank)}:{self.ref_index:03d} drum track"
+            return f"Program {bank_names.for_family().program(self.ref_bank)}:{self.ref_index:03d} drum track"
         if self.kind == 'osc_zone':
-            return (f"Program {ksx.program_label(self.ref_bank)}:{self.ref_index:03d} "
+            return (f"Program {bank_names.for_family().program(self.ref_bank)}:{self.ref_index:03d} "
                     f"OSC{self.site // ZONES_PER_OSC + 1} zone {self.site % ZONES_PER_OSC + 1}")
         return f"Set List {self.ref_index:03d} slot {self.site + 1}"
 
@@ -449,9 +450,9 @@ def plan_move(catalog: LibraryCatalog, src: ObjLoc, src_dump: ObjectDump,
 
 def _store_label(obj: int, bank: int) -> str:
     if obj == OBJ_PROGRAM:
-        return f"Prog {ksx.program_label(bank)}"
+        return f"Prog {bank_names.for_family().program(bank)}"
     if obj == OBJ_COMBI:
-        return f"Combi {ksx.combi_label(bank)}"
+        return f"Combi {bank_names.for_family().combi(bank)}"
     if obj == OBJ_SET_LIST:
         return "Set Lists"
     if obj == OBJ_DRUM_KIT:

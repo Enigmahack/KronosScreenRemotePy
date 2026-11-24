@@ -303,11 +303,9 @@ def _legend_text(text: str) -> QLabel:
     return lbl
 
 
-def _bank_label(obj_type: int, bank: int, nautilus: bool = False) -> str:
-    if obj_type in (OBJ_PROGRAM, OBJ_COMBI):
+def _bank_label(obj_type: int, bank: int, nautilus: Optional[bool] = None) -> str:
+    if obj_type in (OBJ_PROGRAM, OBJ_COMBI, OBJ_DRUM_KIT, OBJ_WAVE_SEQ):
         return object_types.label_for(obj_type, bank, nautilus)
-    if obj_type in (OBJ_DRUM_KIT, OBJ_WAVE_SEQ):
-        return object_types.label_for(obj_type, bank)
     return ""
 
 
@@ -2742,6 +2740,8 @@ class LibrarianShellWindow(QDialog):
             return None
         return self._blobs.get(entry.current_hash)
 
+    # ── Local pane actions ───────────────────────────────────────────────────
+
     def _factory_blank_for(self, loc: ObjLoc, original: Optional[bytes], entry: LocalIndexEntry) -> Optional[bytes]:
         """The instrument's own initialised object for a deleted slot, in the format that slot holds: the family comes
         from the body it held (a Program is 4960/3706 bytes on a Kronos, 4954/3700 on a Nautilus), else from the connected
@@ -2751,8 +2751,6 @@ class LibrarianShellWindow(QDialog):
         if exi is None and loc.obj_type == OBJ_PROGRAM:
             exi = entry.is_exi
         return factory_blank.blank_body(loc.obj_type, original or b"", family == FAMILY_NAUTILUS, exi, loc.number)
-
-    # ── Local pane actions ───────────────────────────────────────────────────
 
     def _show_local_properties(self) -> None:
         payload = self._leaf_payload(self._tree_local)
@@ -3169,9 +3167,9 @@ class LibrarianShellWindow(QDialog):
                 original_body = self._blobs.get(entry.baseline_hash)
                 blank_body = self._factory_blank_for(loc, original_body, entry)
                 if blank_body is None:
-                    original_body = self._blobs.get(entry.baseline_hash)
-                    if original_body is not None:
-                        blank_body = erase_body.build(loc.obj_type, original_body)
+                    blank_body = self._blank_templates.blank_body_for(loc.obj_type, entry.is_exi)
+                if blank_body is None and original_body is not None:
+                    blank_body = erase_body.build(loc.obj_type, original_body)
                 blank_hash = (self._blobs.put(blank_body) if blank_body is not None
                              else entry.baseline_hash)
                 entry = LocalIndexEntry(
@@ -3322,9 +3320,9 @@ class LibrarianShellWindow(QDialog):
             return
         menu = QMenu(self)
         menu.addAction("More Info...", self._show_merge_properties)
-        menu.addAction("Delete with dependencies", self._remove_merge_with_dependencies)
         menu.addSeparator()
         menu.addAction("Remove", self._remove_merge_selected)
+        menu.addAction("Delete with dependencies", self._remove_merge_with_dependencies)
         self._add_expand_collapse(menu, self._tree_merge, item)
         _exec_modal(menu, self._tree_merge.viewport().mapToGlobal(local_pos))
 
@@ -3365,7 +3363,7 @@ class LibrarianShellWindow(QDialog):
         box = QMessageBox(self)
         box.setWindowTitle("Stage Bank Conversion")
         box.setText(
-            f"Stage {ksx.program_label(bank)} for a whole-bank HD-1/EXi format conversion?\n\n"
+            f"Stage {_bank_label(OBJ_PROGRAM, bank)} for a whole-bank HD-1/EXi format conversion?\n\n"
             "This queues a func-0x7C Change Program Bank Type for the next Sync/Commit. On "
             "the instrument, 0x7C REFORMATS AND ERASES the ENTIRE bank — every Program slot "
             "in it, not just the ones you've edited locally — right before this push's "
@@ -3384,7 +3382,7 @@ class LibrarianShellWindow(QDialog):
             return
         self._index.set_pending_bank_type_change(bank, to_exi)
         self._index.save()
-        self._log(f"Staged {ksx.program_label(bank)} for conversion to "
+        self._log(f"Staged {_bank_label(OBJ_PROGRAM, bank)} for conversion to "
                  f"{'EXi' if to_exi else 'HD-1'} (func 0x7C reformats + erases the whole "
                  "bank at next Sync/Commit).")
         self._refresh_local_tree()
@@ -3392,7 +3390,7 @@ class LibrarianShellWindow(QDialog):
     def _unstage_bank_type_change(self, bank: int) -> None:
         self._index.clear_pending_bank_type_change(bank)
         self._index.save()
-        self._log(f"Unstaged the pending bank conversion for {ksx.program_label(bank)}.")
+        self._log(f"Unstaged the pending bank conversion for {_bank_label(OBJ_PROGRAM, bank)}.")
         self._refresh_local_tree()
 
     # ── Merge pane actions ───────────────────────────────────────────────────
@@ -3792,6 +3790,8 @@ class LibrarianShellWindow(QDialog):
         removed = sum(1 for p in payloads if self._merge.remove(p[1]))
         self._log("Removed item from the Merge Window." if removed == 1
                  else f"Removed {removed} item(s) from the Merge Window.")
+        self._refresh_merge_tree()
+
     def _remove_merge_with_dependencies(self) -> None:
         payloads = [p for p in self._selected_payloads(self._tree_merge) if p[0] == "merge"]
         if not payloads:
@@ -3810,8 +3810,6 @@ class LibrarianShellWindow(QDialog):
             for h in doomed:
                 self._merge.remove(h)
         self._log(f"Removed {len(doomed)} item(s) from the Merge Window ({extra} dependencies).")
-        self._refresh_merge_tree()
-
         self._refresh_merge_tree()
 
     # ── Sequential fill (requirement 5) + Merge/PCG drag-drop shared core ────

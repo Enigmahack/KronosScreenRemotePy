@@ -107,7 +107,7 @@ from dataclasses import dataclass, field
 from typing import Callable, List, Optional, Tuple
 
 import Tools.dependency_scanner as depscan
-from Core.kronos_sysex import program_label
+from Core.bank_names import for_family as _bank_names
 from Data.librarian_model import ObjLoc
 from Data.librarian_sysex import OBJ_COMBI, OBJ_DRUM_KIT, OBJ_PROGRAM, OBJ_SET_LIST, OBJ_WAVE_SEQ
 from Data.library_pull_pipeline import GetBankObjects, GetLiveDigest, PullResult
@@ -458,7 +458,7 @@ def build_changeset(index: LocalLibraryIndex, blobs: BlobStore,
                     break
             if mismatch:
                 plan.warnings.append(
-                    f"REFUSE: {program_label(bank)} is currently formatted as "
+                    f"REFUSE: {_bank_names(device_family == 'nautilus' if device_family else None).program(bank)} is currently formatted as "
                     f"{'EXi' if live_is_exi else 'HD-1'} on the instrument, but this push has at "
                     "least one edit in the other format — stage an explicit bank-type conversion "
                     "first, or revert the edit to match")

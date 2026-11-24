@@ -86,13 +86,14 @@ import Core.kronos_sysex as ksx
 _OBJ_TYPE_DISPLAY = {t: d.display_name for t, d in object_types.REGISTRY.items()}
 
 
-def _bank_display_label(obj_type: int, bank: int) -> str:
-    if obj_type == OBJ_PROGRAM:
-        return ksx.program_label(bank)
-    if obj_type == OBJ_COMBI:
-        return ksx.combi_label(bank)
-    if obj_type in (OBJ_DRUM_KIT, OBJ_WAVE_SEQ):
-        return object_types.label_for(obj_type, bank)
+def _nautilus_of(family: Optional[str]) -> Optional[bool]:
+    """None (family not known) = the connected instrument's names."""
+    return None if family is None else family == "nautilus"
+
+
+def _bank_display_label(obj_type: int, bank: int, nautilus: Optional[bool] = None) -> str:
+    if obj_type in (OBJ_PROGRAM, OBJ_COMBI, OBJ_DRUM_KIT, OBJ_WAVE_SEQ):
+        return object_types.label_for(obj_type, bank, nautilus)
     return ""
 
 
@@ -237,9 +238,9 @@ def accepts_slots(fn) -> bool:
     return "slots" in params or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
 
 
-def slot_label(bank_key: str, number: int) -> str:
+def slot_label(bank_key: str, number: int, nautilus: Optional[bool] = None) -> str:
     """'Program I-A slot 5' for one slot of a "type:bank" key."""
-    return f"{bank_key_label(bank_key)} slot {number}"
+    return f"{bank_key_label(bank_key, nautilus)} slot {number}"
 
 
 #: Consecutive unanswered digest requests tolerated at the START of the sweep before it
@@ -448,7 +449,7 @@ def _fetch_banks(index: LocalLibraryIndex, blobs: BlobStore,
         banks_done += 1
         key = bank_ref.bank_key
         display = _OBJ_TYPE_DISPLAY.get(bank_ref.obj_type, "")
-        bank_label = _bank_display_label(bank_ref.obj_type, bank_ref.bank)
+        bank_label = _bank_display_label(bank_ref.obj_type, bank_ref.bank, _nautilus_of(family))
         name = f"{display} {bank_label}".strip()
         asked: Optional[List[int]] = slots if (slots is not None and subset_ok) else None
         if progress is not None:
@@ -484,9 +485,9 @@ def _fetch_banks(index: LocalLibraryIndex, blobs: BlobStore,
             recovered += len(before - set(rec))
             retry_failed = [n for n in missing if rec.get(n, limit) < limit]
             if retry_failed:
-                incomplete.append(_bank_report_label(bank_ref))
+                incomplete.append(_bank_report_label(bank_ref, _nautilus_of(family)))
                 missing_total += len(retry_failed)
-            newly_unreadable.extend(slot_label(key, n) for n in newly)
+            newly_unreadable.extend(slot_label(key, n, _nautilus_of(family)) for n in newly)
         if skipped:
             # Cut short by a cancel inside the bank: its unasked slots are recorded above (unread,
             # held back, re-fetched), but the bank is not a finished read - no baseline advance.
@@ -502,22 +503,23 @@ def _fetch_banks(index: LocalLibraryIndex, blobs: BlobStore,
                       newly_unreadable=tuple(newly_unreadable), recovered_slots=recovered)
 
 
-def _bank_report_label(bank_ref: BankRef) -> str:
+def _bank_report_label(bank_ref: BankRef, nautilus: Optional[bool] = None) -> str:
     display = _OBJ_TYPE_DISPLAY.get(bank_ref.obj_type, "")
-    label = _bank_display_label(bank_ref.obj_type, bank_ref.bank)
+    label = _bank_display_label(bank_ref.obj_type, bank_ref.bank, nautilus)
     return f"{display} {label}".strip() if label else (display or bank_ref.bank_key)
 
 
-def bank_key_label(bank_key: str) -> str:
+def bank_key_label(bank_key: str, nautilus: Optional[bool] = None) -> str:
     """Display label ("Program U-A") of a "type:bank" index bank key."""
     try:
         obj_type, bank = (int(x) for x in bank_key.split(":"))
     except ValueError:
         return bank_key
-    return _bank_report_label(BankRef(obj_type, bank))
+    return _bank_report_label(BankRef(obj_type, bank), nautilus)
 
 
-def unread_slots_text(incomplete: Dict[str, Dict[int, int]], entry_keys: List[str], limit: int = 12) -> str:
+def unread_slots_text(incomplete: Dict[str, Dict[int, int]], entry_keys: List[str], limit: int = 12,
+                      nautilus: Optional[bool] = None) -> str:
     """'Program I-A slot 3, Program I-A slot 5 (unreadable)' for the given "type:bank:number"
     index keys, each tagged unreadable when the record says so."""
     parts = []
@@ -526,17 +528,18 @@ def unread_slots_text(incomplete: Dict[str, Dict[int, int]], entry_keys: List[st
         bank_key = LocalLibraryIndex.bank_key(obj_type, bank)
         fails = incomplete.get(bank_key, {}).get(number)
         tag = " (unreadable)" if fails is not None and fails >= LocalLibraryIndex.UNREADABLE_AFTER else ""
-        parts.append(slot_label(bank_key, number) + tag)
+        parts.append(slot_label(bank_key, number, nautilus) + tag)
     if len(parts) > limit:
         parts = parts[:limit] + [f"and {len(parts) - limit} more"]
     return ", ".join(parts)
 
 
-def incomplete_banks_text(incomplete: Dict[str, Dict[int, int]], keys: Optional[List[str]] = None) -> str:
+def incomplete_banks_text(incomplete: Dict[str, Dict[int, int]], keys: Optional[List[str]] = None,
+                          nautilus: Optional[bool] = None) -> str:
     """'Program U-A (3 unread slots), Combi I-B (128 unread slots)' for the given incomplete-bank
     record (LocalLibraryIndex.incomplete_banks), restricted to `keys` when given."""
     chosen = [k for k in (keys if keys is not None else incomplete) if k in incomplete]
-    parts = [f"{bank_key_label(k)} ({len(incomplete[k])} unread slot{'s' if len(incomplete[k]) != 1 else ''})"
+    parts = [f"{bank_key_label(k, nautilus)} ({len(incomplete[k])} unread slot{'s' if len(incomplete[k]) != 1 else ''})"
              for k in sorted(chosen, key=lambda k: tuple(int(x) for x in k.split(":")))]
     return ", ".join(parts)
 
