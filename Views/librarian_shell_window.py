@@ -3631,10 +3631,13 @@ class LibrarianShellWindow(QDialog):
                         self._auto_fill_placed += 1
                     else:
                         self._auto_fill_skipped += 1
-                    # Only step past the candidate slot if something actually landed in
-                    # it. A dedup-reuse or a Force-Overwrite refusal leaves it free, and
-                    # the next item must still be offered it.
-                    if self._index.get(entry.obj_type, dst[0], dst[1]) is not None:
+                    # Only step past the candidate slot if this item was written INTO it. A
+                    # dedup-reuse or a Force-Overwrite refusal leaves it free, and the next
+                    # item must still be offered it. (Testing "slot has an index entry" is
+                    # wrong: a pulled library has an Init entry in every slot, so each
+                    # deduped Program skipped a free slot and the cursor ran off the end of
+                    # the banks, reporting "full" with room left.)
+                    if self._merge.placed_address(entry.content_hash) == (entry.obj_type, dst[0], dst[1]):
                         self._advance_auto_fill_cursor(
                             entry.obj_type, dst[0],
                             program_body_kind(len(entry.body)) if entry.obj_type == OBJ_PROGRAM else None)
