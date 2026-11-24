@@ -444,6 +444,18 @@ def _program_shift(body) -> int:
     return _NAUTILUS_PROGRAM_SHIFT if len(body) in NAUTILUS_PROGRAM_SIZES else 0
 
 
+#: Oscillator Mode values whose zones hold Drum Kit / Wave Sequence numbers instead of multisample numbers. The enum is
+#: Single 0, Double 1, Drums 2, (EXi) 3, (unused) 4, Double Drums 5 (pcg_file_format.md; corpus: kits named like their Program
+#: are referenced only from mode 2).
+DRUM_OSC_MODES = (2, 5)
+
+
+def is_drum_kit_zone(osc_mode: int, osc: int, zone: int) -> bool:
+    """Whether zone `zone` of oscillator `osc` holds a Drum Kit number in this mode: zone 0 of oscillator 1 (Drums) or of
+    either oscillator (Double Drums). The other zones keep a stale default (kit 0), which is no dependency."""
+    return osc_mode in DRUM_OSC_MODES and zone == 0 and (osc == 0 or osc_mode == 5)
+
+
 def program_oscillator_mode(body: bytes) -> int:
     return body[_OSC_MODE_OFS - _program_shift(body)] & 0x07
 

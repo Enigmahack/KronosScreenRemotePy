@@ -28,7 +28,7 @@ def check(name, cond):
         fails.append(name)
 
 
-def hd1_program(zone_refs=(), osc_mode=4, drum_track=None):
+def hd1_program(zone_refs=(), osc_mode=2, drum_track=None):
     body = bytearray(PROGRAM_HD1_WIRE_SIZE)
     body[2558] = osc_mode
     for (osc, zone, ms_type, number) in zone_refs:
@@ -55,7 +55,7 @@ check("label-ws", ObjLoc(OBJ_WAVE_SEQ, 0, 33).label() == "INT:033")
 check("label-setlist", ObjLoc(OBJ_SET_LIST, 0, 5).label() == "Set List 05")
 
 # ── referrers: Drum Kit via osc zone (Drums-mode oscillator), Wave Seq via ms_type 2 ────────────
-prog = hd1_program([(0, 0, 1, 44), (1, 2, 2, 33)], osc_mode=4)
+prog = hd1_program([(0, 0, 1, 44), (1, 2, 2, 33)], osc_mode=2)
 cat = LibraryCatalog()
 cat.add_program(ObjectDump(OBJ_PROGRAM, 0x40, 7, 5, prog))
 dk_sites = cat.referrers_of(ObjLoc(OBJ_DRUM_KIT, 0x40, 4))        # linear 44

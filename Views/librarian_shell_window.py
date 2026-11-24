@@ -175,6 +175,7 @@ Changes, opening a local .pcg file) are cheap disk/CPU work and run synchronousl
 from __future__ import annotations
 
 import dataclasses
+from collections import Counter
 import json
 import logging
 import os
@@ -4381,6 +4382,78 @@ class LibrarianShellWindow(QDialog):
         act.setToolTip(reason or self._CONVERT_TIP.format(target=self._target_name()))
         menu.setToolTipsVisible(True)
 
+    def _convert_item_for(self, source: str, loc: ObjLoc, target: str):
+        """One object of the PCG / Keyboard Library pane as a ConvertItem: ("item", ConvertItem), ("skipped", name) when
+        it is not known which instrument it was made for, ("same", name) when it is already in the target's format, or
+        (None, None) when the slot holds nothing."""
+        if source == "pcg":
+            body = self._pcg_resolve_content(loc.obj_type, loc.bank, loc.number, raw=True)
+            entry = self._pcg_by_addr.get((loc.obj_type, loc.bank, loc.number))
+            name, is_exi = (entry.name, entry.is_exi) if entry is not None else ("", False)
+            family = self._pcg.family if self._pcg is not None else None
+        else:
+            body = self._local_resolve_content(loc.obj_type, loc.bank, loc.number)
+            entry = self._index.get(loc.obj_type, loc.bank, loc.number)
+            name = entry.display_name if entry is not None else ""
+            is_exi = body is not None and loc.obj_type == OBJ_PROGRAM and wire_body_is_exi(len(body))
+            family = None
+            if body is not None:
+                # Drum Kits and Wave Sequences are the same size on both instruments: only the recorded
+                # provenance says which one a body was made for. Unknown provenance is never guessed.
+                family = body_family(loc.obj_type, len(body)) or self._index.family_of(entry.current_hash)
+                if family is None:
+                    return "skipped", name or "(unnamed)"
+        if body is None:
+            return None, None
+        if family == target:
+            return "same", name or "(unnamed)"
+        if loc.obj_type == OBJ_PROGRAM:
+            tbank = (nautilus_timbre_bank_for_wire if family == FAMILY_NAUTILUS
+                     else kronos_timbre_bank_for_obj)(loc.bank)
+            src_ref = None if tbank is None else (tbank, loc.number)
+        else:   # a Drum Kit / Wave Sequence is addressed by its location; Combis are never referenced here
+            src_ref = (loc.bank, loc.number) if loc.obj_type in (OBJ_DRUM_KIT, OBJ_WAVE_SEQ) else None
+        return "item", ConvertItem(loc.obj_type, name, body, is_exi, src_ref=src_ref,
+                                   program_name=self._program_namer(source, family))
+
+    def _convert_dependency_items(self, source: str, target: str,
+                                  chosen: Dict[Tuple[int, int, int], bytes], what: str) -> List[ConvertItem]:
+        """What the selection references but did not include: the user Programs, Drum Kits and Wave Sequences its Combis and
+        Programs point at (followed all the way down; read-only and factory banks are left to the instrument). A referrer
+        converted without them keeps pointing at slot numbers that were never written, which is how a Program ended up on
+        the Nautilus with its Drum Kit missing. Asks first; No converts only the selection."""
+        from Tools.dependency_scanner import walk_object_references
+        seen = set(chosen)
+        queue = list(chosen.items())
+        found: List[Tuple[ObjLoc, ConvertItem]] = []
+        while queue:
+            (obj_type, _bank, _number), body = queue.pop()
+            for ref in walk_object_references(obj_type, body):
+                r = ref.ref
+                key = (r.obj_type, r.bank, r.number)
+                if r.obj_type not in (OBJ_PROGRAM, OBJ_DRUM_KIT, OBJ_WAVE_SEQ) or r.bank < 0x40 or key in seen:
+                    continue
+                seen.add(key)
+                kind, item = self._convert_item_for(source, r, target)
+                if kind == "item":
+                    found.append((r, item))
+                    queue.append((key, item.body))
+        if not found:
+            return []
+        counts = Counter(r.obj_type for r, _ in found)
+        parts = [f"{counts[t]} {conv_type_name(t)}(s)" for t in (OBJ_PROGRAM, OBJ_DRUM_KIT, OBJ_WAVE_SEQ) if counts[t]]
+        listed = "\n".join(f"  {self._loc_text(r)}  {it.name.strip()}" for r, it in found[:12])
+        more = f"\n  ... and {len(found) - 12} more" if len(found) > 12 else ""
+        answer = QMessageBox.question(
+            self, what, f"The selection references {', '.join(parts)} that are not selected:\n\n{listed}{more}\n\n"
+                        "Convert them too? Without them the converted objects point at slots that were not written.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.Yes)
+        if answer != QMessageBox.StandardButton.Yes:
+            self._log(f"{what}: {len(found)} referenced object(s) left out ({', '.join(parts)}).")
+            return []
+        self._log(f"{what}: including {len(found)} referenced object(s) ({', '.join(parts)}).")
+        return [it for _, it in found]
+
     def _convert_to_instrument(self, source: str) -> None:
         """Programs/Combis/Drum Kits/Wave Sequences of the other instrument family, from the PCG or Keyboard Library
         pane -> consecutive slots on the connected instrument, over SysEx. Every target slot is backed up first."""
@@ -4393,38 +4466,19 @@ class LibrarianShellWindow(QDialog):
         items: List[ConvertItem] = []
         skipped: List[str] = []       # unknown provenance
         same: List[str] = []          # already in the connected instrument's format
+        chosen: Dict[Tuple[int, int, int], bytes] = {}
         for loc in self._convert_selected_locs(source):
             if loc.obj_type not in CONVERTIBLE_TYPES:
                 continue
-            if source == "pcg":
-                body = self._pcg_resolve_content(loc.obj_type, loc.bank, loc.number, raw=True)
-                entry = self._pcg_by_addr.get((loc.obj_type, loc.bank, loc.number))
-                name, is_exi = (entry.name, entry.is_exi) if entry is not None else ("", False)
-                family = self._pcg.family if self._pcg is not None else None
-            else:
-                body = self._local_resolve_content(loc.obj_type, loc.bank, loc.number)
-                entry = self._index.get(loc.obj_type, loc.bank, loc.number)
-                name = entry.display_name if entry is not None else ""
-                is_exi = body is not None and loc.obj_type == OBJ_PROGRAM and wire_body_is_exi(len(body))
-                if body is not None:
-                    # Drum Kits and Wave Sequences are the same size on both instruments: only the recorded
-                    # provenance says which one a body was made for. Unknown provenance is never guessed.
-                    family = body_family(loc.obj_type, len(body)) or self._index.family_of(entry.current_hash)
-                    if family is None:
-                        skipped.append(name or "(unnamed)")
-                        continue
-            if body is not None:
-                if family == target:
-                    same.append(name or "(unnamed)")
-                    continue
-                if loc.obj_type == OBJ_PROGRAM:
-                    tbank = (nautilus_timbre_bank_for_wire if family == FAMILY_NAUTILUS
-                             else kronos_timbre_bank_for_obj)(loc.bank)
-                    src_ref = None if tbank is None else (tbank, loc.number)
-                else:   # a Drum Kit / Wave Sequence is addressed by its location; Combis are never referenced here
-                    src_ref = (loc.bank, loc.number) if loc.obj_type in (OBJ_DRUM_KIT, OBJ_WAVE_SEQ) else None
-                items.append(ConvertItem(loc.obj_type, name, body, is_exi, src_ref=src_ref,
-                                         program_name=self._program_namer(source, family)))
+            kind, payload = self._convert_item_for(source, loc, target)
+            if kind == "item":
+                items.append(payload)
+                chosen[(loc.obj_type, loc.bank, loc.number)] = payload.body
+            elif kind == "skipped":
+                skipped.append(payload)
+            elif kind == "same":
+                same.append(payload)
+        items.extend(self._convert_dependency_items(source, target, chosen, what))
         notes = []
         if skipped:
             notes.append(f"{len(skipped)} skipped: not known which instrument they were made for (pull their bank "

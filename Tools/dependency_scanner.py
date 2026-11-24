@@ -29,6 +29,7 @@ from typing import Callable, Iterator, List, Optional
 
 from Data.librarian_model import ObjLoc, _READONLY_PROGRAM_BANKS
 from Data.librarian_sysex import (
+    is_drum_kit_zone,
     OBJ_COMBI, OBJ_DRUM_KIT, OBJ_PROGRAM, OBJ_SET_LIST, OBJ_WAVE_SEQ,
     PROGRAM_HD1_NAUTILUS_SIZE, PROGRAM_HD1_WIRE_SIZE, ZONES_PER_OSC,
     func33_to_obj_bank, iter_combi_timbre_refs, iter_program_zone_refs, iter_setlist_slot_refs, setlist_slot_base,
@@ -122,7 +123,7 @@ def _walk_program_references(body: bytes) -> Iterator[ObjectRef]:
                 loc = object_types.wave_seq_linear_to_loc(number)
                 if loc is not None:
                     yield ObjectRef(label, site, ObjLoc(OBJ_WAVE_SEQ, loc[0], loc[1]))
-            elif ms_type == 1 and osc_mode in (4, 5):
+            elif ms_type == 1 and is_drum_kit_zone(osc_mode, osc, zone):
                 loc = object_types.drum_kit_linear_to_loc(number)
                 if loc is not None:
                     yield ObjectRef(label, site, ObjLoc(OBJ_DRUM_KIT, loc[0], loc[1]))

@@ -24,7 +24,7 @@ import enum
 from dataclasses import dataclass
 from typing import Dict, Iterator, List, Optional, Tuple
 
-from Data.librarian_sysex import OBJ_DRUM_KIT, OBJ_PROGRAM, OBJ_WAVE_SEQ
+from Data.librarian_sysex import DRUM_OSC_MODES, OBJ_DRUM_KIT, OBJ_PROGRAM, OBJ_WAVE_SEQ
 from Data.pcg_file import NAUTILUS_WIRE_SIZE_EXI, NAUTILUS_WIRE_SIZE_HD1, WIRE_SIZE_EXI, WIRE_SIZE_HD1
 
 # Bucket names match the C# BankBucket enum (also what the panel's colour table keys on).
@@ -143,7 +143,7 @@ def iter_program_sample_zone_refs(body: bytes) -> Iterator[Tuple[int, int, bytes
             num_off = type_off + _ZONE_NUM_OFFSET
             if num_off + 1 >= len(body):
                 return
-            if (body[type_off] & 0x03) != 1 or osc_mode in (4, 5):
+            if (body[type_off] & 0x03) != 1 or osc_mode in DRUM_OSC_MODES:
                 continue
             yield osc, zone, bytes(body[type_off + 1:type_off + 17]), body[num_off] | (body[num_off + 1] << 8)
 
@@ -256,7 +256,7 @@ def _selftest() -> None:
 
     # HD-1 Drums-mode zone is a Drum Kit object ref, not a sample ref
     b = program("TEST DRUMS", WIRE_SIZE_HD1)
-    b[_OSC_MODE_OFFSET] = 4
+    b[_OSC_MODE_OFFSET] = 2   # Drums
     write_zone(b, 0, 0, 1, legacy_uuid(18), 199)
     check("hd1-drums-zone-excluded", len(walk(OBJ_PROGRAM, bytes(b))) == 0)
 

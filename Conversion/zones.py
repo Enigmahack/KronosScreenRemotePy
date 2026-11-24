@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 from Conversion.data import default_piano, ROM_DRUMSAMPLES, ROM_MULTISAMPLES, RomWaveformMap
-from Data.librarian_sysex import (program_oscillator_mode, program_zone_reversed, set_program_zone_number,
+from Data.librarian_sysex import (DRUM_OSC_MODES, program_oscillator_mode, program_zone_reversed, set_program_zone_number,
                                   set_program_zone_reverse, set_program_zone_uuid)
 from Objects.object_body import (iter_drum_kit_sample_refs, iter_wave_seq_sample_refs, set_drum_kit_sample_id,
                                  set_drum_kit_zone_off, set_drum_kit_zone_uuid, set_wave_seq_step_reverse,
@@ -125,7 +125,7 @@ def remap_program_hd1(body: bytes, rom_map: RomWaveformMap, exs: ExsOptionIndex,
         if outcome is not _Outcome.UNMAPPED and not (osc == 1 and osc2_unused):
             (reversed_zones if program_zone_reversed(bytes(out), osc, zone) else normal_zones)[osc].append(zone + 1)
     if notes is not None:
-        if program_oscillator_mode(body) in (4, 5):
+        if program_oscillator_mode(body) in DRUM_OSC_MODES:
             # Drums / Wave Sequence oscillator modes hold object numbers in their zones, not sample references, and
             # the two instruments' kit and sequence sets differ; they are carried over as they are.
             notes.append("This Program's oscillator uses a Drum Kit or Wave Sequence by number; the number was kept, "
@@ -150,7 +150,7 @@ def remap_program_hd1(body: bytes, rom_map: RomWaveformMap, exs: ExsOptionIndex,
 def _wave_sequence_pack_zones(body: bytes) -> List[str]:
     """Zones whose MS Type is Wave Sequence (2) and whose 16-byte id names an EXs or third-party bank, e.g. the Kronos
     Program "AF Lead" (EXs206's id, stored big-endian with byte 15 = 0x02, read live 2026-11-11)."""
-    if program_oscillator_mode(body) in (4, 5):
+    if program_oscillator_mode(body) in DRUM_OSC_MODES:
         return []
     view = kronos_layout_view(body)
     found = []

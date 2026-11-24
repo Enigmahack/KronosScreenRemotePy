@@ -47,7 +47,7 @@ def named(size, name):
 
 def hd1_program(name, zones):
     b = bytearray(named(PROGRAM_HD1_WIRE_SIZE, name))
-    b[2558] = 4   # Drums-mode oscillator
+    b[2558] = 2   # Drums-mode oscillator (Single 0, Double 1, Drums 2, Double Drums 5)
     for osc, zone, ms_type, number in zones:
         base = (2774, 3240)[osc] + zone * 22
         b[base] = ms_type
