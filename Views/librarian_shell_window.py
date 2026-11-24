@@ -4964,8 +4964,17 @@ class LibrarianShellWindow(QDialog):
                 self._clipboard.resolve(entry.missing_ref)
                 continue
             if entry.expected_content_hash is not None:
-                found = self._index.find_by_content_hash(entry.missing_ref.obj_type,
-                                                          entry.expected_content_hash)
+                # Where the Merge Window actually put it first: the body written there can differ from the
+                # staged one (its own references were re-pointed), so a content-hash search misses it.
+                placed = self._merge.placed_address(entry.expected_content_hash)
+                found = None
+                if placed is not None and placed[0] == entry.missing_ref.obj_type:
+                    at = self._index.get(*placed)
+                    if at is not None and not at.pending_delete:
+                        found = (placed[1], placed[2])
+                if found is None:
+                    found = self._index.find_by_content_hash(entry.missing_ref.obj_type,
+                                                              entry.expected_content_hash)
                 if found is not None and found != (entry.missing_ref.bank, entry.missing_ref.number):
                     new_bank, new_number = found
                     if self._repoint_session_dependency(entry, new_bank, new_number):
