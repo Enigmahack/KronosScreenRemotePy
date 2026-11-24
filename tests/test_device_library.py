@@ -42,6 +42,8 @@ check("oplog-per-unit", a._oplog.root == a._index.root and b._oplog.root != a._o
 n = lambda t, bk: L._bank_label(t, bk, True)
 check("naut-int", n(OBJ_PROGRAM, 0) == "A" and n(OBJ_PROGRAM, 5) == "F")
 check("naut-user", n(OBJ_PROGRAM, 0x40) == "G" and n(OBJ_PROGRAM, 0x4D) == "T")
+check("naut-combi", [n(OBJ_COMBI, x) for x in (0, 5, 6, 0x40, 0x41, 0x46)] == ["A", "F", "G", "H", "I", "N"]
+      and L._bank_label(OBJ_COMBI, 6) == "I-G" and L._bank_label(OBJ_COMBI, 0x40) == "U-A")
 check("kronos-unchanged", L._bank_label(OBJ_PROGRAM, 0x40) == "U-A" and L._bank_label(OBJ_PROGRAM, 0) == "I-A")
 from Data.librarian_model import ObjLoc
 check("loc-label-family", ObjLoc(OBJ_PROGRAM, 0x40, 3).label() == "U-A:003" and ObjLoc(OBJ_PROGRAM, 0x40, 3).label(True) == "G:003"

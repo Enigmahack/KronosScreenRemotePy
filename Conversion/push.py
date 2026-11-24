@@ -90,11 +90,11 @@ def _nautilus_target(service) -> bool:
 
 
 def bank_label(obj_type: int, bank: int, nautilus: bool = True) -> str:
-    """Nautilus user banks continue past its factory A-F as G.. (wire 0x40 = G, 0x4C = S), where Kronos says U-A.."""
+    """Nautilus names: Programs A-F then G.. (wire 0x40 = G, 0x4C = S), Combis A-G then H.. (0x40 = H); Kronos says I-A / U-A.."""
     if obj_type == OBJ_SONG_TIMBRE:
         return "Songs"
-    if nautilus and obj_type in (OBJ_PROGRAM, OBJ_COMBI) and 0x40 <= bank <= 0x4D:
-        return chr(71 + bank - 0x40)
+    if nautilus and obj_type in (OBJ_PROGRAM, OBJ_COMBI) and (0x40 <= bank <= 0x4D or bank <= 6):
+        return object_types.label_for(obj_type, bank, True)
     if obj_type == OBJ_ARP_PATTERN:
         return "arp pattern bank B"
     return object_types.label_for(obj_type, bank)

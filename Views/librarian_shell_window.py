@@ -2536,6 +2536,9 @@ class LibrarianShellWindow(QDialog):
                     parent = root
                 else:
                     bank_label = items[0].bank.label if items[0].bank is not None else _bank_label(obj_type, bank)
+                    if (self._device_family() == FAMILY_NAUTILUS and obj_type in (OBJ_PROGRAM, OBJ_COMBI)
+                            and (bank <= 6 or 0x40 <= bank <= (0x4D if obj_type == OBJ_PROGRAM else 0x46))):
+                        bank_label = _bank_label(obj_type, bank, True)   # the connected instrument's names, not the file's
                     parent = QTreeWidgetItem([bank_label])
                     # Tagged (distinct from a leaf's "pcg" tag) so selecting a whole
                     # bank works for "Move to Merge Window", matching Local's

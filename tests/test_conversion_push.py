@@ -245,7 +245,7 @@ class FakeKronos(FakeNautilus):
     is_nautilus = False
 
 
-check("bank-label-nautilus-default", bank_label(OBJ_PROGRAM, 0x4D) == "T" and bank_label(OBJ_COMBI, 0x40) == "G")
+check("bank-label-nautilus-default", bank_label(OBJ_PROGRAM, 0x4D) == "T" and bank_label(OBJ_COMBI, 0x40) == "H" and bank_label(OBJ_COMBI, 6) == "G")
 check("bank-label-kronos", bank_label(OBJ_PROGRAM, 0x4D, False) == "U-GG" and bank_label(OBJ_COMBI, 0x46, False) == "U-G")
 check("dest-label-kronos", dest_label(OBJ_PROGRAM, 0x4D, 0, False) == "U-GG000" and dest_label(OBJ_PROGRAM, 0x4C, 3) == "S003")
 for cls, want in ((FakeKronos, "U-GG"), (FakeNautilus, "T")):
