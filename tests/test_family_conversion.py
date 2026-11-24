@@ -15,7 +15,7 @@ from Conversion.combi_reverse import convert_combi_to_kronos
 from Conversion.data import (RomWaveformMap, init_combi_template, init_program_template, kronos_timbre_bank_for_obj,
                              nautilus_timbre_bank_for_wire)
 from Conversion.push import ConvertTables
-from Data.librarian_sysex import (OBJ_COMBI, OBJ_DRUM_KIT, OBJ_PROGRAM, OBJ_WAVE_SEQ, combi_timbre_ref,
+from Data.librarian_sysex import (func33_to_timbre_bank, OBJ_COMBI, OBJ_DRUM_KIT, OBJ_PROGRAM, OBJ_WAVE_SEQ, combi_timbre_ref,
                                   iter_combi_timbre_refs, set_combi_timbre_ref)
 from Data.pcg_file import FAMILY_KRONOS, FAMILY_NAUTILUS, body_family, open_pcg, wire_body_from_pcg_entry
 from Tools.dependency_scanner import walk_object_references
@@ -37,7 +37,7 @@ check("naut-raw-byte", n[2633] == 17 and n[2633 + 188] == 30 and n[2633 + 376] =
 check("naut-roundtrip", [combi_timbre_ref(bytes(n), t) for t in range(3)] == [(18, 10), (31, 127), (5, 3)])
 k = bytearray(7810)
 set_combi_timbre_ref(k, 0, 18, 10)
-check("kronos-raw-byte", k[4803] == 18 and combi_timbre_ref(bytes(k), 0) == (18, 10))
+check("kronos-raw-byte", k[4803] == 17 and combi_timbre_ref(bytes(k), 0) == (18, 10))
 check("naut-iter-16", len(list(iter_combi_timbre_refs(bytes(n)))) == 16)
 check("bank-byte-helpers", kronos_timbre_bank_for_obj(0x40) == 18 and nautilus_timbre_bank_for_wire(0x40) == 17
       and nautilus_timbre_bank_for_wire(0x4C) == 29 and kronos_timbre_bank_for_obj(0x10) is None)
@@ -77,7 +77,7 @@ def uncovered(bank):
 SLOTS = [(b, uncovered(b)) for b in (18, 24, 31)]
 for t, (bank, num) in enumerate(SLOTS):
     o = 4802 + t * 188
-    kc[o], kc[o + 1], kc[o + 2] = num, bank, 0x20
+    kc[o], kc[o + 1], kc[o + 2] = num, func33_to_timbre_bank(bank), 0x20   # the byte counts user banks from 17
 nc = convert_object(OBJ_COMBI, bytes(kc), False, FAMILY_KRONOS, FAMILY_NAUTILUS, T)
 check("k2n-combi", nc.body is not None and len(nc.body) == 5640)
 check("k2n-combi-refs-same-wire-bank",
@@ -96,7 +96,7 @@ check("reverse-map", rm.reversed().try_map("ROM_MULTISAMPLES", 9) == 5 and rm.re
 ent = next(e for e in T.ref_map._by_kronos.values() if 18 <= e.kronos_bank <= 31)
 kcb2 = bytearray(init_combi_template(False))
 o = 4802
-kcb2[o], kcb2[o + 1], kcb2[o + 2] = ent.kronos_index, ent.kronos_bank, 0x20
+kcb2[o], kcb2[o + 1], kcb2[o + 2] = ent.kronos_index, func33_to_timbre_bank(ent.kronos_bank), 0x20
 for t in range(1, 16):
     kcb2[4802 + t * 188 + 2] &= 0x1F      # Status Off, so only timbre 1 is looked at
 kcb2 = bytes(kcb2)

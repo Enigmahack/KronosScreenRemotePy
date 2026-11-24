@@ -19,6 +19,7 @@ from Conversion.data import (ProgramRefMap, UnknownProgramIdentity, assumed_warn
 from Conversion.profiles import (COMBI_KRONOS_SIZE, COMBI_KRONOS_TAIL, COMBI_NAUTILUS_SIZE, COMBI_NAUTILUS_TAIL,
                                  COMBI_SHARED_HEAD_END)
 from Conversion.result import ConversionResult
+from Data.librarian_sysex import func33_to_timbre_bank
 
 _KRONOS_TIMBRE_BASE = _TIMBRE_BASE + (COMBI_KRONOS_TAIL - COMBI_NAUTILUS_TAIL)
 
@@ -75,7 +76,7 @@ def _repoint_timbre_programs(out: bytearray, ref_map: Optional[ProgramRefMap], w
         index, bank = out[o], out[o + 1]
         if placed and (bank, index) in placed:
             kb, ki = placed[(bank, index)]
-            out[o], out[o + 1] = ki & 0xFF, kb & 0xFF
+            out[o], out[o + 1] = ki & 0xFF, func33_to_timbre_bank(kb) & 0xFF
             moved.append(f"{t + 1}: {nautilus_program_label(bank, index)} -> {kronos_program_label(kb, ki)}")
             continue
         e = ref_map.get_by_nautilus(bank, index) if ref_map is not None else None
@@ -87,9 +88,9 @@ def _repoint_timbre_programs(out: bytearray, ref_map: Optional[ProgramRefMap], w
             kept.setdefault(label, []).append(t + 1)
             shifted = nautilus_user_to_kronos_bank(bank)
             if shifted is not None:
-                out[o + 1] = shifted
+                out[o + 1] = func33_to_timbre_bank(shifted)
             continue
-        out[o], out[o + 1] = e.kronos_index & 0xFF, e.kronos_bank & 0xFF
+        out[o], out[o + 1] = e.kronos_index & 0xFF, func33_to_timbre_bank(e.kronos_bank) & 0xFF
         (assumed if guessed else remapped).append(f'{t + 1}: {nautilus_program_label(bank, index)} "{e.nautilus_name}" -> '
                                                   f'{kronos_program_label(e.kronos_bank, e.kronos_index)} "{e.kronos_name}"')
     if moved:

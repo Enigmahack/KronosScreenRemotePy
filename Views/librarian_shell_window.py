@@ -2555,8 +2555,6 @@ class LibrarianShellWindow(QDialog):
         else:
             n_rejected = len(self._pcg.rejected_banks)
             extra = f" ({n_rejected} rejected bank(s))" if n_rejected else ""
-            if self._pcg.program_bank_shift:
-                extra += " (Program banks re-aligned to match the Combis' references)"
             if self._pcg.family != self._device_family():
                 extra += (f" ({self._pcg.family.title()} file: objects are converted to the "
                           f"{self._device_family().title()} format as you use them)")

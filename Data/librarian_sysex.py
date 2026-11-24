@@ -79,12 +79,13 @@ _TIMBRE_COUNT = 16
 _TIMBRE0_PROG_NUM_OFS = 4802     # timbre 0 program NUMBER byte
 _TIMBRE0_PROG_BANK_OFS = 4803    # timbre 0 program BANK byte (internal linear)
 _TIMBRE_STRIDE = 188
-# The Nautilus Combi is 2170 bytes shorter and its Timbres sit that much earlier. Its Timbre Program bank byte counts
-# user banks from 17 (G), the Kronos from 18 (U-A); the accessors below hide both differences so every caller keeps
-# using the Kronos ("func33") numbering.
+# The Nautilus Combi is 2170 bytes shorter and its Timbres sit that much earlier. On BOTH instruments the Timbre Program
+# bank byte counts INT-A..F 0-5, GM 6, g(1)..g(d) 7-16, user banks 17-30 (Kronos U-A..U-GG, Nautilus G..T), the same as a
+# set-list Program slot (Kronos corpus: 122 real PCGs, byte never above 30, byte 17 spans a full 128-slot bank; docs
+# pcg_file_format.md 4.2 "0x00-0x1E"). The accessors below translate it to the "func33" numbering (one higher from GM up:
+# it has an unused I-G at 6) that every caller uses.
 COMBI_NAUTILUS_SIZE = 5640
 _NAUTILUS_TIMBRE_SHIFT = 2170
-_NAUTILUS_USER_BANKS = (17, 30)
 
 # Set-list slot layout — one object is a 24-byte name + 128 slots + a 16-byte footer. The Nautilus slot is one byte
 # longer (+30 holds Dynamics Value / On, so the comment starts at +31); every other field sits at the same offset.
@@ -123,6 +124,16 @@ def _setlist_bank_to_func33(type_: int, raw: int) -> int:
 
 def _func33_to_setlist_bank(type_: int, func33: int) -> int:
     return func33 - 1 if type_ == 1 and func33 >= 7 else func33
+
+
+def timbre_bank_to_func33(raw: int) -> int:
+    """A Combi Timbre's Program bank byte (both instruments) -> func33 numbering."""
+    return _setlist_bank_to_func33(1, raw)
+
+
+def func33_to_timbre_bank(func33: int) -> int:
+    """func33 Program bank -> the Combi Timbre bank byte (both instruments)."""
+    return _func33_to_setlist_bank(1, func33)
 
 
 # ── Bank-encoding inverse ────────────────────────────────────────────────────
@@ -279,7 +290,8 @@ def digest_collection_request() -> bytes:
 
 def combi_timbre_bank_pc(timbre: int, func33_bank: int) -> bytes:
     """0x43 setting a combi timbre's program BANK (pid 8) in the edit buffer."""
-    return param_change(typ=4, soc=timbre, sub=0, pid=8, idx=0, value=func33_bank)
+    # HW-VERIFY: the live parameter's value is assumed to be the body's bank byte (17-based user banks), like pid 18's bank.
+    return param_change(typ=4, soc=timbre, sub=0, pid=8, idx=0, value=_func33_to_setlist_bank(1, func33_bank))
 
 
 def combi_timbre_number_pc(timbre: int, number: int) -> bytes:
@@ -336,20 +348,15 @@ def combi_timbre_ref(body: bytes, timbre: int) -> Tuple[int, int]:
     """Return (func33_bank, number) the given 0-based timbre points at."""
     base = _timbre0_num_ofs(body) + timbre * _TIMBRE_STRIDE
     number = body[base]
-    bank = body[base + 1]
-    if len(body) == COMBI_NAUTILUS_SIZE and _NAUTILUS_USER_BANKS[0] <= bank <= _NAUTILUS_USER_BANKS[1]:
-        bank += 1
-    return bank, number
+    return _setlist_bank_to_func33(1, body[base + 1]), number
 
 
 def set_combi_timbre_ref(body: bytearray, timbre: int,
                          func33_bank: int, number: int) -> None:
     """Patch a 0-based timbre's program reference in place (bytearray body)."""
     base = _timbre0_num_ofs(body) + timbre * _TIMBRE_STRIDE
-    if len(body) == COMBI_NAUTILUS_SIZE and _NAUTILUS_USER_BANKS[0] < func33_bank <= _NAUTILUS_USER_BANKS[1] + 1:
-        func33_bank -= 1
     body[base] = number & 0x7F
-    body[base + 1] = func33_bank & 0x7F
+    body[base + 1] = _func33_to_setlist_bank(1, func33_bank) & 0x7F
 
 
 def iter_combi_timbre_refs(body: bytes):
@@ -553,9 +560,9 @@ def _selftest() -> None:
     # 3. Combi timbre reference patch round-trip inside a full-size body.
     combi = bytearray(7810)
     for t in range(_TIMBRE_COUNT):
-        set_combi_timbre_ref(combi, t, func33_bank=(t % 30), number=(t * 3) & 0x7F)
+        set_combi_timbre_ref(combi, t, func33_bank=t + (t >= 6), number=(t * 3) & 0x7F)   # func33 6 is no real bank
     for t, bank, number in iter_combi_timbre_refs(combi):
-        check(f"timbre-ref-{t}", bank == (t % 30) and number == ((t * 3) & 0x7F))
+        check(f"timbre-ref-{t}", bank == t + (t >= 6) and number == ((t * 3) & 0x7F))
     # timbre 15 must land at 4802 + 15*188 = 7622/7623
     check("timbre15-offset", (_TIMBRE0_PROG_NUM_OFS + 15 * _TIMBRE_STRIDE) == 7622)
 

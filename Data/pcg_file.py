@@ -41,8 +41,7 @@ from typing import List, Optional, Tuple
 
 import Core.kronos_sysex as ksx
 from Core.kronos_sysex import BankId, combi_label, program_label
-from Data.librarian_sysex import (OBJ_COMBI, OBJ_DRUM_KIT, OBJ_PROGRAM, OBJ_SET_LIST, OBJ_WAVE_SEQ,
-                                  iter_combi_timbre_refs)
+from Data.librarian_sysex import OBJ_COMBI, OBJ_DRUM_KIT, OBJ_PROGRAM, OBJ_SET_LIST, OBJ_WAVE_SEQ
 import Data.object_types as object_types
 
 _HEADER_SIZE = 24
@@ -215,9 +214,6 @@ class PcgFile:
     disk; the caller supplies bytes however it obtained them."""
     objects: List[PcgObjectEntry]
     rejected_banks: List[PcgRejectedBank]
-    # -1 when the file's user Program banks were stored one bank high and were re-aligned to
-    # the banks its Combis reference (see _realign_program_banks); 0 otherwise.
-    program_bank_shift: int = 0
     family: str = FAMILY_KRONOS
 
 
@@ -236,44 +232,8 @@ def open_pcg(data: bytes) -> Optional[PcgFile]:
         return None
     objects, rejected = extract_objects(data)
     if data[4] == MODEL_NAUTILUS:
-        return PcgFile(objects, rejected, 0, FAMILY_NAUTILUS)
-    objects, shift = _realign_program_banks(objects)
-    return PcgFile(objects, rejected, shift)
-
-
-def _realign_program_banks(objects: List[PcgObjectEntry]) -> Tuple[List[PcgObjectEntry], int]:
-    """Some partial saves (seen in two real files: e.g. a 3-bank 'OVER THE EDGE.PCG') store user
-    Program bank ids one higher than the banks their own Combis reference: refs to U-DD reach
-    slots 0..43 while the file holds a 44-program EXi bank labelled U-EE, refs to U-EE reach 0..77
-    while the HD-1 bank is labelled U-FF, and every referenced slot is non-empty under the shift.
-    Unresolved references would hide the bank from the dependency display. Re-aligns only when
-    the evidence is overwhelming: stored ids resolve at most half of the Combis' user-bank
-    references, one bank higher in the file resolves at least 90% of them."""
-    user = [e for e in objects if e.obj_type == OBJ_PROGRAM and e.bank is not None]
-    if not user or any(e.bank.obj_bank < 0x41 or e.bank.obj_bank > 0x4D for e in user):
-        return objects, 0
-    from Objects.object_body import program_name_is_init
-    have = {(e.bank.obj_bank, e.index) for e in user if not program_name_is_init(e.name)}
-    total = at_stored = at_lower = 0
-    for e in objects:
-        if e.obj_type != OBJ_COMBI:
-            continue
-        for _t, fbank, number in iter_combi_timbre_refs(e.body):
-            ob = ksx._func33_to_obj_bank(1, fbank)
-            if ob < 0x40:
-                continue
-            total += 1
-            at_stored += (ob, number) in have
-            at_lower += (ob + 1, number) in have
-    if total < 8 or at_stored * 2 > total or at_lower * 10 < total * 9:
-        return objects, 0
-    out = []
-    for e in objects:
-        if e.obj_type == OBJ_PROGRAM and e.bank is not None:
-            ob = e.bank.obj_bank - 1
-            e = dataclasses.replace(e, bank=BankId(1, program_label(ob), ob, e.index))
-        out.append(e)
-    return out, -1
+        return PcgFile(objects, rejected, FAMILY_NAUTILUS)
+    return PcgFile(objects, rejected)
 
 
 # ── Chunk scanning (PcgObjectExtractor.Extract / TryReadBank) ────────────────

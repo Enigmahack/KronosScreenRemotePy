@@ -11,7 +11,7 @@ from Conversion.data import (ARP_ENCODING_NORMAL, ARP_PATTERN_SIZE, GePatternEnt
                              KarmaGePatternLibrary, ProgramRefMap, RomWaveformMap)
 from Conversion.push import ConvertItem, ConvertTables, push_converted
 import Data.nautilus_sysex as nsx
-from Data.librarian_sysex import OBJ_COMBI, OBJ_PROGRAM
+from Data.librarian_sysex import OBJ_COMBI, OBJ_PROGRAM, func33_to_timbre_bank
 from Tools.exs_option_index import ExsOptionIndex
 
 fails = []
@@ -97,12 +97,12 @@ def _combi_refs(*refs):
     body = bytearray(7810)
     for t, (bank, num) in enumerate(refs):
         o = 4802 + t * 188
-        body[o], body[o + 1] = num, bank
+        body[o], body[o + 1] = num, func33_to_timbre_bank(bank)   # refs are func33 (U-A = 18); the byte counts from 17
         body[o + 2] = 0x20   # status On
     return bytes(body)
 
 
-# Kronos U-A (byte 18) is wire 0x40; on the Nautilus that bank is G and its Timbre byte is 17.
+# Kronos U-A (func33 bank 18, Timbre byte 17) is wire 0x40; on the Nautilus that bank is G and its Timbre byte is 17.
 p_a = ConvertItem(OBJ_PROGRAM, "A", bytes(3706), is_exi=False, src_ref=(18, 10))
 p_b = ConvertItem(OBJ_PROGRAM, "B", bytes(3706), is_exi=False, src_ref=(19, 3))
 cmb = ConvertItem(OBJ_COMBI, "C", _combi_refs((18, 10), (19, 3), (20, 7)))
@@ -292,7 +292,7 @@ reps = push_converted(ksvc, items, {OBJ_PROGRAM: (0x4D, 0), OBJ_COMBI: (0x46, 0)
 check("kronos-target-written", [r.status for r in reps] == ["written", "written"])
 kp, kc = ksvc.slots[(OBJ_PROGRAM, 0x4D, 0)], ksvc.slots[(OBJ_COMBI, 0x46, 0)]
 check("kronos-target-sizes", len(kp) == 3706 and len(kc) == 7810)
-check("kronos-target-timbre-placed", kc[4802] == 0 and kc[4803] == 31)   # U-GG = Kronos Timbre byte 31
+check("kronos-target-timbre-placed", kc[4802] == 0 and kc[4803] == 30)   # U-GG = Kronos Timbre byte 30
 native_k = ConvertItem(OBJ_PROGRAM, "K", init_program_template(False, False), native=True)
 reps = push_converted(ksvc, [native_k], {OBJ_PROGRAM: (0x4D, 1)}, tables, os.path.join(tempfile.mkdtemp(), "k2.syx"))
 check("kronos-target-native-copied", reps[0].status == "written"

@@ -22,6 +22,7 @@ from Conversion.data import (KarmaGeCatalog, KarmaGePatternLibrary, ProgramRefMa
 from Conversion.profiles import (COMBI_KRONOS_SIZE, COMBI_KRONOS_TAIL, COMBI_NAUTILUS_SIZE, COMBI_NAUTILUS_TAIL,
                                  COMBI_SHARED_HEAD_END)
 from Conversion.result import ConversionResult
+from Data.librarian_sysex import timbre_bank_to_func33
 
 SIZE_DELTA = COMBI_KRONOS_TAIL - COMBI_NAUTILUS_TAIL   # 2170
 
@@ -153,7 +154,9 @@ def _remap_timbre_programs(out: bytearray, mode: TimbreProgramRefs, ref_map: Opt
         o = _TIMBRE_BASE + t * _TIMBRE_STRIDE
         if out[o + 2] >> 5 == 0:
             continue   # Status Off: not played, leave it alone
-        index, bank = out[o], out[o + 1]
+        # `out` still holds the Kronos Timbre: its bank byte counts user banks from 17 (U-A); the converter works in
+        # func33 numbering (U-A = 18, `placed` / `ref_map` / `kronos_program_name` all use it).
+        index, bank = out[o], timbre_bank_to_func33(out[o + 1])
         if placed and (bank, index) in placed:
             nb, ni = placed[(bank, index)]
             out[o], out[o + 1] = ni & 0xFF, nb & 0xFF

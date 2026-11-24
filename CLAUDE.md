@@ -600,15 +600,15 @@ asked — Python has no USB-direct transport today, only the TCP bridge.
 A PCG of the other instrument family is converted when its objects are used, for the *connected* instrument
 (`LibrarianShellWindow._pcg_wire_body`, cached per object; `Conversion/auto.convert_object`, Init templates in
 `Resources/Conversion/*InitProgram.bin`). `open_pcg` reads Kronos (0x68) and Nautilus (0xDD) files and sets `PcgFile.family`;
-the bank-realign heuristic is Kronos-only. A Nautilus PCG can hold user banks past the 14 the instrument has (Programs to bank id 0x20021, Wave Sequences to 0x20012; Korg's NAUTILUS_MIDI_SysEx.txt *2 and the bank-select table stop at G-T / 0x4D, and bytes 0x4E-0x60 answer as 0x4C on the unit; the owner confirmed 2026-11-17 the unit shows no bank past T): `pcg_file` decodes them as file-only banks 0x4E.. ("File bank N", `kronos_sysex.extra_bank_label`), usable as Merge / Fill sources, never as a destination. A Fill Sequentially or Auto-Fill that runs out of free slots sets the warning banner. The Combi and Program accessors in `Data/librarian_sysex.py`, the sample walker
+A Nautilus PCG can hold user banks past the 14 the instrument has (Programs to bank id 0x20021, Wave Sequences to 0x20012; Korg's NAUTILUS_MIDI_SysEx.txt *2 and the bank-select table stop at G-T / 0x4D, and bytes 0x4E-0x60 answer as 0x4C on the unit; the owner confirmed 2026-11-17 the unit shows no bank past T): `pcg_file` decodes them as file-only banks 0x4E.. ("File bank N", `kronos_sysex.extra_bank_label`), usable as Merge / Fill sources, never as a destination. A Fill Sequentially or Auto-Fill that runs out of free slots sets the warning banner. The Combi and Program accessors in `Data/librarian_sysex.py`, the sample walker
 and the dependency scanner recognise Nautilus bodies by length (Combi 5640, Program 4954/3700) and translate the Timbre bank
 byte to the Kronos numbering, so everything downstream keeps one numbering. `changeset_sync` takes `device_family` and
 REFUSEs a Program/Combi in the other family's format (Drum Kits and Wave Sequences are the same size on both: their
 recorded provenance, `LocalLibraryIndex.content_family`, decides). The manual "Convert to Nautilus..." path reads the raw Kronos body (`raw=True`) and still writes arp patterns,
 which the conversion-on-entry path cannot. Nautilus factory content lives in user banks too, so a Combi Timbre in a user
 bank whose slot holds factory content is re-pointed to the other instrument's factory equivalent (`ProgramRefMap`).
-`KronosToNautilusProgramRefs.json` counts Kronos user banks from 17 (U-A) although a Kronos Combi Timbre byte counts from 18;
-`ProgramRefMap.from_entries` shifts them on load (checked: Kronos names match in 53 of 53 corpus PCGs, Nautilus names 895/909).
+`KronosToNautilusProgramRefs.json` counts Kronos user banks from 17 (U-A); the Combi Timbre byte counts from 17 too (see checklist 10),
+but the converters and `ProgramRefMap.from_entries` work in func-33 numbering (U-A = 18), so they shift on load (Kronos names match in 53 of 53 corpus PCGs, Nautilus names 895/909).
 A Timbre is re-pointed to a factory Program only while the source set's Program at that slot still has the factory name
 (`convert_object(..., program_name=)`); otherwise it keeps its slot in the same wire bank. Set Lists are converted by
 `Conversion/setlist.py` (Kronos 69416 B <-> Nautilus 69544 B: the Nautilus slot is 543 bytes, a Dynamics byte at +30 pushes the
@@ -731,19 +731,19 @@ line here only after the live check. Back up any slot before writing (the conver
    byte-identical, `tests/live_kronos_push.py`); NOT yet verified by ear: open a Nautilus .pcg while connected to the Kronos, place a Program (EXi and HD-1), a Combi
    whose Timbres use user-bank Programs, a Drum Kit and a Wave Sequence, push, and check they sound right and the Combi
    plays its own Programs. The Kronos-only S/PDIF, Drum Track and KARMA block comes from `KronosInitProgram.bin`.
-10. The Combi Timbre bank byte: the code reads Kronos user banks from 18 (U-A, func-33) and Nautilus from 17 (G) - the
-    Nautilus side checked against the factory Nautilus PCG (1,635 of 1,635 user-bank references land on real Programs).
-    Conflicting corpus evidence (2026-11-17, many files are near-duplicate saves of the same sets; 122 PCGs under `PCG EXAMPLES`, Combi wire bodies, user-bank Timbres
-    whose slot is non-Init under exactly one reading): byte 18-31 resolves 40,801 times reading U-A = 17 vs 28,075
-    reading U-A = 18; per file 53 favour 17, 13 favour 18, 32 mixed (e.g. April_2019 919:39, CONTEMP-SAMPLES 304:6).
-    Byte 17 is also the most used Timbre bank in the corpus (46k), which as g(d) makes no sense. If the Kronos Combi
-    byte is 17-based like the Set List byte (func-33 - 1 from GM up), the Kronos accessors, `ProgramRefMap`'s +1 shift,
-    `kronos_user_to_nautilus_bank` and `_realign_program_banks` (which may be compensating for it) are all off by one.
-    Decide it on the Kronos: set a Combi Timbre to U-A000, pull the Combi over SysEx and read the byte.
-11. GM / g(n) Timbre references (follows from 10): the Nautilus factory Combis use bytes 6-13 although its INT banks are
-    0-5, so on the Nautilus GM = 6, g(1)-g(9) = 7-15, g(d) = 16. If the Kronos byte is 18-based, Kronos 7-17 must move
-    to 6-16 (today only 18-31 move, so g(d) = 17 lands on bank G); if it is 17-based, no GM shift is needed at all.
-    Not changed until 10 is settled.
+10. DECIDED 2026-11-23 (corpus + docs, not yet checked on a live Kronos): a Kronos Combi Timbre's Program bank byte counts INT 0-5, GM 6, g(n) 7-16,
+    user banks 17-30 (U-A..U-GG) - the same as the Nautilus and a set-list Program slot. Evidence: in 122 real Kronos PCGs the byte never
+    exceeds 30 (docs `pcg_file_format.md` 4.2 says 0x00-0x1E) and byte 17 spans 112 distinct slots, a full user bank, where g(d) holds a few.
+    `combi_timbre_ref` / `set_combi_timbre_ref` (both families) translate it to func-33 numbering (`timbre_bank_to_func33`, one higher from GM
+    up); `Conversion/combi.py` and `combi_reverse.py` do the same at their raw-byte boundaries. Reading it as 18-based put every reference one
+    bank low (User EE:082 shown as DD:082), which `_realign_program_banks` hid for two files; that heuristic is gone and the real file
+    (`tests/test_pcg_timbre_bank_byte.py`) now resolves 431 of 431 references with no shift. To close it live: set a Combi Timbre to U-A000 on
+    a Kronos, pull the Combi over SysEx and read the byte (expect 17); also check `combi_timbre_bank_pc` (HW-VERIFY, assumes the live pid 8
+    value is the body byte).
+11. GM / g(n) Timbre references: now the same +1 shift as the user banks (byte 6 = GM -> func-33 7, matching the Nautilus factory Combis'
+    bytes 6-13 and the set-list convention). Not seen in the Kronos corpus beyond a few thousand uses; check a Combi using a GM / g(n) Program
+    on a unit. Song Program Change bank bytes (`Conversion/song_convert.py`) were derived under the old reading and are unchanged: re-check them
+    (checklist 15).
 
 12. Sample references (`Conversion/zones.py`, `NautilusSampleEvidence.json`): on the Nautilus, convert Programs that use
     (a) a REV sample, (b) a REV sample and a normal one in the same oscillator, (c) a Kronos EXs1 sample, (d) EXs22, (e) a
