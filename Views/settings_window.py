@@ -215,7 +215,8 @@ class SettingsWindow(QDialog):
         lbl_reset.setStyleSheet(f"color: {_RED}; margin-top: 4px; font-weight: bold;")
         vb.addWidget(lbl_reset)
         btn_reset = QPushButton("Reset All Settings")
-        btn_reset.setStyleSheet(f"QPushButton {{ background: #3A1E1E; color: #DD6666; border: 1px solid #883333; }}")
+        btn_reset.setStyleSheet("QPushButton { background: #3A1E1E; color: #DD6666; border: 1px solid #883333; } "
+                                "QPushButton:pressed { background: #220F0F; border-color: #3A1111 #883333 #883333 #3A1111; }")
         btn_reset.setFixedWidth(160)
         btn_reset.setToolTip("Permanently deletes all settings, key maps, calibration, and customizations.")
         btn_reset.clicked.connect(self._on_reset)

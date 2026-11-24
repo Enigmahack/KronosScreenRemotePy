@@ -75,6 +75,21 @@ PAD        = 4
 PAD_WIDE   = 8
 
 
+BTN_PRESSED        = "#161616"   # a pressed button: darker than any resting fill
+BTN_PRESSED_EDGE   = "#0C0C0C"   # shadowed top/left edge of the pressed (inset) look
+
+
+def button_pressed_qss(prefix: str = "") -> str:
+    """The ONE pressed-button look: darker fill and an inset bevel (dark top/left edge, light bottom/right), so a
+    click is visibly registered. Append it AFTER a sheet's own QPushButton / QToolButton rules (and :hover, which is
+    also true while pressed): a widget- or window-level sheet beats the application one, so any window that
+    restyles buttons must include this itself. `prefix` scopes it, e.g. "QMessageBox "."""
+    return (f"{prefix}QPushButton:pressed, {prefix}QToolButton:pressed {{\n"
+            f"    background-color: {BTN_PRESSED};\n"
+            f"    border-color: {BTN_PRESSED_EDGE} #555555 #555555 {BTN_PRESSED_EDGE};\n"
+            f"}}\n")
+
+
 def app_stylesheet() -> str:
     """Application-wide QSS baseline applied once in main().
 
@@ -108,6 +123,6 @@ def app_stylesheet() -> str:
         padding: 4px 10px;
     }}
     QPushButton:hover  {{ background-color: #333333; border-color: #555555; }}
-    QPushButton:pressed{{ background-color: {ACCENT_DEEP}; }}
     QPushButton:disabled {{ color: {TEXT_IDLE}; border-color: {BORDER}; }}
+    {button_pressed_qss()}
     """

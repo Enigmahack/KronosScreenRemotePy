@@ -63,9 +63,7 @@ class BaseDialog(QDialog):
             QPushButton:hover {{
                 background-color: {T.PANEL};
             }}
-            QPushButton:pressed {{
-                background-color: {T.ACCENT_DEEP};
-            }}
+            {T.button_pressed_qss()}
             QComboBox {{
                 background-color: {T.PANEL_ALT};
                 color: {T.TEXT};
@@ -249,4 +247,5 @@ def _message_box_stylesheet() -> str:
         QMessageBox QPushButton:hover {{
             background-color: {T.PANEL};
         }}
+        {T.button_pressed_qss("QMessageBox ")}
     """

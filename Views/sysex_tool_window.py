@@ -210,7 +210,8 @@ class SysExToolWindow(QDialog):
         tb_row.setContentsMargins(8, 5, 8, 5)
         self._btn_clear = QPushButton("Clear")
         self._btn_clear.setFixedSize(60, 22)
-        self._btn_clear.setStyleSheet("background-color: #343434; color: #E0E0E0; border: 1px solid #5A5A5A; font-size: 11px;")
+        self._btn_clear.setStyleSheet("QPushButton { background-color: #343434; color: #E0E0E0; border: 1px solid #5A5A5A; font-size: 11px; } "
+                                  "QPushButton:pressed { background-color: #161616; border-color: #0C0C0C #5A5A5A #5A5A5A #0C0C0C; }")
         self._btn_clear.clicked.connect(self._clear_log)
         tb_row.addWidget(self._btn_clear)
         self._chk_autoscroll = QCheckBox("Auto-scroll")

@@ -105,6 +105,7 @@ def window_stylesheet() -> str:
     QToolButton:hover {{ background: #333333; }}
     QToolButton:checked {{ background: #454545; border-color: #6E6E6E; }}
     QToolButton:disabled {{ opacity: 0.35; }}
+    {T.button_pressed_qss()}
     QSplitter::handle {{ background: {T.BORDER_STRONG}; }}
     QScrollBar:horizontal {{ background: {T.PANEL}; height: 12px; }}
     QScrollBar::handle:horizontal {{ background: #555555; border-radius: 4px; min-width: 24px; }}

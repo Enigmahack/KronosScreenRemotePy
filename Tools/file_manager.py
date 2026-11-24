@@ -179,6 +179,7 @@ QPushButton {
 }
 QPushButton:hover { background: #333333; border-color: #555555; }
 QPushButton:disabled { color: #555555; border-color: #333333; }
+QPushButton:pressed, QToolButton:pressed { background-color: #161616; border-color: #0C0C0C #555555 #555555 #0C0C0C; }
 QLineEdit {
     background: #1A1A1A; color: #CCCCCC; border: none; padding: 2px;
 }
@@ -1171,7 +1172,8 @@ class FileManagerWindow(QMainWindow):
 
         # Local nav
         local_nav = QWidget()
-        local_nav.setStyleSheet("background: #252525;")
+        local_nav.setObjectName("fm_local_nav")
+        local_nav.setStyleSheet("#fm_local_nav { background: #252525; }")
         ln_lay = QHBoxLayout(local_nav)
         ln_lay.setContentsMargins(6, 4, 6, 4)
         ln_lay.setSpacing(4)
@@ -1197,7 +1199,8 @@ class FileManagerWindow(QMainWindow):
 
         # Remote nav
         remote_nav = QWidget()
-        remote_nav.setStyleSheet("background: #252525;")
+        remote_nav.setObjectName("fm_remote_nav")
+        remote_nav.setStyleSheet("#fm_remote_nav { background: #252525; }")
         rn_lay = QHBoxLayout(remote_nav)
         rn_lay.setContentsMargins(6, 4, 6, 4)
         rn_lay.setSpacing(4)
@@ -1237,7 +1240,8 @@ class FileManagerWindow(QMainWindow):
 
         # Local toolbar
         local_tb = QWidget()
-        local_tb.setStyleSheet("background: #252525; border-top: 1px solid #444;")
+        local_tb.setObjectName("fm_local_tb")
+        local_tb.setStyleSheet("#fm_local_tb { background: #252525; border-top: 1px solid #444; }")
         lt_lay = QHBoxLayout(local_tb)
         lt_lay.setContentsMargins(6, 4, 6, 4)
         lt_lay.setSpacing(4)
@@ -1264,7 +1268,8 @@ class FileManagerWindow(QMainWindow):
 
         # Remote toolbar
         remote_tb = QWidget()
-        remote_tb.setStyleSheet("background: #252525; border-top: 1px solid #444;")
+        remote_tb.setObjectName("fm_remote_tb")
+        remote_tb.setStyleSheet("#fm_remote_tb { background: #252525; border-top: 1px solid #444; }")
         rt_lay = QHBoxLayout(remote_tb)
         rt_lay.setContentsMargins(6, 4, 6, 4)
         rt_lay.setSpacing(4)
