@@ -2822,6 +2822,8 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         self._is_nautilus = (rx.stream_fmt == 1)
         self._apply_device_family_ui()
         self._fetch_device_family()
+        from Core.device_identity import warm
+        warm(self._host)   # MAC lookup off the GUI thread; the Librarian names its cache folder from it
         rx.frame_received.connect(self._on_frame)
         rx.disconnected.connect(self._on_disconnected)
         rx.start()
@@ -4592,9 +4594,14 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         pull; Sync Library/Commit Changes additionally need the live MIDI
         connection, gated inside the window itself."""
         if self._librarian_shell_win is not None:
-            self._librarian_shell_win.raise_()
-            self._librarian_shell_win.activateWindow()
-            return
+            from Core.device_identity import device_key
+            if self._librarian_shell_win.device_key == device_key(self._host):
+                self._librarian_shell_win.raise_()
+                self._librarian_shell_win.activateWindow()
+                return
+            # Connected to a different instrument than the open window's library: never show that cache.
+            self._librarian_shell_win.close()
+            self._librarian_shell_win = None
         if not self._host:
             QMessageBox.warning(self, "Librarian Shell",
                                 "No instrument host configured. Set it in Settings first.")
@@ -4605,7 +4612,9 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             self._settings.ftp_port, self._settings.ftp_username, self._settings.ftp_password, None,
             settings=self._settings)
         self._librarian_shell_win.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
-        self._librarian_shell_win.destroyed.connect(lambda: setattr(self, '_librarian_shell_win', None))
+        _win = self._librarian_shell_win
+        _win.destroyed.connect(lambda *_: setattr(self, '_librarian_shell_win', None)
+                               if self._librarian_shell_win is _win else None)
         self._librarian_shell_win.show()
 
     # ── Macro playback ─────────────────────────────────────────────────────────

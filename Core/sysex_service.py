@@ -95,7 +95,15 @@ class DumpGate:
 
 # Body sizes (bytes) an object type can have on a Kronos / Nautilus: Program HD-1 / EXi, Combi, Song Timbre Set, Drum Kit,
 # Wave Sequence, Nautilus Arp Pattern. Types not listed are not size-checked.
+#   (kept per family in _BODY_SIZES_BY_FAMILY below; this name is the union, for callers that do not know the family)
 _KNOWN_BODY_SIZES = {0: {3706, 4960, 3700, 4954}, 1: {7810, 5640}, 2: {7810, 5640}, 4: {38424}, 5: {2216}, 0x19: {556}}
+
+#: The same, per instrument family: a Nautilus body is 6 bytes shorter than a Kronos one (Program) or much shorter (Combi /
+#: Song Timbre Set), so a dump of the other family's size is a wrong or damaged reply, not valid content.
+_BODY_SIZES_BY_FAMILY = {
+    False: {0: {3706, 4960}, 1: {7810}, 2: {7810}, 4: {38424}, 5: {2216}},
+    True: {0: {3700, 4954}, 1: {5640}, 2: {5640}, 4: {38424}, 5: {2216}, 0x19: {556}},
+}
 
 _NO_REPLY = object()  # sentinel: distinct from any real reply value (0, False, b"", ...)
 
@@ -199,6 +207,9 @@ class SysExService(QObject):
 
         self._performance_display = ""
         self._is_available = False
+        # {Program bank: is_exi} from func 0x61 (queried, or pushed by the instrument on a change /
+        # PCG load). Empty until first heard; cleared on start()/stop() (a reconnect may be another unit).
+        self._bank_types: Dict[int, bool] = {}
 
         # Settings (apply_midi_settings / properties). Defaults match AppSettings.
         self.value_slider_cc = 18
@@ -252,6 +263,7 @@ class SysExService(QObject):
 
         self._performance_display = ""
         self._is_available = False
+        self._bank_types = {}
         self._state_mode = 0
         self._bank_msb = self._bank_lsb = 0
         self._have_bank_context = False
@@ -294,6 +306,7 @@ class SysExService(QObject):
             self._refresh_epoch += 1
             self._name_pull_epoch += 1
         self._wake.set()
+        self._bank_types = {}
         sess = self._sess
         with self._names_lock:
             timer, sess.persist_timer = sess.persist_timer, None
@@ -500,6 +513,14 @@ class SysExService(QObject):
             self._last_rx_emit = now
             self.rx_activity.emit()   # queued → footer RX flash on the GUI thread
         status = raw[0]
+
+        # Program Bank Types (func 0x61): pushed whenever a bank is reformatted or a PCG is loaded.
+        # Codec-aware, so it works for either family (the decode below is Kronos-only).
+        if status == 0xF0:
+            bt = self._codec.parse_program_bank_types(raw)
+            if bt is not None:
+                self._bank_types = bt
+                return
 
         # Bank Digest (func 0x38): pushed on any bank-storage change.
         if (status == 0xF0 and len(raw) >= 7 and raw[1] == 0x42 and (raw[2] & 0xF0) == 0x30
@@ -877,7 +898,7 @@ class SysExService(QObject):
                            **kw) -> Optional[ObjectDump]:
         # A dump whose body is not a size this object type can have lost bytes on the way (a Kronos Drum Kit once
         # arrived as 8166 bytes instead of 38424, with its F7 intact): ask again, then give up rather than return it.
-        sizes = _KNOWN_BODY_SIZES.get(obj)
+        sizes = _BODY_SIZES_BY_FAMILY[bool(self.is_nautilus)].get(obj)
         for _ in range(3):
             raw = self.dump_object(obj, bank, index, **kw)
             parsed = self._codec.parse_object_dump(raw) if raw else None
@@ -954,6 +975,22 @@ class SysExService(QObject):
             bridge, lambda: bridge is not None and bridge.send_bytes(self._codec.bank_digest_request(obj, bank)),
             match, timeout_s)
         return None if result is _NO_REPLY else result
+
+    def program_bank_types(self, timeout_s: float = 5.0) -> Optional[Dict[int, bool]]:
+        """Request (func 0x60) and return {Program bank: is_exi} for every Program bank from the
+        0x61 reply, also caching it (see cached_bank_types). None on timeout."""
+        bridge = self._bridge
+        result = _await_reply(
+            bridge, lambda: bridge is not None and bridge.send_bytes(self._codec.program_bank_types_request()),
+            self._codec.parse_program_bank_types, timeout_s)
+        if result is _NO_REPLY:
+            return None
+        self._bank_types = result
+        return dict(result)
+
+    def cached_bank_types(self) -> Dict[int, bool]:
+        """Last {Program bank: is_exi} heard from the instrument; empty if never."""
+        return dict(self._bank_types)
 
     def backup_objects(self, ops, path: str) -> None:
         """Serialize the given object pre-images to a .syx file as func-0x73

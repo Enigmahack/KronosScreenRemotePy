@@ -224,11 +224,11 @@ from Data.librarian_dependencies import (
 from Tools.exs_option_index import ExsOptionIndex
 from Data.library_pull_pipeline import EDITABLE_BANKS, SLOT_COUNT
 from Data.local_library_store import (
-    BlobStore, LocalIndexEntry, LocalLibraryIndex, LocalLibraryWriteError, OpLog,
+    BlobStore, LocalIndexEntry, LocalLibraryIndex, LocalLibraryWriteError, OpLog, local_library_dir,
 )
 from Data.merge_cache import MergeCache, MergeEntry, MergeRefSite
 from Data.pcg_file import (FAMILY_KRONOS, FAMILY_NAUTILUS, PcgFile, PcgObjectEntry, WIRE_SIZE_EXI, body_family,
-                           open_pcg, wire_body_from_pcg_entry, wire_body_is_exi)
+                           open_pcg, program_body_kind, wire_body_from_pcg_entry, wire_body_is_exi)
 from Commands.session_dependency_clipboard import SessionDependencyClipboard, SessionDependencyEntry
 from Utils.setlist_colors import ALL_COLORS as SETLIST_COLORS, get_by_index_or_default as setlist_color
 from Tools.setlist_data import MAX_COUNT
@@ -301,7 +301,13 @@ def _legend_text(text: str) -> QLabel:
     return lbl
 
 
-def _bank_label(obj_type: int, bank: int) -> str:
+def _bank_label(obj_type: int, bank: int, nautilus: bool = False) -> str:
+    if nautilus and obj_type in (OBJ_PROGRAM, OBJ_COMBI):
+        # Nautilus names its banks A-F then G.. (NAUTILUS_MIDI_SysEx.txt *2), not Kronos's I-A / U-A.
+        if obj_type == OBJ_PROGRAM and 0 <= bank <= 5:
+            return "ABCDEF"[bank]
+        if 0x40 <= bank <= 0x4D:
+            return nautilus_bank_label(obj_type, bank, True)
     if obj_type == OBJ_PROGRAM:
         return ksx.program_label(bank)
     if obj_type == OBJ_COMBI:
@@ -1374,11 +1380,18 @@ class LibrarianShellWindow(QDialog):
             settings = AppSettings()
         self._settings = settings
 
-        self._index = LocalLibraryIndex()
+        # The Keyboard Library is one instrument's mirror: index + op-log live in a folder named
+        # for that instrument (its MAC, from the ARP cache), so another unit never shows this one's cache.
+        # Bodies are content-addressed, so the blob store stays shared.
+        from Core.device_identity import device_key
+        self.device_key = device_key(host)
+        _dev_root = local_library_dir() / self.device_key
+        _dev_root.mkdir(parents=True, exist_ok=True)
+        self._index = LocalLibraryIndex(_dev_root)
         self._index.load()
         self._blobs = BlobStore()
         self._blank_templates = BlankTemplateStore(self._blobs)
-        self._oplog = OpLog()
+        self._oplog = OpLog(_dev_root)
         from Data.merge_cache import MergeCacheBehavior
         behavior = (MergeCacheBehavior.TEMPORARY_MEMORY
                     if getattr(self._settings, 'merge_behavior', 'local_storage') == 'temporary_memory'
@@ -2409,7 +2422,7 @@ class LibrarianShellWindow(QDialog):
                     names = self._service.cached_bank_names(1, ro_bank)
                     if not names:
                         continue
-                    ro_label = f"{_bank_label(obj_type, ro_bank)}  (read-only)"
+                    ro_label = f"{_bank_label(obj_type, ro_bank, self._device_family() == FAMILY_NAUTILUS)}  (read-only)"
                     ro_parent = QTreeWidgetItem([ro_label])
                     for num in sorted(names):
                         leaf = QTreeWidgetItem([f"{names[num]}  {num:03d}"])
@@ -2426,7 +2439,7 @@ class LibrarianShellWindow(QDialog):
                     # off the type header, which therefore rolls them up directly.
                     parent = root
                 else:
-                    bank_label = _bank_label(obj_type, bank)
+                    bank_label = _bank_label(obj_type, bank, self._device_family() == FAMILY_NAUTILUS)
                     if obj_type == OBJ_PROGRAM:
                         pending = self._index.get_pending_bank_type_change(bank)
                         if pending is not None:
@@ -2647,11 +2660,28 @@ class LibrarianShellWindow(QDialog):
         indexed in that bank (LocalIndexEntry.is_exi), since this UI layer has no live
         per-bank format query of its own beyond _get_live_bank_type's single-slot dump
         (which is Sync/Commit-time only, not meant to be polled for planning UI)."""
+        # LocalIndexEntry.is_exi is NOT trusted: nothing derives it from the body (new and
+        # pulled entries default to True), so it called every bank EXi. The body's own length
+        # is the truth, read from the hardware baseline (a local placement may be the wrong
+        # format - that is the very thing being checked).
+        service = self._service
+        live = service.cached_bank_types().get(bank) if service is not None else None
+        if isinstance(live, bool):  # the instrument's own func-0x61 answer beats anything inferred
+            return live
+        fallback: Optional[bool] = None
         for key, entry in self._index.entries.items():
             obj_type, b, _ = _parse_key(key)
-            if obj_type == OBJ_PROGRAM and b == bank:
-                return entry.is_exi
-        return None
+            if obj_type != OBJ_PROGRAM or b != bank:
+                continue
+            on_hardware = entry.baseline_hash != LocalLibraryIndex.NO_BASELINE_SENTINEL
+            body = self._blobs.get(entry.baseline_hash if on_hardware else entry.current_hash)
+            kind = program_body_kind(len(body)) if body is not None else None
+            if kind is None:
+                continue
+            if on_hardware:
+                return kind
+            fallback = kind
+        return fallback
 
     def _first_free_slot_in_bank(self, obj_type: int, bank: int) -> Optional[int]:
         """First slot with no real content — a slot holding only an INIT/blank
@@ -3534,7 +3564,9 @@ class LibrarianShellWindow(QDialog):
         # passes costs a body lookup; over a whole sweep that is quadratic. Slots only
         # ever get FILLED during a sweep, so resuming from the previous answer is
         # equivalent and linear. Reset per sweep, never cached across one.
-        self._auto_fill_cursor: Dict[int, Tuple[int, int]] = {}
+        self._auto_fill_cursor: Dict[tuple, Tuple[int, int]] = {}
+        self._auto_fill_last_key: tuple = (0, None, 0)
+        self._auto_fill_bank_types: Dict[int, Optional[bool]] = {}
         self._auto_fill_queue: List[MergeEntry] = []
         for obj_type in _PLACE_ORDER:
             # A snapshot per type - _place_merge_entry_at mutates self._merge as it goes
@@ -3590,7 +3622,7 @@ class LibrarianShellWindow(QDialog):
                     entry = self._auto_fill_queue.pop(0)
                     if self._merge.try_get(entry.content_hash) is None:
                         continue   # already resolved as a side effect of an earlier item
-                    dst = self._next_auto_fill_slot(entry.obj_type)
+                    dst = self._next_auto_fill_slot(entry.obj_type, entry.body)
                     if dst is None:
                         self._log(f"Auto-Fill: no free {_ROOT_LABEL.get(entry.obj_type, str(entry.obj_type))} "
                                   f"slot for '{entry.display_name or entry.content_hash[:8]}'.")
@@ -3608,7 +3640,9 @@ class LibrarianShellWindow(QDialog):
                     # it. A dedup-reuse or a Force-Overwrite refusal leaves it free, and
                     # the next item must still be offered it.
                     if self._index.get(entry.obj_type, dst[0], dst[1]) is not None:
-                        self._advance_auto_fill_cursor(entry.obj_type)
+                        self._advance_auto_fill_cursor(
+                            entry.obj_type, dst[0],
+                            program_body_kind(len(entry.body)) if entry.obj_type == OBJ_PROGRAM else None)
                     self._merge_status_label.setText(
                         f"Auto-Filling: {self._auto_fill_placed}/{self._auto_fill_total} placed...")
         except LocalLibraryWriteError as e:
@@ -3641,7 +3675,7 @@ class LibrarianShellWindow(QDialog):
         if finished:
             self._auto_fill_finish()
 
-    def _next_auto_fill_slot(self, obj_type: int) -> Optional[Tuple[int, int]]:
+    def _next_auto_fill_slot(self, obj_type: int, body: Optional[bytes] = None) -> Optional[Tuple[int, int]]:
         """_find_first_free_slot_any_bank, resumed from where this sweep last landed.
 
         Returns the same answer a scan from the beginning would: a sweep only ever
@@ -3649,27 +3683,54 @@ class LibrarianShellWindow(QDialog):
         cursor is left pointing AT the candidate, not past it — see
         _advance_auto_fill_cursor for why."""
         banks = EDITABLE_BANKS.get(obj_type, [])
-        start_bank, start_slot = self._auto_fill_cursor.get(obj_type, (0, 0))
-        for bank_pos in range(start_bank, len(banks)):
-            bank = banks[bank_pos]
-            limit = object_types.slot_count(obj_type, bank)
-            first = start_slot if bank_pos == start_bank else 0
-            for i in range(first, limit):
-                entry = self._index.get(obj_type, bank, i)
-                if entry is not None and self._slot_has_content(obj_type, entry.current_hash):
-                    continue
-                self._auto_fill_cursor[obj_type] = (bank_pos, i)
-                return (bank, i)
-        self._auto_fill_cursor[obj_type] = (len(banks), 0)
+        # A Program only goes into a bank of its own format (HD-1 / EXi); the instrument
+        # refuses the push otherwise. Pass 0 = banks KNOWN to match, pass 1 = banks of
+        # unknown type (nothing hardware-sourced in them). A known mismatch is never used.
+        kind = program_body_kind(len(body)) if obj_type == OBJ_PROGRAM and body else None
+        passes = (0, 1) if kind is not None else (0,)
+        for ps in passes:
+            key = (obj_type, kind, ps)
+            start_bank, start_slot = self._auto_fill_cursor.get(key, (0, 0))
+            for bank_pos in range(start_bank, len(banks)):
+                bank = banks[bank_pos]
+                if kind is not None:
+                    bt = self._auto_fill_bank_type(bank)
+                    if bt is not (kind if ps == 0 else None):
+                        continue
+                limit = object_types.slot_count(obj_type, bank)
+                first = start_slot if bank_pos == start_bank else 0
+                for i in range(first, limit):
+                    entry = self._index.get(obj_type, bank, i)
+                    if entry is not None and self._slot_has_content(obj_type, entry.current_hash):
+                        continue
+                    self._auto_fill_cursor[key] = (bank_pos, i)
+                    self._auto_fill_last_key = key
+                    return (bank, i)
+            self._auto_fill_cursor[key] = (len(banks), 0)
         return None
 
-    def _advance_auto_fill_cursor(self, obj_type: int) -> None:
+    def _auto_fill_bank_type(self, bank: int) -> Optional[bool]:
+        """_local_bank_type_of, memoized for one sweep (it reads blobs)."""
+        if bank not in self._auto_fill_bank_types:
+            self._auto_fill_bank_types[bank] = self._local_bank_type_of(bank)
+        return self._auto_fill_bank_types[bank]
+
+    def _advance_auto_fill_cursor(self, obj_type: int, bank: Optional[int] = None,
+                                  kind: Optional[bool] = None) -> None:
         """Step the scan cursor one slot past the candidate _next_auto_fill_slot last
         handed out. Called only once that slot is confirmed occupied, so a placement
         that decided not to write (dedup-reuse, orphan-gate refusal) leaves the slot
-        available to the next item exactly as an un-cursored rescan would."""
-        bank_pos, slot = self._auto_fill_cursor.get(obj_type, (0, 0))
-        self._auto_fill_cursor[obj_type] = (bank_pos, slot + 1)
+        available to the next item exactly as an un-cursored rescan would.
+
+        A Program landing in a bank of unknown type fixes that bank's type for the rest
+        of the sweep (the next Program of the other format must not follow it in), and
+        the known-match cursor for that format restarts so it reaches the bank's tail."""
+        key = self._auto_fill_last_key
+        bank_pos, slot = self._auto_fill_cursor.get(key, (0, 0))
+        self._auto_fill_cursor[key] = (bank_pos, slot + 1)
+        if kind is not None and bank is not None and self._auto_fill_bank_types.get(bank) is None:
+            self._auto_fill_bank_types[bank] = kind
+            self._auto_fill_cursor.pop((obj_type, kind, 0), None)
 
     def _auto_fill_finish(self) -> None:
         self._auto_fill_timer.stop()
@@ -5083,11 +5144,14 @@ class LibrarianShellWindow(QDialog):
         """changeset_sync.build_changeset's get_live_bank_type adapter — same "adapt
         SysExService for this pipeline" role _get_live_digest/_get_bank_objects/
         _write_to_hardware already play. SysExService has no dedicated bank-format query
-        (no 0x7C read side), so this derives the live format from an actual Object Dump:
+        (no 0x7C read side), so it asks func 0x60 for the whole bitmap, falling back to an Object Dump:
         slot 0's reply body length is deterministically WIRE_SIZE_EXI or WIRE_SIZE_HD1
         (pcg_file.py's own convention, the same one library_pull_pipeline/plan_batch_move
         already rely on). None (unverifiable) if the dump fails or times out — matches
         build_changeset's own "non-blocking when unverifiable" contract."""
+        types = self._service.program_bank_types()      # one func 0x60 / 0x61 round trip, all banks
+        if types is not None and bank in types:
+            return types[bank]
         d = self._service.dump_object_parsed(OBJ_PROGRAM, bank, 0, no_response_ms=3000)
         if d is None:
             return None
@@ -5287,6 +5351,7 @@ class LibrarianShellWindow(QDialog):
                     if (service is not None and service.can_dump
                             and service.bank_digest(OBJ_PROGRAM, 0x00) is not None):
                         ok = True
+                        service.program_bank_types()     # prime the HD-1/EXi map (Auto-Fill, plans)
                         break
                 except Exception as e:  # a throwing probe is treated exactly like a silent one
                     log.warning("SysEx probe attempt %d failed: %s", attempt + 1, e)
@@ -5702,7 +5767,8 @@ class LibrarianShellWindow(QDialog):
 
     def _bank_display(self, key: str) -> str:
         obj_type, bank, _n = _parse_key(key)
-        return _bank_label(obj_type, bank) or f"{obj_type:02X}:{bank:02X}"
+        return (_bank_label(obj_type, bank, self._device_family() == FAMILY_NAUTILUS)
+                or f"{obj_type:02X}:{bank:02X}")
 
     # ── Resolve Conflicts ("keep mine") ───────────────────────────────────────
 

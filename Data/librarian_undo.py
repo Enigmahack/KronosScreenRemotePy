@@ -225,7 +225,7 @@ class LibrarianUndoRecorder:
             return
         try:
             from Data.local_library_store import OpLog
-            OpLog().append({
+            OpLog(self._index.root).append({
                 "id": str(uuid4()), "timestamp_utc": now, "op_kind": "Undo",
                 "targets": targets, "description": description,
                 "sync_batch_id": None, "synced_at_utc": None,

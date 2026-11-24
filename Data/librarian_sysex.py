@@ -33,7 +33,7 @@ in ONE place (kronos_sysex) and this module follows.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import Core.kronos_sysex as ksx
 from Core.kronos_sysex import decode_8to7, encode_7to8
@@ -235,6 +235,37 @@ def dump_bank_request(obj: int, bank: int) -> bytes:
 def bank_digest_request(obj: int, bank: int) -> bytes:
     """0x37 Bank Digest Request — instrument replies with a 0x38 for this bank."""
     return bytes(_HDR) + bytes([0x37, obj & 0x7F, bank & 0x7F, _EOX])
+
+
+def program_bank_types_request() -> bytes:
+    """0x60 Program Bank Types Request - the instrument answers with one 0x61 (Nautilus
+    docs: NAUTILUS_MIDI_SysEx.txt). Live-verified on a Kronos 2026-11-18: same func/layout
+    (tests/live_bank_types.py; kronosology/docs/interfaces/sysex_program_bank_types.md)."""
+    return bytes(_HDR) + bytes([0x60, _EOX])
+
+
+def decode_program_bank_types(num_bits: int, data: bytes) -> Dict[int, bool]:
+    """0x61 bitmap -> {object-dump bank: is_exi}. 7 bits per data byte, LSB first; bit 0 is the
+    edit buffer (not a bank), bits 1-6 = I-A..I-F (banks 0x00-0x05), bits 7+ = user banks
+    (0x40+). Shared by the Kronos and Nautilus codecs (only the header differs)."""
+    out: Dict[int, bool] = {}
+    for n in range(1, num_bits):
+        byte = n // 7
+        if byte >= len(data):
+            break
+        bank = n - 1 if n <= 6 else 0x40 + (n - 7)
+        out[bank] = bool((data[byte] >> (n % 7)) & 1)
+    return out
+
+
+def parse_program_bank_types(msg: bytes) -> Optional[Dict[int, bool]]:
+    """Decode a func-0x61 Program Bank Types message: F0 42 3g 68 61 numBits data[] F7."""
+    if len(msg) < 7 or not (msg[0] == 0xF0 and msg[1] == 0x42 and (msg[2] & 0xF0) == 0x30
+                            and msg[3] == 0x68 and msg[4] == 0x61):
+        return None
+    end = msg.find(_EOX, 6)
+    return decode_program_bank_types(msg[5] & 0x7F, msg[6:end if end >= 0 else len(msg)])
+
 
 
 def digest_collection_request() -> bytes:
@@ -574,6 +605,14 @@ def _selftest() -> None:
     check("reply-ok", parse_reply(bytes([0xF0, 0x42, 0x30, 0x68, 0x24, 0x00, 0xF7])) == 0)
     check("reply-rejected", parse_reply(bytes([0xF0, 0x42, 0x30, 0x68, 0x24, 0x04, 0xF7])) == 4)
     check("reply-not-a-reply", parse_reply(w) is None)
+
+    # 0x60/0x61 Program Bank Types: edit buf=HD-1, I-A=EXi, I-B=HD-1, U-A(0x40)=EXi, U-G(0x46)=HD-1,
+    # U-H(0x47)=EXi (bit 21 -> numBits 21 = 20 banks + edit buffer)
+    check("bt-req", program_bank_types_request() == bytes([0xF0, 0x42, 0x30, 0x68, 0x60, 0xF7]))
+    _bt = parse_program_bank_types(bytes([0xF0, 0x42, 0x30, 0x68, 0x61, 21, 0x02, 0x01, 0x01, 0xF7]))
+    check("bt-map", _bt is not None and len(_bt) == 20 and _bt[0x00] is True and _bt[0x01] is False
+          and _bt[0x40] is True and _bt[0x41] is False and _bt[0x47] is True and _bt[0x4D] is False)
+    check("bt-not-bt", parse_program_bank_types(w) is None)
 
     if fails:
         print("FAIL:", ", ".join(fails))

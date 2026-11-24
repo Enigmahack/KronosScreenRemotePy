@@ -29,10 +29,10 @@ see Core/sysex_service.py's own comments at each call site.
 """
 from __future__ import annotations
 
-from typing import Optional
+from typing import Dict, Optional
 
 from Core.kronos_sysex import decode_8to7, encode_7to8
-from Data.librarian_sysex import BankDigest, ObjectDump
+from Data.librarian_sysex import BankDigest, ObjectDump, decode_program_bank_types
 
 _HDR = bytes([0xF0, 0x42, 0x30, 0x00, 0x01, 0x5D])
 _EOX = 0xF7
@@ -143,6 +143,20 @@ def parse_bank_digest(msg: bytes) -> Optional[BankDigest]:
 # ── Self-tests (run: python nautilus_sysex.py) ────────────────────────────────
 
 
+def program_bank_types_request() -> bytes:
+    """0x60 Program Bank Types Request - answered with a 0x61 (NAUTILUS_MIDI_SysEx.txt)."""
+    return korg_message(0x60)
+
+
+def parse_program_bank_types(msg: bytes) -> Optional[Dict[int, bool]]:
+    """Decode a func-0x61 Program Bank Types message: F0 42 3g 00 01 5D 61 numBits data[] F7
+    -> {bank: is_exi} (bank numbering and bitmap layout: librarian_sysex.decode_program_bank_types)."""
+    if len(msg) < 9 or not has_header_at(msg, 0, 0x61):
+        return None
+    end = msg.find(_EOX, 8)
+    return decode_program_bank_types(msg[7] & 0x7F, msg[8:end if end >= 0 else len(msg)])
+
+
 def _selftest() -> None:
     import sys
 
@@ -190,6 +204,14 @@ def _selftest() -> None:
     check("reply-ok", parse_reply(bytes([0xF0, 0x42, 0x30, 0x00, 0x01, 0x5D, 0x24, 0x00, 0xF7])) == 0)
     check("reply-rejected", parse_reply(bytes([0xF0, 0x42, 0x30, 0x00, 0x01, 0x5D, 0x24, 0x04, 0xF7])) == 4)
     check("reply-not-a-reply", parse_reply(w) is None)
+
+    # 0x60/0x61 Program Bank Types: edit buf=HD-1, I-A=EXi, I-B=HD-1, U-A(0x40)=EXi, U-G(0x46)=HD-1,
+    # U-H(0x47)=EXi (bit 21 -> numBits 21 = 20 banks + edit buffer)
+    check("bt-req", program_bank_types_request() == bytes([0xF0, 0x42, 0x30, 0x00, 0x01, 0x5D, 0x60, 0xF7]))
+    _bt = parse_program_bank_types(bytes([0xF0, 0x42, 0x30, 0x00, 0x01, 0x5D, 0x61, 21, 0x02, 0x01, 0x01, 0xF7]))
+    check("bt-map", _bt is not None and len(_bt) == 20 and _bt[0x00] is True and _bt[0x01] is False
+          and _bt[0x40] is True and _bt[0x41] is False and _bt[0x47] is True and _bt[0x4D] is False)
+    check("bt-not-bt", parse_program_bank_types(w) is None)
 
     if fails:
         print("FAIL:", ", ".join(fails))

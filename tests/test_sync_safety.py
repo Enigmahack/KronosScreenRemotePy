@@ -36,6 +36,10 @@ class Instrument:
         self.before_backup = None
         self.missing = None
 
+    def program_bank_types(self, timeout_s=5.0):
+        # func 0x60/0x61: {bank: is_exi}, from the stored bodies' size (as the instrument knows its own banks)
+        return {b: len(d.body) == WIRE_SIZE_EXI for (t, b, n), d in self.objects.items() if t == OBJ_PROGRAM}
+
     def bank_digest(self, obj, bank):
         bodies = [d.body for (t, b, n), d in sorted(self.objects.items())
                   if (t, b) == (obj, bank)]
