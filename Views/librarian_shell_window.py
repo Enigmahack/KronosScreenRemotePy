@@ -189,6 +189,8 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 log = logging.getLogger(__name__)
 
+from Views import file_dialogs
+from Utils import settings_gear
 from Views.tree_search import TreeSearchBox, apply_tree_filter
 from PySide6.QtCore import QByteArray, QMimeData, Qt, QTimer, Signal
 from PySide6.QtGui import QActionGroup, QBrush, QColor, QDrag, QIcon, QPainter, QPixmap
@@ -1614,6 +1616,7 @@ class LibrarianShellWindow(QDialog):
         self._btn_conv_report.clicked.connect(self._show_conversion_report)
         sync_row.addWidget(self._btn_conv_report)
         sync_row.addStretch(1)
+        sync_row.addWidget(settings_gear.make_gear_button("Librarian"))
         root.addLayout(sync_row)
 
         # Standing banners (C# BRD_SysExOff / destructive-armed / conflict / BRD_Warning).
@@ -1721,7 +1724,7 @@ class LibrarianShellWindow(QDialog):
         # Properties/Stage-for-Batch are unaffected: `_leaf_payload` already refuses (not
         # silently misbehaves) whenever more than one item is selected.
         self._tree_local.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        self._tree_local.itemDoubleClicked.connect(lambda *_: self._show_local_properties())
+        self._tree_local.itemDoubleClicked.connect(lambda *_: self._open_local_item())
         self._tree_local.itemSelectionChanged.connect(
             lambda: self._update_object_dependencies("local", self._tree_local))
         self._tree_local.itemsDropped.connect(self._on_local_dropped)
@@ -2231,7 +2234,7 @@ class LibrarianShellWindow(QDialog):
         if not missing:
             on_done([], "")
             return
-        path, _ = QFileDialog.getOpenFileName(self, _MSG_SCAN_DIALOG_TITLE, "",
+        path, _ = file_dialogs.open_file(self, _MSG_SCAN_DIALOG_TITLE, "",
                                               "PCG Files (*.pcg *.PCG);;All Files (*)")
         if not path:
             on_done([], "")
@@ -2752,6 +2755,34 @@ class LibrarianShellWindow(QDialog):
             exi = entry.is_exi
         return factory_blank.blank_body(loc.obj_type, original or b"", family == FAMILY_NAUTILUS, exi, loc.number)
 
+    def _open_local_item(self) -> None:
+        """Double-click: a Set List opens its editor, everything else its Properties."""
+        payload = self._leaf_payload(self._tree_local)
+        if payload is not None and payload[0] == "local" and payload[1] == OBJ_SET_LIST:
+            self._edit_set_list(ObjLoc(*payload[1:4]))
+        else:
+            self._show_local_properties()
+
+    def _edit_set_list(self, loc: ObjLoc) -> None:
+        entry = self._index.get(loc.obj_type, loc.bank, loc.number)
+        body = self._blobs.get(entry.current_hash) if entry is not None else None
+        if body is None:
+            return
+        from Data.librarian_sysex import setlist_slot_ref
+        from Views.setlist_editor_dialog import SetListEditorDialog
+        nautilus = self._device_family() == FAMILY_NAUTILUS
+
+        def label(b: bytes, i: int) -> str:
+            type_, bank, index = setlist_slot_ref(b, i)
+            if type_ == 2:
+                return f"Song {index:03d}"
+            kind = OBJ_COMBI if type_ == 0 else OBJ_PROGRAM
+            return ObjLoc(kind, bank, index).label(nautilus)
+
+        dlg = SetListEditorDialog(f"Set List - {entry.display_name or self._loc_text(loc)}", body, label, parent=self)
+        if _exec_modal(dlg) == QDialog.DialogCode.Accepted and dlg.new_body is not None and dlg.new_body != body:
+            self._write_local_body_edit(loc, dlg.new_body, "set list edit")
+
     def _show_local_properties(self) -> None:
         payload = self._leaf_payload(self._tree_local)
         if payload is None or payload[0] != "local":
@@ -2768,7 +2799,9 @@ class LibrarianShellWindow(QDialog):
         dependencies = None
         on_scan_pcg = None
         if body is not None:
-            requires_rows = self._walk_local_deps(obj_type, body, 0, set())
+            dep_rows: List[DependencyRow] = []
+            collect_local_deps(loc, self._local_dep_source(), {loc}, set(), dep_rows)
+            requires_rows = [r.description for r in dep_rows]
             used_by_rows = [
                 f"{self._loc_text(loc)}  used by  {self._loc_text(ObjLoc(ref.ref_obj, ref.ref_bank, ref.ref_index))}"
                 for ref in self._build_local_catalog(_referrer_types_for(obj_type)).referrers_of(loc)]
@@ -3078,6 +3111,43 @@ class LibrarianShellWindow(QDialog):
         ok, msg = self._batch_clip.copy(locs, self._local_dump_of)
         self._log(msg if ok else f"Copy: {msg}")
 
+    def _move_local_selected(self) -> None:
+        """Right-click > Move...: ask for a bank and slot, then do exactly what dropping the item on that slot does."""
+        payload = self._leaf_payload(self._tree_local)
+        if payload is None or payload[0] != "local":
+            self._local_status_label.setText("Select exactly one Keyboard Library item to move.")
+            return
+        _, obj_type, bank, number = payload
+        src = ObjLoc(obj_type, bank, number)
+        desc = object_types.get(obj_type)
+        nautilus = self._device_family() == FAMILY_NAUTILUS
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Move")
+        lay = QVBoxLayout(dlg)
+        lay.addWidget(QLabel(f"Move {self._loc_text(src)} to:"))
+        row = QHBoxLayout()
+        bank_box, slot_box = QComboBox(), QSpinBox()
+        for b in desc.editable_banks:
+            bank_box.addItem(object_types.label_for(obj_type, b, nautilus), b)
+        bank_box.setCurrentIndex(max(0, bank_box.findData(bank)))
+
+        def sync_range() -> None:
+            slot_box.setRange(0, object_types.slot_count(obj_type, bank_box.currentData()) - 1)
+        sync_range()
+        slot_box.setValue(number)
+        bank_box.currentIndexChanged.connect(lambda _=0: sync_range())
+        row.addWidget(bank_box, 1)
+        row.addWidget(QLabel("Slot"))
+        row.addWidget(slot_box)
+        lay.addLayout(row)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        lay.addWidget(buttons)
+        if _exec_modal(dlg) != QDialog.Accepted:
+            return
+        self._swap_local_at(src, ObjLoc(obj_type, bank_box.currentData(), slot_box.value()))
+
     def _rename_local_selected(self) -> None:
         """Rename the single selected Local Library entry (F2 / toolbar / context menu) -
         port of LocalLibraryPaneViewModel.Rename + LocalEditOps.Rename. Writes the new
@@ -3268,6 +3338,9 @@ class LibrarianShellWindow(QDialog):
         a_paste = menu.addAction("Paste", self._paste_local_selected)
         a_paste.setEnabled(not self._batch_clip.is_empty)
         menu.addSeparator()
+        a_move_to = menu.addAction("Move...", self._move_local_selected)
+        a_move_to.setEnabled(is_leaf)
+        a_move_to.setToolTip("Choose a bank and slot; the item and whatever is there change places, like a drag and drop.")
         a_move = menu.addAction("Move to Merge Window", self._stage_local_selected_to_merge)
         a_move.setToolTip("Stage this (and its dependencies) in the Merge Window to rearrange "
                           "and push it somewhere else.")
@@ -3976,7 +4049,7 @@ class LibrarianShellWindow(QDialog):
     def _open_pcg_from_computer(self) -> None:
         # Only .pcg files are offered/selectable (req 8): the Kronos PCG format is the sole
         # format this pane understands, so attempting anything else isn't an option.
-        path, _ = QFileDialog.getOpenFileName(self, "Open PCG File", "", "Instrument PCG (*.pcg)")
+        path, _ = file_dialogs.open_file(self, "Open PCG File", "", "Instrument PCG (*.pcg)")
         if not path:
             return
         if not path.lower().endswith(".pcg"):
@@ -4605,7 +4678,7 @@ class LibrarianShellWindow(QDialog):
         if service is None or not service.can_dump:
             self._set_status("Connect to an instrument first.")
             return
-        path, _ = QFileDialog.getSaveFileName(self, "Back up Song Timbre Sets",
+        path, _ = file_dialogs.save_file(self, "Back up Song Timbre Sets",
                                               f"song_timbre_sets_{time.strftime('%Y%m%d_%H%M%S')}.syx",
                                               "SysEx (*.syx)")
         if not path:
@@ -4669,7 +4742,7 @@ class LibrarianShellWindow(QDialog):
         if getattr(self, "_sng_converting", False):
             self._set_status("A .SNG file is already being converted.")
             return
-        path, _ = QFileDialog.getOpenFileName(self, "Convert a .SNG file", "", "Song files (*.SNG *.sng)")
+        path, _ = file_dialogs.open_file(self, "Convert a .SNG file", "", "Song files (*.SNG *.sng)")
         if not path:
             return
         self._sng_converting = True
@@ -4701,7 +4774,7 @@ class LibrarianShellWindow(QDialog):
             QMessageBox.warning(self, "Convert .SNG", "Nothing was written.\n\n" + "\n".join(refusals))
             return
         stem = Path(path).stem
-        dest, _ = QFileDialog.getSaveFileName(self, "Save the converted .SNG",
+        dest, _ = file_dialogs.save_file(self, "Save the converted .SNG",
                                               f"{stem}_{MODEL_NAMES[target]}.SNG", "Song files (*.SNG)")
         if not dest:
             return
@@ -4741,7 +4814,7 @@ class LibrarianShellWindow(QDialog):
             self._log(f"Convert to {self._target_name()}: {reason}")
             self._set_status(reason)
             return
-        path, _ = QFileDialog.getOpenFileName(self, "Songs", "", "Songs (*.SNG *.sng *.syx);;Song files (*.SNG *.sng);;SysEx (*.syx)")
+        path, _ = file_dialogs.open_file(self, "Songs", "", "Songs (*.SNG *.sng *.syx);;Song files (*.SNG *.sng);;SysEx (*.syx)")
         if not path:
             return
         self._run_bg(f"Reading {os.path.basename(path)}...", lambda: read_song_timbre_sets(path),
@@ -5625,7 +5698,11 @@ class LibrarianShellWindow(QDialog):
                 cancel=self._sync_cancelled,
                 prepare_hardware=self._prepare_hardware,
                 store_bank=self._store_hardware_bank,
-                allow_incomplete=bool(getattr(self, "_run_allow_incomplete", False)))
+                allow_incomplete=bool(getattr(self, "_run_allow_incomplete", False)),
+                # only the overwrite retry, after the prompt that named the refusal, may also accept a reference to a
+                # slot this same push erases
+                allow_erased_dangling=bool(getattr(self, "_run_is_overwrite_retry", False)
+                                           and getattr(self, "_last_plan_refused_dangling", False)))
             if mode == SYNC_TWO_WAY:
                 pull_result, plan, result = sync_library(
                     self._index, self._blobs, self._clipboard,
@@ -6037,7 +6114,7 @@ class LibrarianShellWindow(QDialog):
         lay.addLayout(row)
 
         def do_save() -> None:
-            path, _ = QFileDialog.getSaveFileName(dlg, "Save Conversion Report", "conversion_report.txt",
+            path, _ = file_dialogs.save_file(dlg, "Save Conversion Report", "conversion_report.txt",
                                                   "Text files (*.txt)")
             if not path:
                 return

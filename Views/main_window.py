@@ -62,6 +62,8 @@ from Core.sysex_service import SysExService
 from Core.midi_bridge import retire_thread
 
 from Core.device_family import DeviceFamily, ModelInfo
+from Views import file_dialogs
+from Utils import settings_gear
 from Views.main_window_dialogs import MainWindowDialogMixin
 from Views.revealable_password_edit import RevealablePasswordEdit
 
@@ -1705,6 +1707,8 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
     def __init__(self, settings: AppSettings):
         super().__init__()
         self._settings    = settings
+        file_dialogs.bind(settings)
+        settings_gear.bind(self._open_settings)
         self._conn_state  = "disconnected"
         self._host        = settings.kronos_host
         self._ctrl_port   = settings.ctrl_port
@@ -4117,7 +4121,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
             QMessageBox.information(self, "Screenshot", "No frame available yet.")
             return
         default = str(self._screenshot_default_path())
-        path, _ = QFileDialog.getSaveFileName(
+        path, _ = file_dialogs.save_file(
             self, "Save Screenshot", default,
             "PNG Images (*.png);;JPEG Images (*.jpg)")
         if path:
@@ -4321,7 +4325,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         Models.storage.flush_settings(timeout_s)
 
     def _import_settings(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Import Settings", "", "JSON Files (*.json)")
+        path, _ = file_dialogs.open_file(self, "Import Settings", "", "JSON Files (*.json)")
         if not path:
             return
         self._flush_settings_saves(save_pending=False)   # a pending save must not land on the import
@@ -4345,7 +4349,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         QMessageBox.information(self, "Import Settings", "Settings imported successfully.")
 
     def _export_settings(self) -> None:
-        path, _ = QFileDialog.getSaveFileName(self, "Export Settings", "kronos_settings.json",
+        path, _ = file_dialogs.save_file(self, "Export Settings", "kronos_settings.json",
                                               "JSON Files (*.json)")
         if not path:
             return

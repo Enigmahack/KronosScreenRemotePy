@@ -405,7 +405,7 @@ _SCALAR_FIELDS = (
     "proactive_sysex_polling", "sysex_poll_interval_sec", "sysex_poll_on_changes", "sysex_reply_poll_ms",
     "midi_output_channel", "value_slider_cc", "pull_names_on_change",
     "vu_device_id", "sample_editor_output_device_id", "file_manager_default_local_folder",
-    "file_manager_default_remote_folder",
+    "file_manager_default_remote_folder", "last_file_dir",
     "sample_undo_byte_cap_mb", "sample_workspace_root", "sample_zone_create_position",
     "sample_zone_create_range", "sample_zone_original_key_position",
 )

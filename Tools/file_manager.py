@@ -1217,6 +1217,8 @@ class FileManagerWindow(QMainWindow):
         self._remote_path_box.setReadOnly(True)
         self._remote_path_box.setToolTip("Current folder on the instrument")
         rn_lay.addWidget(self._remote_path_box, 1)
+        from Utils import settings_gear
+        rn_lay.addWidget(settings_gear.make_gear_button("File Manager"))
         nav_row.addWidget(remote_nav, 1)
 
         outer.addLayout(nav_row)

@@ -158,6 +158,44 @@ assert w._index.get(OBJ_DRUM_KIT, 0x40, 5).display_name == "Funk Kit"
 assert w._index.get(OBJ_DRUM_KIT, 0x40, 4).display_name == "Jazz Kit v2"
 print("swap ok: zone now", zone0)
 
+# right-click > Move...: the dialog's bank/slot choice runs the same swap as a drop (Jazz Kit v2 is at U-A:004 now; send it back to 005)
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QComboBox, QDialog, QSpinBox
+def _fake_exec(dlg, *a):
+    bank_box, slot_box = dlg.findChild(QComboBox), dlg.findChild(QSpinBox)
+    bank_box.setCurrentIndex(bank_box.findData(0x40)); slot_box.setValue(5)
+    return QDialog.Accepted
+for it in w._tree_local.findItems('', Qt.MatchContains | Qt.MatchRecursive):
+    pl = it.data(0, Qt.ItemDataRole.UserRole)
+    if pl == ('local', OBJ_DRUM_KIT, 0x40, 4):
+        w._tree_local.setCurrentItem(it); break
+_orig_exec, L._exec_modal = L._exec_modal, _fake_exec
+try:
+    w._move_local_selected()
+finally:
+    L._exec_modal = _orig_exec
+assert w._index.get(OBJ_DRUM_KIT, 0x40, 5).display_name == "Jazz Kit v2", w._index.get(OBJ_DRUM_KIT, 0x40, 5).display_name
+assert w._index.get(OBJ_DRUM_KIT, 0x40, 4).display_name == "Funk Kit"
+print("move dialog ok")
+
+# Properties on a Program used to raise AttributeError (_walk_local_deps); a Set List opens its editor on double-click
+from Data.local_library_store import LocalIndexEntry
+from PySide6.QtWidgets import QDialog as _QD
+_seen = []
+_orig2, L._exec_modal = L._exec_modal, (lambda dlg, *a: _seen.append(type(dlg).__name__) or _QD.Rejected)
+try:
+    for it in w._tree_local.findItems('', Qt.MatchContains | Qt.MatchRecursive):
+        if it.data(0, Qt.ItemDataRole.UserRole) == ('local', OBJ_PROGRAM, 0x40, 7):
+            w._tree_local.setCurrentItem(it); w._show_local_properties(); break
+    sl = bytearray(69416); sl[0:6] = b'MySet '
+    sl_hash = w._blobs.put(bytes(sl))
+    w._index.entries[w._index.key(0x0D, 0, 0)] = LocalIndexEntry(version=0, baseline_hash=sl_hash, current_hash=sl_hash, display_name='MySet')
+    w._edit_set_list(ObjLoc(0x0D, 0, 0))
+finally:
+    L._exec_modal = _orig2
+assert _seen == ['_PropertiesDialog', 'SetListEditorDialog'], _seen
+print("properties + set list editor open ok")
+
 # ── 5. PCG -> Merge -> Auto-Fill: Drum Kit lands in a Drum Kit bank, Program resolves to it ──
 def chunk(tag, size, bank_id, recs):
     return pcg_file._make_bank_chunk(tag, len(recs), size, bank_id, recs)

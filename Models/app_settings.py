@@ -202,6 +202,7 @@ class AppSettings:
     # File Manager starting folders: local pane ("" = Desktop), instrument pane ("" = "/")
     file_manager_default_local_folder: str = ""
     file_manager_default_remote_folder: str = ""
+    last_file_dir: str = ""   # where the last file/folder dialog picked something (Views/file_dialogs.py)
 
     # Sample Editor
     sample_undo_byte_cap_mb: int = 256

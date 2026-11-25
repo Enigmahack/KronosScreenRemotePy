@@ -29,6 +29,8 @@ from Core.sample_editor_model.tree import SampleTreeNode, enumerate_nodes
 from Core.sample_support import SampleClipboard
 from Data.ksf_sample import KsfSample
 from Utils.midi_note_name import to_name, try_parse
+from Views import file_dialogs
+from Utils import settings_gear
 from Views.sample_editor_dialogs import (
     KRONOS_NAME_MAX_LENGTH, CreateMultisampleDialog, InsertSilenceDialog, SampleReportWindow, confirm, prompt_text)
 from Views.sample_editor_widgets import (
@@ -251,6 +253,7 @@ class SampleEditorWindow(QMainWindow):
 
     def _build_menus(self) -> None:
         mb = self.menuBar()
+        mb.setCornerWidget(settings_gear.make_gear_button("Sample Editor"), Qt.Corner.TopRightCorner)
         f = mb.addMenu("&File")
         self._m_file = f
         self._a_new_coll = self._act(f, "&New Sample Collection (.KSC)...", self.on_new_collection)
@@ -1585,24 +1588,24 @@ class SampleEditorWindow(QMainWindow):
     # ── file / collection handlers ─────────────────────────────────────────────────────────
 
     def on_open_collection(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Open Collection", "", "KSC Files (*.KSC *.ksc);;All Files (*)")
+        path, _ = file_dialogs.open_file(self, "Open Collection", "", "KSC Files (*.KSC *.ksc);;All Files (*)")
         if path:
             self.open_collection_path(path)
 
     def on_open_kmp(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Open Multisample", "", "KMP Files (*.KMP *.kmp);;All Files (*)")
+        path, _ = file_dialogs.open_file(self, "Open Multisample", "", "KMP Files (*.KMP *.kmp);;All Files (*)")
         if path:
             self.open_kmp_path(path)
 
     def on_new_collection(self) -> None:
-        path, _ = QFileDialog.getSaveFileName(self, "New Collection", "", "KSC Files (*.KSC);;All Files (*)")
+        path, _ = file_dialogs.save_file(self, "New Collection", "", "KSC Files (*.KSC);;All Files (*)")
         if path:
             self._model.new_collection(path)
             self._select_first_root()
             self._update_status()
 
     def on_save_collection_as(self, owning_path: str) -> None:
-        path, _ = QFileDialog.getSaveFileName(self, "Save Collection As", os.path.basename(owning_path),
+        path, _ = file_dialogs.save_file(self, "Save Collection As", os.path.basename(owning_path),
                                               "KSC Files (*.KSC);;All Files (*)")
         if not path:
             return
@@ -1788,7 +1791,7 @@ class SampleEditorWindow(QMainWindow):
         return orig, (orig if top is None else top)
 
     def on_import_audio(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Import Audio", "", AUDIO_FILTER)
+        path, _ = file_dialogs.open_file(self, "Import Audio", "", AUDIO_FILTER)
         if not path:
             return
         keys = self._prompt_zone_keys()
@@ -1797,7 +1800,7 @@ class SampleEditorWindow(QMainWindow):
         self._after_keep_multisample(lambda: self._model.import_audio_as_new_zone(path, *keys))
 
     def on_import_stereo_audio(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Import Audio as Stereo Pair", "", AUDIO_FILTER)
+        path, _ = file_dialogs.open_file(self, "Import Audio as Stereo Pair", "", AUDIO_FILTER)
         if not path:
             return
         keys = self._prompt_zone_keys()
@@ -1806,7 +1809,7 @@ class SampleEditorWindow(QMainWindow):
         self._after_keep_multisample(lambda: self._model.import_stereo_audio_as_new_zone_pair(path, *keys))
 
     def on_new_zone_from_ksf(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "New Zone from Existing Sample", "", "KSF Files (*.KSF *.ksf);;All Files (*)")
+        path, _ = file_dialogs.open_file(self, "New Zone from Existing Sample", "", "KSF Files (*.KSF *.ksf);;All Files (*)")
         if not path:
             return
         keys = self._prompt_zone_keys()
@@ -1826,7 +1829,7 @@ class SampleEditorWindow(QMainWindow):
         if zone is None:
             self._update_status()
             return
-        paths, _ = QFileDialog.getOpenFileNames(self, "Import Sample(s)", "", AUDIO_FILTER)
+        paths, _ = file_dialogs.open_files(self, "Import Sample(s)", "", AUDIO_FILTER)
         if not paths:
             return
         kmp = self._model.import_sample_into_zone(zone, paths)
@@ -1893,19 +1896,19 @@ class SampleEditorWindow(QMainWindow):
         self._update_status()
 
     def on_export_sample(self) -> None:
-        path, _ = QFileDialog.getSaveFileName(self, "Export Sample to WAV", self._model.sample_name, "WAV Files (*.wav)")
+        path, _ = file_dialogs.save_file(self, "Export Sample to WAV", self._model.sample_name, "WAV Files (*.wav)")
         if path:
             self._model.export_selected_sample_to_wav(path)
             self._update_status()
 
     def on_export_multisample(self) -> None:
-        d = QFileDialog.getExistingDirectory(self, "Export Multisample to Folder")
+        d = file_dialogs.open_dir(self, "Export Multisample to Folder")
         if d:
             self._model.export_selected_multisample_to_folder(d)
             self._update_status()
 
     def on_export_collection(self) -> None:
-        d = QFileDialog.getExistingDirectory(self, "Export Collection to Folder")
+        d = file_dialogs.open_dir(self, "Export Collection to Folder")
         if d:
             self._model.export_collection_to_folder(d)
             self._update_status()

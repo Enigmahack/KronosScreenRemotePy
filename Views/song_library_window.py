@@ -1,6 +1,7 @@
 """The Song Library window: songs kept on this computer (Data.song_library), with import from .SNG files or an instrument,
 export (with Kronos <-> Nautilus conversion) to .SNG, and sending Timbre Sets to a connected Nautilus."""
 from __future__ import annotations
+from Views import file_dialogs
 
 import logging
 import threading
@@ -173,7 +174,7 @@ class SongLibraryWindow(QDialog):
     def import_file(self) -> None:
         if self._busy:
             return
-        paths, _ = QFileDialog.getOpenFileNames(self, "Import songs", "", "Songs (*.SNG *.sng *.syx);;All files (*)")
+        paths, _ = file_dialogs.open_files(self, "Import songs", "", "Songs (*.SNG *.sng *.syx);;All files (*)")
         if not paths:
             return
         lib = self._lib
@@ -301,7 +302,7 @@ class SongLibraryWindow(QDialog):
                 self._set_status("Nothing was exported.")
                 self._show("Export .SNG", "Nothing was written.", refusals + warnings)
                 return
-            path, _ = QFileDialog.getSaveFileName(self, "Export .SNG", "songs.SNG", "Song files (*.SNG)")
+            path, _ = file_dialogs.save_file(self, "Export .SNG", "songs.SNG", "Song files (*.SNG)")
             if not path:
                 self._set_status("Export cancelled.")
                 return

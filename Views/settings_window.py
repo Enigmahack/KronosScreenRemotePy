@@ -24,6 +24,7 @@ from Models.models import Keybind
 from Tools.file_manager import normalize_remote_folder
 import Utils.key_map as key_map
 import Utils.theme as T
+from Views import file_dialogs
 from Views.revealable_password_edit import RevealablePasswordEdit
 
 _DIM  = T.TEXT_DIM
@@ -893,7 +894,7 @@ class SettingsWindow(QDialog):
 
     def _on_browse_fm_local(self):
         current = self._fm_local.text().strip() or str(pathlib.Path.home())
-        path = QFileDialog.getExistingDirectory(self, "File Manager Start Folder", current)
+        path = file_dialogs.open_dir(self, "File Manager Start Folder", current)
         if path:
             self._fm_local.setText(path)
 
@@ -1165,7 +1166,7 @@ class SettingsWindow(QDialog):
 
     def _on_browse_screenshot_dir(self):
         current = self._screenshot_dir.text().strip() or str(pathlib.Path.home())
-        path = QFileDialog.getExistingDirectory(self, "Screenshot Output Folder", current)
+        path = file_dialogs.open_dir(self, "Screenshot Output Folder", current)
         if path:
             self._screenshot_dir.setText(path)
 
@@ -1517,7 +1518,7 @@ class SettingsWindow(QDialog):
     # ── Import / Export ────────────────────────────────────────────────────────
 
     def _on_export(self):
-        path, _ = QFileDialog.getSaveFileName(
+        path, _ = file_dialogs.save_file(
             self, "Export Settings", "kronos_settings.json",
             "JSON Files (*.json)")
         if path:
@@ -1528,7 +1529,7 @@ class SettingsWindow(QDialog):
             QMessageBox.information(self, "Export", f"Settings exported to:\n{path}")
 
     def _on_import(self):
-        path, _ = QFileDialog.getOpenFileName(
+        path, _ = file_dialogs.open_file(
             self, "Import Settings", "", "JSON Files (*.json)")
         if not path:
             return
