@@ -52,6 +52,20 @@ def default_piano(rom_map) -> SampleTarget:
     return DEFAULT_PIANO if getattr(rom_map, "target_name", "Nautilus") == "Kronos" else DEFAULT_PIANO_NAUTILUS
 
 
+@functools.lru_cache(maxsize=None)
+def nautilus_stereo_pairs() -> Tuple[int, ...]:
+    """Raw ROM drum-sample index of each Nautilus stereo pair's "-L" half, in order. A drum zone whose bank id has the
+    stereo flag (byte 15 bit 0) names its sample by position in THIS list ("ROM s": 0..1089, last "Applause-amb1"), not
+    by raw index; a mono zone (flag 0, "ROM m") uses the raw index. Built from the ROM metadata (consecutive "X-L"/"X-R")
+    and confirmed on the unit: pair 1064 is "Wood Block 5b" (raw 3383), the list ends at 1089."""
+    return tuple(_read_json("nautilus_stereo_pairs.json", "NautilusStereoPairs.json") or ())
+
+
+@functools.lru_cache(maxsize=None)
+def nautilus_pair_ordinals() -> Dict[int, int]:
+    return {raw: i for i, raw in enumerate(nautilus_stereo_pairs())}
+
+
 def _section_kind(section: str) -> str:
     return ROM_DRUMSAMPLES if "DRUMSAMPLES" in section else ROM_MULTISAMPLES
 

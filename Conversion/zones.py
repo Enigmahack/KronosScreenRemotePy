@@ -11,10 +11,11 @@ EXi Programs are handled by Conversion.exi, which reports what it passes through
 from __future__ import annotations
 
 import enum
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import List, Optional, Tuple
 
-from Conversion.data import default_piano, ROM_DRUMSAMPLES, ROM_MULTISAMPLES, RomWaveformMap
+from Conversion.data import (default_piano, nautilus_pair_ordinals, nautilus_stereo_pairs, ROM_DRUMSAMPLES, ROM_MULTISAMPLES,
+                             RomWaveformMap)
 from Data.librarian_sysex import (DRUM_OSC_MODES, program_oscillator_mode, program_zone_reversed, set_program_zone_number,
                                   set_program_zone_reverse, set_program_zone_uuid)
 from Objects.object_body import (iter_drum_kit_sample_refs, iter_wave_seq_sample_refs, set_drum_kit_sample_id,
@@ -184,8 +185,29 @@ def remap_drum_kit(body: bytes, rom_map: RomWaveformMap, exs: ExsOptionIndex,
     with no twin first gets the closest-sounding one (DrumSampleSimilarity.json) when `approx` is given: it receives
     (where, tier, distance) for each such zone and the zone is not listed as unmapped."""
     out, unmapped, kept = bytearray(body), [], []
-    note_samples = {(n, s) for n, _, u, s in iter_drum_kit_sample_refs(body) if classify(u).kind is RefClass.ROM}
-    for note, zone, uuid, sample_id in iter_drum_kit_sample_refs(body):
+    to_nautilus = getattr(rom_map, "target_name", "") != "Kronos"
+    pairs, ordinals = nautilus_stereo_pairs(), nautilus_pair_ordinals()
+
+    def source_refs():
+        # A Nautilus stereo-flagged ROM zone holds a pair ordinal ("ROM s"); the maps are keyed by raw index.
+        for note, zone, uuid, sample_id in iter_drum_kit_sample_refs(body):
+            was_pair = (not to_nautilus and uuid[15] & 1 and classify(uuid).kind is RefClass.ROM
+                        and sample_id < len(pairs))
+            yield note, zone, uuid, (pairs[sample_id] if was_pair else sample_id), bool(was_pair)
+
+    def write(note, zone, uuid, target):
+        ref, idx = target.ref_bytes(uuid), target.index
+        if to_nautilus and target.uuid is None and ref[15] & 1:
+            if idx in ordinals:
+                idx = ordinals[idx]
+            else:                      # not a pair's "-L" half: it can only be a mono ("ROM m") reference
+                ref = ref[:15] + bytes([ref[15] & 0xFE])
+        set_drum_kit_zone_uuid(out, note, zone, ref)
+        set_drum_kit_sample_id(out, note, zone, idx)
+
+    refs = list(source_refs())
+    note_samples = {(n, s) for n, _, u, s, _ in refs if classify(u).kind is RefClass.ROM}
+    for note, zone, uuid, sample_id, was_pair in refs:
         # ROM drum sample #0 is "no sample": the Nautilus's own factory kits switch zones on at #0 for unused
         # notes, and it has no entry in the ROM map because there is nothing to map.
         # On the KRONOS #0 is a real sample ("BD-01-amb f": the second velocity layer of its kick), so a Nautilus zone left
@@ -197,8 +219,7 @@ def remap_drum_kit(body: bytes, rom_map: RomWaveformMap, exs: ExsOptionIndex,
         if outcome is _Outcome.PASS and reason:
             kept.append(f"note {note} zone {zone + 1} ({reason})")
         if outcome is _Outcome.REMAPPED:
-            set_drum_kit_zone_uuid(out, note, zone, new.ref_bytes(uuid))
-            set_drum_kit_sample_id(out, note, zone, new.index)
+            write(note, zone, uuid, replace(new, stereo=False) if was_pair else new)
         elif outcome is _Outcome.UNMAPPED:
             sim = (rom_map.similar_drumsample(sample_id)
                    if approx is not None and classify(uuid).kind is RefClass.ROM and hasattr(rom_map, "similar_drumsample") else None)
@@ -209,8 +230,7 @@ def remap_drum_kit(body: bytes, rom_map: RomWaveformMap, exs: ExsOptionIndex,
                     set_drum_kit_zone_off(out, note, zone)
                     approx.append((f"Note {note} zone {zone + 1}", "merged", dist))
                     continue
-                set_drum_kit_zone_uuid(out, note, zone, target.ref_bytes(uuid))
-                set_drum_kit_sample_id(out, note, zone, target.index)
+                write(note, zone, uuid, target)
                 approx.append((f"Note {note} zone {zone + 1}", tier, dist))
                 continue
             unmapped.append(UnmappedRef(f"Note {note} zone {zone + 1}", reason))

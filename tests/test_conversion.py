@@ -155,15 +155,23 @@ check("drumkit-switch-off-reported", r.body is not None and "1 zone(s) switched 
 r = convert_drum_kit(drum_kit(0, 9999), dk_map, no_exs)
 check("drumkit-all-unmapped-refused", r.body is None and "nothing would play" in r.refusals[0])
 # A ROM drum sample with no exact twin gets the closest-sounding one (DrumSampleSimilarity.json). Kronos #1 "BD-01-amb ff" is the
-# mono sum of the Nautilus pair #207/#208 ("-L"/"-R"): the zone points at the "-L" sample and is flagged stereo.
+# mono sum of the Nautilus pair #207/#208 ("-L"/"-R"): the zone is flagged stereo and holds the pair's position in the stereo list, not its raw index.
 _real = RomWaveformMap.from_catalog()
 _r = convert_drum_kit(drum_kit(0, 1), _real, no_exs)
 _refs = [(s, u) for _, _, u, s in iter_drum_kit_sample_refs(_r.body)] if _r.body else []
-check("drumkit-similar-sample-used", _real.try_map("ROM_DRUMSAMPLES", 1) is None and [s for s, _ in _refs] == [207]
+check("drumkit-similar-sample-used", _real.try_map("ROM_DRUMSAMPLES", 1) is None and [s for s, _ in _refs] == [51]  # raw #207 is entry 51 of the stereo ("ROM s") list
       and _refs[0][1][15] & 1 == 1
       and any("chosen by its audio" in w and "1 identical" in w for w in _r.warnings) and not any("switched off" in w for w in _r.warnings))
 # the other way: the Nautilus pair #207/#208 is Kronos EXs1 drum samples #6/#7 (identical audio), so each half maps exactly
 from Conversion.media import convert_drum_kit_to_kronos
+# Kronos #905 "Wood Block 5 b" -> Nautilus pair "Wood Block 5b": raw 3383 ("ROM m") but entry 1064 of the stereo list ("ROM s"),
+# which is what the unit shows for a stereo-flagged zone (raw 3383 there is out of range and reads blank).
+_w = convert_drum_kit(drum_kit(0, 905), _real, no_exs)
+_wr = [(s, u[15] & 1) for _, _, u, s in iter_drum_kit_sample_refs(_w.body)] if _w.body else []
+check("drumkit-stereo-flag-uses-pair-ordinal", _wr == [(1064, 1)])
+_wk = convert_drum_kit_to_kronos(_w.body, _real, no_exs) if _w.body else None
+_wkr = [(s, u[15] & 1) for _, _, u, s in iter_drum_kit_sample_refs(_wk.body)] if _wk and _wk.body else []
+check("drumkit-reverse-reads-pair-ordinal", _wkr == [(1304, 0)])  # pair 1064 = raw 3383 = Kronos EXs1 "Wood Block 5 b -L" (exact), mono
 _rr = convert_drum_kit_to_kronos(add_dk_zone(drum_kit(0, 207), 0, 1, 208), _real, no_exs)
 _zs = [(z, s, u[15] >> 1) for n, z, u, s in iter_drum_kit_sample_refs(_rr.body)] if _rr.body else []
 check("drumkit-reverse-exs-twin", _zs == [(0, 6, 2), (1, 7, 2)] and not any("right half" in w for w in _rr.warnings))
