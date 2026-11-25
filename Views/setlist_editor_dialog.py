@@ -84,6 +84,7 @@ class SetListEditorDialog(QDialog):
         self._pick = pick
         self._target_name = target_name
         self._loading = False
+        self._name_edited = False         # the name box is written back only after the user typed in it
         self._page = 0
         self._sel = 0
         self.new_body: Optional[bytes] = None
@@ -177,7 +178,7 @@ class SetListEditorDialog(QDialog):
         self._load_eq()
         self._refresh_grid()
         self._select(0)
-        self._name.textEdited.connect(self._commit_name)
+        self._name.textEdited.connect(self._on_name_typed)
         self._color.currentIndexChanged.connect(self._commit_color)
         self._transpose.valueChanged.connect(self._commit_transpose)
         self._comments.textChanged.connect(self._commit_comments)
@@ -248,6 +249,7 @@ class SetListEditorDialog(QDialog):
         if s is None:
             return
         self._loading = True
+        self._name_edited = False
         self._name.setText(s.name.strip())
         self._target.setText(self._target_text(row))
         self._color.setCurrentIndex(get_by_index_or_default(s.color).index)
@@ -323,11 +325,13 @@ class SetListEditorDialog(QDialog):
         self._set_body(body, row)
 
     # -- field edits (each writes into the working copy at once) --
+    def _on_name_typed(self, *_) -> None:
+        self._name_edited = True
+        self._commit_name()
+
     def _commit_name(self, *_) -> None:
         row = self._sel
-        if self._loading or ob.parse_setlist_slot(self._body, row) is None:
-            return
-        if self._name.text().strip() == ob.parse_setlist_slot(self._body, row).name.strip():
+        if self._loading or not self._name_edited or ob.parse_setlist_slot(self._body, row) is None:
             return
         self._body = ob.write_setlist_slot_name(self._body, row, self._name.text())
         self._refresh_cell(row)
