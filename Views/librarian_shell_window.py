@@ -2482,10 +2482,41 @@ class LibrarianShellWindow(QDialog):
         self._empty_hint.setVisible(is_empty)
         self._on_tree_rebuilt("local")
 
+    @staticmethod
+    def _tree_expansion(tree: QTreeWidget) -> dict:
+        """Expanded state of every header row (one with children), keyed by its label path, plus the scroll position,
+        so a rebuild after a move leaves the tree as the user arranged it."""
+        out: dict = {"__scroll": tree.verticalScrollBar().value()}
+
+        def walk(it, path):
+            if it.childCount():
+                out[path] = it.isExpanded()
+                for i in range(it.childCount()):
+                    walk(it.child(i), path + (it.child(i).text(0),))
+        for i in range(tree.topLevelItemCount()):
+            t = tree.topLevelItem(i)
+            walk(t, (t.text(0),))
+        return out
+
+    @staticmethod
+    def _restore_tree_expansion(tree: QTreeWidget, state: dict, default: bool) -> None:
+        """Re-apply `_tree_expansion`; a header not seen before gets `default`."""
+        def walk(it, path):
+            if it.childCount():
+                it.setExpanded(state.get(path, default))
+                for i in range(it.childCount()):
+                    walk(it.child(i), path + (it.child(i).text(0),))
+        for i in range(tree.topLevelItemCount()):
+            t = tree.topLevelItem(i)
+            walk(t, (t.text(0),))
+        if "__scroll" in state:
+            tree.verticalScrollBar().setValue(state["__scroll"])
+
     def _refresh_merge_tree(self) -> None:
         if self._suppress_tree_refresh:
             return
         tree = self._tree_merge
+        state = self._tree_expansion(tree)
         tree.clear()
         groups = _group_merge(self._merge.entries, self._settings.librarian_preserve_placement_order)
         for obj_type in _ROOT_ORDER:
@@ -2515,11 +2546,14 @@ class LibrarianShellWindow(QDialog):
                 if e.has_unresolved_dependencies:
                     leaf.setForeground(0, QBrush(QColor(T.ERROR_TEXT)))
                 root.addChild(leaf)
-        tree.expandAll()
+        self._restore_tree_expansion(tree, state, default=True)
         self._on_tree_rebuilt("merge")
 
     def _refresh_pcg_tree(self) -> None:
         tree = self._tree_pcg
+        # A different PCG starts collapsed; a refresh of the same one (objects moved out) keeps the tree as it was.
+        state = self._tree_expansion(tree) if getattr(self, "_pcg_tree_for", None) is self._pcg else {}
+        self._pcg_tree_for = self._pcg
         tree.clear()
         objects = self._pcg.objects if self._pcg is not None else []
         self._pcg_by_addr = {}
@@ -2556,6 +2590,7 @@ class LibrarianShellWindow(QDialog):
                     parent.addChild(leaf)
         # Bank-group nodes start collapsed — matches C#'s ObjectTreeNode.IsExpanded
         # default (false); a fresh rebuild otherwise re-collapses everything anyway.
+        self._restore_tree_expansion(tree, state, default=False)
         if self._pcg is None:
             self._pcg_status_label.setText("No PCG loaded")
         else:
