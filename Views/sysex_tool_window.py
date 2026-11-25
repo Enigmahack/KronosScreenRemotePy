@@ -64,6 +64,7 @@ def _style(bg: str, border: str, fg: str) -> str:
 
 
 class SysExToolWindow(QDialog):
+    STABLE_LAYOUT = False   # reflows as banners / panels come and go (Utils/stable_layout.py)
     closing = Signal(int)   # the selected OUT CH (1-16) when the window closes — persisted by the caller
 
     def __init__(self, host: str, bridge: Optional[MidiBridgeClient],

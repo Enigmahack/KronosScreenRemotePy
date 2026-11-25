@@ -33,6 +33,7 @@ def _is_placeholder(name: str) -> bool:
 
 
 class SongLibraryWindow(QDialog):
+    STABLE_LAYOUT = False   # reflows as banners / panels come and go (Utils/stable_layout.py)
     _pulled = Signal(list, str)          # [SongData], status
     _progress = Signal(str)
     _bg_done = Signal(object, object, object)     # callback, result, exception

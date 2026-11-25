@@ -204,6 +204,7 @@ def _dim_label(text: str) -> QLabel:
 
 
 class PerformanceWindow(QDialog):
+    STABLE_LAYOUT = False   # reflows as banners / panels come and go (Utils/stable_layout.py)
     """System info polling window (equivalent to C# KeyboardInfoWindow)."""
 
     _INTERVALS = [("1 s", 1000), ("5 s", 5000), ("10 s", 10000),

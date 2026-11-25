@@ -1343,6 +1343,7 @@ class _ObjectInfoDialog(QDialog):
 
 
 class LibrarianShellWindow(QDialog):
+    STABLE_LAYOUT = False   # reflows as banners / panels come and go (Utils/stable_layout.py)
     _sync_done = Signal(object, object, object, str)     # PullResult|None, ChangesetPlan|None, SyncResult|None, status
     _merge_pull_done = Signal(int, int, str)              # added, gaps, status
     _progress = Signal(str)

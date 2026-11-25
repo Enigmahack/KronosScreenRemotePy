@@ -83,6 +83,7 @@ class _ResettableSlider(QSlider):
 
 
 class SettingsWindow(QDialog):
+    STABLE_LAYOUT = False   # reflows as banners / panels come and go (Utils/stable_layout.py)
     def __init__(self, settings: AppSettings, parent=None, initial_tab: str = "",
                  on_image_preview=None, on_button_injector=None, on_test_mode=None):
         super().__init__(parent)

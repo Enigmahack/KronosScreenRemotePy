@@ -2,7 +2,10 @@
 
 Installed once as an application event filter. When a dialog is first shown, every child widget keeps its slot in the
 layout while hidden (`retainSizeWhenHidden`), and every list / tree / table gets a minimum height, so an empty or short
-list leaves blank space instead of pulling its neighbours around. Code that swaps controls should hide them; the slot stays."""
+list leaves blank space instead of pulling its neighbours around. Code that swaps controls should hide them; the slot stays.
+
+Opt out with a class attribute `STABLE_LAYOUT = False`: for big tool windows whose banners / panels appear and disappear
+and are meant to reflow (Librarian, Settings, ...)."""
 from __future__ import annotations
 
 from PySide6.QtCore import QEvent, QObject
@@ -25,7 +28,8 @@ def stabilize(root: QWidget) -> None:
 
 class _Filter(QObject):
     def eventFilter(self, obj, ev):
-        if ev.type() == QEvent.Type.Show and isinstance(obj, QDialog) and not obj.property(_DONE):
+        if (ev.type() == QEvent.Type.Show and isinstance(obj, QDialog) and not obj.property(_DONE)
+                and getattr(obj, "STABLE_LAYOUT", True)):
             stabilize(obj)
         return False
 

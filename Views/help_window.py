@@ -536,6 +536,7 @@ def _build_html() -> str:
 
 
 class HelpWindow(QDialog):
+    STABLE_LAYOUT = False   # reflows as banners / panels come and go (Utils/stable_layout.py)
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Keyboard Screen Remote — Help")
