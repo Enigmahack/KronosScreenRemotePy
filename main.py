@@ -171,6 +171,8 @@ def main():
     app.setApplicationName("KronosScreenRemote")
     app.setOrganizationName("KronosHacking")
     _install_crash_guard()
+    from Utils import stable_layout
+    stable_layout.install(app)
 
     _icons = pathlib.Path(__file__).parent / "Resources" / "Icons"
     _ico = _icons / "AppIcon.ico"
