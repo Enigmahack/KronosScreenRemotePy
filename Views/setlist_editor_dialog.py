@@ -190,9 +190,15 @@ class SetListEditorDialog(QDialog):
     # -- grid --
     def _slot_text(self, i: int) -> str:
         s = ob.parse_setlist_slot(self._body, i)
-        if s is None or s.is_empty:
+        if self._blank(i):
             return f"{i:03d}\n(empty)"
-        return f"{i:03d}  {s.name.strip()}\n{self._target_text(i)}"
+        return f"{i:03d}  {s.name.strip() or '(unnamed)'}\n{self._target_text(i)}"
+
+    def _blank(self, i: int) -> bool:
+        """Empty only when nothing is set: a slot with no name but a comment, target or pitch offset still shows as itself."""
+        s = ob.parse_setlist_slot(self._body, i)
+        return (s is None or (s.is_empty and not s.comments.strip() and se.slot_ref(self._body, i) == (0, 0, 0)
+                              and not se.slot_transpose(self._body, i)))
 
     def _target_text(self, i: int) -> str:
         try:
@@ -202,7 +208,7 @@ class SetListEditorDialog(QDialog):
 
     def _style(self, i: int) -> str:
         s = ob.parse_setlist_slot(self._body, i)
-        if s is None or s.is_empty:
+        if self._blank(i):
             bg, fg = "#2b2b2b", "#808080"
         else:
             bg = get_by_index_or_default(s.color).hex

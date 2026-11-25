@@ -68,5 +68,11 @@ p = RefPickerDialog([(0, 0, 5, "A", "Pad"), (1, 2, 9, "I-C", "Piano")], (1, 2, 9
 check("picker-preselect", p._list.currentItem() is not None)
 p._accept(); check("picker-result", p.result_ref == (1, 2, 9))
 p._type.setCurrentIndex(2); p._song.setValue(12); p._accept(); check("picker-song", p.result_ref == (2, 0, 12))
+for n in (69416, 69544):                                   # unnamed slot that still has a comment / target is not "(empty)"
+    b = ob.write_setlist_slot_comments(bytes(n), 0, "note")
+    b = se.set_slot_ref(b, 2, 1, 3, 5)
+    dd = SetListEditorDialog("t", b, lambda t, bk, i: "T")
+    check(f"unnamed-slot-shown-{n}", "(empty)" not in dd._cells[0].text() and "(empty)" not in dd._cells[2].text()
+          and "(empty)" in dd._cells[1].text())
 print("FAILED:" if fails else "ALL PASS", fails or "")
 sys.exit(1 if fails else 0)
