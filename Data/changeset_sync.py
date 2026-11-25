@@ -226,6 +226,7 @@ def build_changeset(index: LocalLibraryIndex, blobs: BlobStore,
                      allow_dangling: bool = False,
                      device_family: Optional[str] = None,
                      allow_incomplete: bool = False,
+                     allow_erased_dangling: bool = False,
                      ) -> ChangesetPlan:
     """allow_incomplete: the user explicitly confirmed writing into slots a pull could not read
     (index.incomplete_banks). Without it - and force_destructive_write does NOT imply it - a
@@ -236,11 +237,14 @@ def build_changeset(index: LocalLibraryIndex, blobs: BlobStore,
     device_family ("kronos"/"nautilus"): a Program or Combi in the other family's format is refused, never
     written; a Kronos body sent to a Nautilus is the right size for some banks but lays its parameters out differently.
 
+    allow_erased_dangling: with allow_dangling, also accept a reference to a slot this same push erases (only the
+    Push Only overwrite retry, after a prompt that named the refusal).
+
     allow_dangling: the user explicitly accepted leaving references unresolved ("Continue
     anyway" / "Overwrite anyway"), so steps 1 and 3 report them as CHECKs instead of refusing.
 
     force_destructive_write (Settings > Librarian): the Local Library is the source of
-    truth, so step 2's conflict pre-scan is skipped outright rather than run and ignored —
+    truth; so step 2's conflict pre-scan is skipped outright rather than run and ignored —
     its digest round trip exists only to decide what to exclude, and flagging a conflict
     here would mark objects this very push is about to write. The gates that survive it
     (steps 3 / 3.5 and the per-write staleness check in the caller's write_to_hardware)
@@ -379,8 +383,11 @@ def build_changeset(index: LocalLibraryIndex, blobs: BlobStore,
         loc = ObjLoc(obj_type, bank, number)
         for missing in depscan.scan(push_resolver, obj_type, body):
             r = missing.ref
-            # Accepting dangling references never covers a target this same push erases.
-            waived = allow_dangling and (r.obj_type, r.bank, r.number) not in being_erased
+            # "Continue anyway" never covers a target this same push erases (the user was not told about that erase),
+            # nor does the persistent force setting. The Push Only overwrite retry does (allow_erased_dangling): the
+            # prompt named this very refusal, the library is the source of truth, and the erased slot simply holds the
+            # instrument's Init object.
+            waived = allow_dangling and (allow_erased_dangling or (r.obj_type, r.bank, r.number) not in being_erased)
             plan.warnings.append(
                 f"{'CHECK' if waived else 'REFUSE'}: {loc.label()} references "
                 f"{missing.ref.label()} ({missing.ref_kind}), which does not exist locally")
@@ -652,6 +659,7 @@ def commit_changes(index: LocalLibraryIndex, blobs: BlobStore,
                     store_bank: Optional[Callable[[int, int], bool]] = None,
                     device_family: Optional[str] = None,
                     allow_incomplete: bool = False,
+                    allow_erased_dangling: bool = False,
                     ) -> Tuple[ChangesetPlan, SyncResult]:
     """Push-only — port of SyncPipeline.CommitChangesAsync. Deliberately
     skips pulling; pushes straight against whatever bank-digest baseline is
@@ -659,7 +667,7 @@ def commit_changes(index: LocalLibraryIndex, blobs: BlobStore,
     plan = build_changeset(index, blobs, clipboard, get_live_digest, resolver,
                             get_live_bank_type, pending_bank_type_change,
                             force_destructive_write, allow_dangling, device_family,
-                            allow_incomplete=allow_incomplete)
+                            allow_incomplete=allow_incomplete, allow_erased_dangling=allow_erased_dangling)
     result = execute_changeset(plan, index, write_to_hardware, write_bank_type_change,
                                 record_success, cancel=cancel,
                                 prepare_hardware=prepare_hardware, store_bank=store_bank)
@@ -682,6 +690,7 @@ def sync_library(index: LocalLibraryIndex, blobs: BlobStore,
                   store_bank: Optional[Callable[[int, int], bool]] = None,
                   device_family: Optional[str] = None,
                   allow_incomplete: bool = False,
+                  allow_erased_dangling: bool = False,
                   ) -> Tuple[PullResult, ChangesetPlan, SyncResult]:
     """Pull, then push — port of SyncPipeline.SyncLibraryAsync. See module
     docstring's pull-vs-commit invariant note for why the ordering is pull
@@ -704,7 +713,8 @@ def sync_library(index: LocalLibraryIndex, blobs: BlobStore,
                                   force_destructive_write=force_destructive_write,
                                   allow_dangling=allow_dangling,
                                   prepare_hardware=prepare_hardware, store_bank=store_bank,
-                                  device_family=device_family, allow_incomplete=allow_incomplete)
+                                  device_family=device_family, allow_incomplete=allow_incomplete,
+                                  allow_erased_dangling=allow_erased_dangling)
     return pull_result, plan, result
 
 
