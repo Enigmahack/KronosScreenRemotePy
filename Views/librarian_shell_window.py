@@ -2768,18 +2768,43 @@ class LibrarianShellWindow(QDialog):
         body = self._blobs.get(entry.current_hash) if entry is not None else None
         if body is None:
             return
-        from Data.librarian_sysex import setlist_slot_ref
+        from Data.librarian_sysex import func33_to_obj_bank, obj_bank_to_func33
         from Views.setlist_editor_dialog import SetListEditorDialog
+        from Views.setlist_ref_picker import RefPickerDialog
         nautilus = self._device_family() == FAMILY_NAUTILUS
 
-        def label(b: bytes, i: int) -> str:
-            type_, bank, index = setlist_slot_ref(b, i)
+        def target(type_: int, bank: int, index: int) -> Optional[ObjLoc]:
             if type_ == 2:
-                return f"Song {index:03d}"
-            kind = OBJ_COMBI if type_ == 0 else OBJ_PROGRAM
-            return ObjLoc(kind, bank, index).label(nautilus)
+                return None
+            return ObjLoc(OBJ_COMBI if type_ == 0 else OBJ_PROGRAM, func33_to_obj_bank(type_, bank), index)
 
-        dlg = SetListEditorDialog(f"Set List - {entry.display_name or self._loc_text(loc)}", body, label, parent=self)
+        def name_of(ref) -> str:
+            t = target(*ref)
+            e = self._index.get(t.obj_type, t.bank, t.number) if t is not None else None
+            return (e.display_name or "") if e is not None else ""
+
+        def describe(type_: int, bank: int, index: int) -> str:
+            t = target(type_, bank, index)
+            if t is None:
+                return f"Song {index:03d}"
+            n = name_of((type_, bank, index))
+            return f"{t.label(nautilus)}  {n}" if n else f"{t.label(nautilus)}  (not in Keyboard Library)"
+
+        def pick(current) -> Optional[tuple]:
+            entries = []
+            for key, e in self._index.entries.items():
+                ot, ob_, num = (int(x) for x in key.split(":"))
+                if ot not in (OBJ_COMBI, OBJ_PROGRAM) or e.pending_delete:
+                    continue
+                t = 0 if ot == OBJ_COMBI else 1
+                f33 = obj_bank_to_func33(t, ob_)
+                if f33 >= 0:
+                    entries.append((t, f33, num, ObjLoc(ot, ob_, num).label(nautilus).split(":")[0], e.display_name or ""))
+            pd = RefPickerDialog(entries, tuple(current) if current else None, parent=dlg)
+            return pd.result_ref if _exec_modal(pd) == QDialog.DialogCode.Accepted else None
+
+        dlg = SetListEditorDialog(f"Set List - {entry.display_name or self._loc_text(loc)}", body, describe, pick,
+                                  name_of, parent=self)
         if _exec_modal(dlg) == QDialog.DialogCode.Accepted and dlg.new_body is not None and dlg.new_body != body:
             self._write_local_body_edit(loc, dlg.new_body, "set list edit")
 

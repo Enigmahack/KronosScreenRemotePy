@@ -50,6 +50,46 @@ def move_slot(body: bytes, src: int, dst: int) -> bytes:
     return body[:start] + b"".join(chunks) + body[start + n * stride:]
 
 
+def slot_bytes(body: bytes, slot: int) -> bytes:
+    """The whole slot (name, reference, colour, transpose, comments); same-length bodies only exchange these."""
+    s = _stride(body)
+    return body[ob.SLOT_BASE + slot * s:ob.SLOT_BASE + (slot + 1) * s]
+
+
+def put_slot_bytes(body: bytes, slot: int, chunk: bytes) -> bytes:
+    """Overwrite a slot with `chunk`; a chunk from the other family (different length) is refused."""
+    s = _stride(body)
+    if len(chunk) != s:
+        raise ValueError("slot is from the other instrument family")
+    o = ob.SLOT_BASE + slot * s
+    return body[:o] + chunk + body[o + s:]
+
+
+def swap_slots(body: bytes, a: int, b: int) -> bytes:
+    if a == b:
+        return body
+    ca, cb = slot_bytes(body, a), slot_bytes(body, b)
+    return put_slot_bytes(put_slot_bytes(body, a, cb), b, ca)
+
+
+def clear_slot(body: bytes, slot: int) -> bytes:
+    """Empty a slot: blank name and zeroed fields (an unnamed slot is how both instruments show an empty one)."""
+    return put_slot_bytes(body, slot, b" " * ob.NAME_LEN + bytes(_stride(body) - ob.NAME_LEN))
+
+
+def slot_ref(body: bytes, slot: int):
+    """(type 0 Combi / 1 Program / 2 Song, func-33 bank, index): one numbering for both instruments."""
+    from Data.librarian_sysex import setlist_slot_ref
+    return setlist_slot_ref(body, slot)
+
+
+def set_slot_ref(body: bytes, slot: int, type_: int, func33_bank: int, index: int) -> bytes:
+    from Data.librarian_sysex import set_setlist_slot_ref
+    out = bytearray(body)
+    set_setlist_slot_ref(out, slot, func33_bank=func33_bank, index=index, type_=type_)
+    return bytes(out)
+
+
 @dataclass(frozen=True)
 class SetListEq:
     bypass: bool
@@ -90,6 +130,15 @@ if __name__ == "__main__":
     moved = move_slot(body, 0, 5)
     assert moved[24 + 5 * 542] == body[24] and moved[24] == body[24 + 542] and len(moved) == len(body)
     assert move_slot(moved, 5, 0) == body
+    sw = swap_slots(body, 1, 9)
+    assert slot_bytes(sw, 9) == slot_bytes(body, 1) and swap_slots(sw, 1, 9) == body
+    assert slot_bytes(clear_slot(body, 2), 2)[:24] == b" " * 24 and clear_slot(body, 2)[:24 + 2 * 542] == body[:24 + 2 * 542]
+    r = set_slot_ref(body, 4, 1, 3, 77)
+    assert slot_ref(r, 4) == (1, 3, 77) and slot_bytes(r, 5) == slot_bytes(body, 5)
+    try:
+        put_slot_bytes(body, 0, bytes(543)); raise SystemExit("cross-family chunk accepted")
+    except ValueError:
+        pass
     eq = SetListEq(True, 42, (-18, -0.5, 0, 0.5, 3, 6, 9, 12, 18))
     assert read_eq(write_eq(body, eq)) == eq and has_eq(body)
     print("setlist_edit self-test ok")
