@@ -2216,6 +2216,10 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         self._act_librarian_shell = tools_menu.addAction("&Librarian…")
         self._act_sample_editor = tools_menu.addAction("Sample &Editor…")
         self._act_sample_editor.triggered.connect(self.on_show_sample_editor)
+        self._act_performance_surface = tools_menu.addAction("Performance Surface…")
+        self._act_performance_surface.setToolTip("Available while connected to a Nautilus.")
+        self._act_performance_surface.setEnabled(False)
+        self._act_performance_surface.triggered.connect(self.show_performance_surface)
         # C# MainWindow.xaml: MNU_FileManager lives in MENU_Tools, after Librarian/
         # Sample Editor — not in Connection.
         self._act_file_mgr   = tools_menu.addAction("File &Manager…")
@@ -2605,6 +2609,9 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
     def _disconnect(self, quiet: bool = False):
         if not self._prepare_transport_shutdown():
             return False
+        self._act_performance_surface.setEnabled(False)
+        if self._performance_surface is not None:
+            self._performance_surface.close()
         self._session_generation += 1
         self._connecting = False
         pending, self._pending_rx = self._pending_rx, None
@@ -2737,6 +2744,9 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
     def _on_disconnected(self):
         if self.sender() is not None and self.sender() is not self._receiver:
             return
+        self._act_performance_surface.setEnabled(False)
+        if self._performance_surface is not None:
+            self._performance_surface.close()
         self._session_generation += 1
         self._reset_daemon_state()
         self._frame_w._is_connected    = False
@@ -2979,6 +2989,9 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         anywhere in this file), so there's nothing to un-light on Nautilus
         specifically."""
         self._bank_menu.menuAction().setEnabled(not self._is_nautilus)
+        self._act_performance_surface.setEnabled(self._is_nautilus and self._receiver is not None)
+        if not self._is_nautilus and self._performance_surface is not None:
+            self._performance_surface.close()
         for a in self._act_modes:
             a.setVisible(not self._is_nautilus)
         for a in self._act_naut_modes:
@@ -5145,6 +5158,7 @@ class MainWindow(MainWindowDialogMixin, QMainWindow):
         for w in (self._sysex_tool_win, self._librarian_shell_win,
                   getattr(self, "_sample_editor_win", None),
                   getattr(self, "_input_tester", None),
+                  getattr(self, "_performance_surface", None),
                   getattr(self, "_button_injector", None)):
             close = getattr(w, "close", None)
             if callable(close):

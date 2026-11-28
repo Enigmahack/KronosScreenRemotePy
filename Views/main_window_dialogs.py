@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Optional
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QDialog
+from PySide6.QtWidgets import QApplication, QDialog
 
 from Views.dialogs import (
     ObjectInfoDialog,
@@ -21,6 +21,7 @@ class MainWindowDialogMixin:
         self._input_tester = None
         self._button_injector = None
         self._sample_editor_win = None
+        self._performance_surface = None
 
     def show_object_info(self, obj_type: str, bank: int, number: int,
                         name: str, properties: dict):
@@ -38,11 +39,29 @@ class MainWindowDialogMixin:
 
     def show_button_injector(self):
         """Show button injector window (non-modal)."""
+        settings = QApplication.activeModalWidget()
+        if settings is not None:
+            dlg = ButtonInjectorWindow(self, settings)
+            try:
+                dlg.exec()
+            finally:
+                dlg.deleteLater()
+            return
         if self._button_injector is None:
             self._button_injector = ButtonInjectorWindow(self, None)
         self._button_injector.show()
         self._button_injector.raise_()
         self._button_injector.activateWindow()
+
+    def show_performance_surface(self):
+        if not self._is_nautilus or self._receiver is None:
+            return
+        if self._performance_surface is None:
+            from Views.nautilus_perf_surface import NautilusPerfSurface
+            self._performance_surface = NautilusPerfSurface(self)
+        self._performance_surface.show()
+        self._performance_surface.raise_()
+        self._performance_surface.activateWindow()
 
     # Menu action handlers for testing/debugging
 

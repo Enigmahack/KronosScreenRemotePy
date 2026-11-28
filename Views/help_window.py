@@ -281,8 +281,10 @@ def _build_html() -> str:
             _kb_row("Hide Value Input",        "Hide / show the value input panel (Full layout only)."),
             _kb_row("Screenshot Directory",   "Default folder for Quick Save screenshots."),
             _kb_row("Debug Logging",          "Write verbose diagnostic output to the console. While it is "
-                                              "ticked, the Debug tab also shows <b>Button Injector…</b> "
-                                              "(send any named front-panel button; for mapping a Nautilus)."),
+                                              "ticked, the Debug tab also shows <b>Control Injector…</b>: "
+                                              "assign a button from the reference table or a raw code (0–127), "
+                                              "and turn an RT knob (1–8) to send absolute positions (0–127). "
+                                              "Assignments alone send nothing; confirm effects on the instrument."),
             _kb_row("Input Mapping",          "Map a host key to a raw instrument keycode (overrides the default "
                                               "key map immediately)."),
             _kb_row("Recent Connections",     "<b>Connection → Recent Connections</b> keeps the last five hosts "

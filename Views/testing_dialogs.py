@@ -15,7 +15,7 @@ from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QGroupBox,
     QGridLayout, QTabWidget, QLineEdit, QSpinBox, QDoubleSpinBox,
-    QTextEdit, QScrollArea, QWidget, QCheckBox, QComboBox,
+    QTextEdit, QScrollArea, QWidget, QCheckBox, QComboBox, QDial,
 )
 from PySide6.QtGui import QFont, QColor
 
@@ -292,18 +292,19 @@ class ButtonInjectorWindow(BaseDialog):
     """Dedicated window for button injection testing against the connected unit."""
 
     def __init__(self, main_window, parent=None):
-        super().__init__("Button Injector", parent)
+        super().__init__("Control Injector", parent, modal=False)
         self._mw = main_window
         self._setup_ui()
-        self.resize(420, 560)
+        self.resize(520, 740)
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
 
         info = QLabel(
-            "Sends BTN <code> for the chosen button to the connected unit (docs/api.md §7/§9).\n"
-            "Watch the mirrored screen to confirm which physical button fires."
+            "Test controls on the connected instrument. Watch the mirrored screen to confirm effects.\n"
+            "Button names below are Kronos reference names; Nautilus assignments may differ.\n"
+            "KNOB sends an absolute position, not a relative turn. Assigning a control sends nothing."
         )
         info.setStyleSheet(f"color: {T.TEXT_DIM};")
         info.setWordWrap(True)
@@ -311,7 +312,58 @@ class ButtonInjectorWindow(BaseDialog):
 
         self.status_label = QLabel("")
         self.status_label.setStyleSheet(f"color: {T.TEXT_DIM}; font-size: 9pt;")
+        self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
+
+        button_group = QGroupBox("Assignable button")
+        button_layout = QHBoxLayout(button_group)
+        self.button_assignment = QComboBox()
+        for _, token, code, desc in BUTTON_REFERENCE:
+            self.button_assignment.addItem(f"{token} ({code})", code)
+            self.button_assignment.setItemData(
+                self.button_assignment.count() - 1, desc, Qt.ToolTipRole)
+        button_layout.addWidget(self.button_assignment, 1)
+        self.button_code = QSpinBox()
+        self.button_code.setRange(0, 127)
+        self.button_code.setPrefix("Code ")
+        self.button_code.setValue(self.button_assignment.currentData())
+        self.button_assignment.addItem("Custom code", None)
+        self.button_assignment.currentIndexChanged.connect(self._button_assignment_changed)
+        self.button_code.valueChanged.connect(self._button_code_changed)
+        button_layout.addWidget(self.button_code)
+        self.assigned_button = QPushButton("Press")
+        self.assigned_button.clicked.connect(
+            lambda: self._send_control(f"BTN {self.button_code.value()}"))
+        button_layout.addWidget(self.assigned_button)
+        layout.addWidget(button_group)
+
+        knob_group = QGroupBox("Assignable knob")
+        knob_layout = QHBoxLayout(knob_group)
+        knob_layout.addWidget(QLabel("RT knob"))
+        self.knob_assignment = QSpinBox()
+        self.knob_assignment.setRange(1, 8)
+        knob_layout.addWidget(self.knob_assignment)
+        self.knob = QDial()
+        self.knob.setRange(0, 127)
+        self.knob.setNotchesVisible(True)
+        self.knob.setWrapping(False)
+        self.knob.setValue(64)
+        self.knob.setToolTip("Turn to send KNOB <index> <position> (0-127).")
+        knob_layout.addWidget(self.knob, 1)
+        self.knob_value = QSpinBox()
+        self.knob_value.setRange(0, 127)
+        self.knob_value.setValue(64)
+        self.knob_value.setKeyboardTracking(False)
+        knob_layout.addWidget(self.knob_value)
+        self.knob.valueChanged.connect(self.knob_value.setValue)
+        self.knob_value.valueChanged.connect(self.knob.setValue)
+        self.knob.valueChanged.connect(lambda value: self._send_control(
+            f"KNOB {self.knob_assignment.value()} {value}"))
+        self.knob_send = QPushButton("Send")
+        self.knob_send.clicked.connect(lambda: self._send_control(
+            f"KNOB {self.knob_assignment.value()} {self.knob.value()}"))
+        knob_layout.addWidget(self.knob_send)
+        layout.addWidget(knob_group)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -332,16 +384,19 @@ class ButtonInjectorWindow(BaseDialog):
                 btn = QPushButton("Send")
                 btn.clicked.connect(lambda checked, t=token: self._inject_button(t))
                 grid.addWidget(btn, row, 1)
+                assign_btn = QPushButton("Assign")
+                assign_btn.clicked.connect(lambda checked, c=code: self._assign_button(c))
+                grid.addWidget(assign_btn, row, 2)
             table_layout.addWidget(group)
 
         table_layout.addStretch()
         scroll.setWidget(table_widget)
         layout.addWidget(scroll, 1)
 
-        custom_group = QGroupBox("Custom Token")
+        custom_group = QGroupBox("Custom button")
         custom_layout = QHBoxLayout(custom_group)
         self.button_input = QLineEdit()
-        self.button_input.setPlaceholderText("Enter a raw button token")
+        self.button_input.setPlaceholderText("Reference name or raw code (0-127)")
         custom_layout.addWidget(self.button_input)
         inject_btn = QPushButton("Inject")
         inject_btn.clicked.connect(self._inject_custom)
@@ -352,13 +407,46 @@ class ButtonInjectorWindow(BaseDialog):
         close_btn.clicked.connect(self.accept)
         layout.addWidget(close_btn)
 
+    def _assign_button(self, code: int):
+        self.button_assignment.setCurrentIndex(self.button_assignment.findData(code))
+        self.button_code.setValue(code)
+
+    def _button_assignment_changed(self, index: int):
+        code = self.button_assignment.itemData(index)
+        if code is not None:
+            self.button_code.setValue(code)
+
+    def _button_code_changed(self, code: int):
+        index = self.button_assignment.findData(code)
+        self.button_assignment.setCurrentIndex(
+            index if index >= 0 else self.button_assignment.count() - 1)
+
+    def _send_control(self, command: str):
+        if not self._mw._host or not self._mw._receiver:
+            self.status_label.setText("Not connected. Connect to the instrument first.")
+            return
+        if self._mw._daemon_booting:
+            self.status_label.setText("Instrument is booting; command not sent.")
+            return
+        self._mw._ctrl_send(command)
+        self.status_label.setText(f"Queued {command}. Confirm the effect on the instrument.")
+
     def _inject_button(self, token: str):
-        import time
-        self._mw._ctrl_send(btn(token))
-        self.status_label.setText(f"Sent {btn(token)} ({token})  ({time.strftime('%H:%M:%S')})")
+        self._send_control(btn(token))
 
     def _inject_custom(self):
         token = self.button_input.text().strip()
-        if token:
-            self._inject_button(token)
-            self.button_input.clear()
+        if not token:
+            return
+        try:
+            if token.isdecimal():
+                code = int(token)
+                if not 0 <= code <= 127:
+                    raise ValueError
+                command = f"BTN {code}"
+            else:
+                command = btn(token.upper())
+        except (KeyError, ValueError):
+            self.status_label.setText("Choose a reference button name or an integer code from 0 to 127.")
+            return
+        self._send_control(command)
